@@ -51,18 +51,23 @@ struct FFmpegCapabilities {
 }
 
 struct FFmpegLocator {
-    static func locate() -> URL? {
+    static func locate(preference: FFmpegSourcePreference) -> URL? {
+        switch preference {
+        case .bundled:
+            return bundledFFmpegURL()
+        case .system:
+            return systemFFmpegURL()
+        }
+    }
+
+    static func systemFFmpegURL() -> URL? {
         if let overridePath = ProcessInfo.processInfo.environment["GPHILCODER_FFMPEG"],
-           !overridePath.isEmpty {
+            !overridePath.isEmpty
+        {
             let overrideURL = URL(fileURLWithPath: overridePath)
             if FileManager.default.isExecutableFile(atPath: overrideURL.path) {
                 return overrideURL
             }
-        }
-
-        if let bundledURL = bundledFFmpegURL(),
-           FileManager.default.isExecutableFile(atPath: bundledURL.path) {
-            return bundledURL
         }
 
         let candidates = [
@@ -86,14 +91,7 @@ struct FFmpegLocator {
         return nil
     }
 
-    static func isBundled(_ url: URL) -> Bool {
-        guard let resourceURL = Bundle.main.resourceURL else { return false }
-        let resourcePath = resourceURL.standardizedFileURL.resolvingSymlinksInPath().path
-        let toolPath = url.standardizedFileURL.resolvingSymlinksInPath().path
-        return toolPath.hasPrefix(resourcePath + "/")
-    }
-
-    private static func bundledFFmpegURL() -> URL? {
+    static func bundledFFmpegURL() -> URL? {
         guard let resourceURL = Bundle.main.resourceURL else { return nil }
         let candidates = [
             resourceURL.appendingPathComponent("ffmpeg"),
@@ -101,6 +99,13 @@ struct FFmpegLocator {
         ]
 
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0.path) }
+    }
+
+    static func isBundled(_ url: URL) -> Bool {
+        guard let resourceURL = Bundle.main.resourceURL else { return false }
+        let resourcePath = resourceURL.standardizedFileURL.resolvingSymlinksInPath().path
+        let toolPath = url.standardizedFileURL.resolvingSymlinksInPath().path
+        return toolPath.hasPrefix(resourcePath + "/")
     }
 }
 

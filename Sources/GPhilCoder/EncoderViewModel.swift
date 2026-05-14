@@ -24,6 +24,7 @@ final class EncoderViewModel: ObservableObject {
         static let flacCompressionLevel = "flacCompressionLevel"
         static let parallelJobs = "parallelJobs"
         static let ffmpegThreads = "ffmpegThreads"
+        static let ffmpegSourcePreference = "ffmpegSourcePreference"
     }
 
     private enum QueueFile {
@@ -43,6 +44,8 @@ final class EncoderViewModel: ObservableObject {
     @Published private(set) var jobs: [EncodeJob] = []
     @Published private(set) var isEncoding = false
     @Published private(set) var ffmpegURL: URL?
+    @Published private(set) var bundledFFmpegURL: URL?
+    @Published private(set) var systemFFmpegURL: URL?
     @Published private(set) var ffmpegCapabilities = FFmpegCapabilities()
     @Published private(set) var statusMessage = "Add audio files or folders to begin."
 
@@ -140,6 +143,18 @@ final class EncoderViewModel: ObservableObject {
 
     @Published var ffmpegThreads = 0 {
         didSet { UserDefaults.standard.set(ffmpegThreads, forKey: DefaultsKey.ffmpegThreads) }
+    }
+
+    @Published var ffmpegSourcePreference: FFmpegSourcePreference = .bundled {
+        didSet {
+            UserDefaults.standard.set(
+                ffmpegSourcePreference.rawValue,
+                forKey: DefaultsKey.ffmpegSourcePreference
+            )
+            if oldValue != ffmpegSourcePreference {
+                refreshFFmpeg()
+            }
+        }
     }
 
     private var encodeTask: Task<Void, Never>?
@@ -241,23 +256,58 @@ final class EncoderViewModel: ObservableObject {
         !selectedInputExtensions.isEmpty
     }
 
+    var ffmpegSourceTitle: String {
+        ffmpegSourcePreference.title
+    }
+
+    var activeFFmpegPath: String {
+        ffmpegURL?.path(percentEncoded: false) ?? "No executable selected"
+    }
+
     init() {
         loadPersistedSettings()
         refreshFFmpeg()
     }
 
     func refreshFFmpeg() {
-        ffmpegURL = FFmpegLocator.locate()
+        bundledFFmpegURL = FFmpegLocator.bundledFFmpegURL()
+        systemFFmpegURL = FFmpegLocator.systemFFmpegURL()
+        ffmpegURL = FFmpegLocator.locate(preference: ffmpegSourcePreference)
+
         if let ffmpegURL {
             ffmpegCapabilities = FFmpegCapabilities.detect(ffmpegURL: ffmpegURL)
             let vorbisStatus =
                 ffmpegCapabilities.hasLibVorbis ? "libvorbis available" : "native Vorbis only"
-            let source = FFmpegLocator.isBundled(ffmpegURL) ? "bundled FFmpeg" : "FFmpeg"
+            let source = FFmpegLocator.isBundled(ffmpegURL) ? "bundled FFmpeg" : "system FFmpeg"
             statusMessage =
                 "Using \(source) at \(ffmpegURL.path(percentEncoded: false)) (\(vorbisStatus))."
         } else {
             ffmpegCapabilities = FFmpegCapabilities()
-            statusMessage = FFmpegToolError.notFound.localizedDescription
+            switch ffmpegSourcePreference {
+            case .bundled:
+                statusMessage =
+                    "Bundled FFmpeg was not found in this app. Select System FFmpeg or rebuild the app with BUNDLED_FFMPEG."
+            case .system:
+                statusMessage = FFmpegToolError.notFound.localizedDescription
+            }
+        }
+    }
+
+    func isFFmpegSourceAvailable(_ source: FFmpegSourcePreference) -> Bool {
+        switch source {
+        case .bundled:
+            bundledFFmpegURL != nil
+        case .system:
+            systemFFmpegURL != nil
+        }
+    }
+
+    func ffmpegPath(for source: FFmpegSourcePreference) -> String {
+        switch source {
+        case .bundled:
+            bundledFFmpegURL?.path(percentEncoded: false) ?? "Not bundled in this build"
+        case .system:
+            systemFFmpegURL?.path(percentEncoded: false) ?? "Not found on this Mac"
         }
     }
 
@@ -779,6 +829,16 @@ final class EncoderViewModel: ObservableObject {
 
     private func loadPersistedSettings() {
         let defaults = UserDefaults.standard
+
+        if let rawValue = defaults.string(forKey: DefaultsKey.ffmpegSourcePreference),
+            let value = FFmpegSourcePreference(rawValue: rawValue)
+        {
+            ffmpegSourcePreference = value
+        } else if FFmpegLocator.bundledFFmpegURL() == nil,
+            FFmpegLocator.systemFFmpegURL() != nil
+        {
+            ffmpegSourcePreference = .system
+        }
 
         if let rawValue = defaults.string(forKey: DefaultsKey.outputMode),
             let persistedOutputMode = OutputMode(rawValue: rawValue)

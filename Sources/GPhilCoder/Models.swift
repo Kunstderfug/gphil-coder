@@ -10,6 +10,31 @@ enum AudioFormat {
     }
 }
 
+enum FFmpegSourcePreference: String, CaseIterable, Identifiable {
+    case bundled
+    case system
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .bundled:
+            "Bundled"
+        case .system:
+            "System"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .bundled:
+            "Use the FFmpeg shipped inside GPhilCoder."
+        case .system:
+            "Use FFmpeg discovered on this Mac."
+        }
+    }
+}
+
 enum InputAudioFormat: String, CaseIterable, Identifiable {
     case flac
     case wav

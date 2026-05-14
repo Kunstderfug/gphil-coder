@@ -59,9 +59,7 @@ struct ContentView: View {
 
             Spacer()
 
-            ToolStatusView(ffmpegURL: model.ffmpegURL) {
-                model.refreshFFmpeg()
-            }
+            ToolStatusView()
         }
         .padding(.horizontal, 22)
         .padding(.top, 54)
@@ -609,18 +607,17 @@ struct ContentView: View {
 }
 
 private struct ToolStatusView: View {
-    let ffmpegURL: URL?
-    let refresh: () -> Void
+    @EnvironmentObject private var model: EncoderViewModel
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: ffmpegURL == nil ? "xmark.octagon.fill" : "checkmark.seal.fill")
-                .foregroundStyle(ffmpegURL == nil ? .orange : .green)
+            Image(systemName: model.ffmpegURL == nil ? "xmark.octagon.fill" : "checkmark.seal.fill")
+                .foregroundStyle(model.ffmpegURL == nil ? .orange : .green)
 
             VStack(alignment: .leading, spacing: 1) {
-                Text(ffmpegURL == nil ? "FFmpeg missing" : "FFmpeg ready")
+                Text(model.ffmpegURL == nil ? "\(model.ffmpegSourceTitle) FFmpeg missing" : "\(model.ffmpegSourceTitle) FFmpeg ready")
                     .font(.subheadline.weight(.semibold))
-                Text(ffmpegURL?.path(percentEncoded: false) ?? "Install ffmpeg to encode")
+                Text(model.activeFFmpegPath)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -628,8 +625,21 @@ private struct ToolStatusView: View {
                     .frame(maxWidth: 260, alignment: .leading)
             }
 
+            Picker("FFmpeg", selection: $model.ffmpegSourcePreference) {
+                ForEach(FFmpegSourcePreference.allCases) { source in
+                    Text(sourceLabel(source))
+                        .tag(source)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .controlSize(.small)
+            .frame(width: 118)
+            .disabled(model.isEncoding)
+            .help("Choose whether encoding uses the app-bundled FFmpeg or the FFmpeg installed on this Mac.")
+
             Button {
-                refresh()
+                model.refreshFFmpeg()
             } label: {
                 Image(systemName: "arrow.clockwise")
             }
@@ -639,6 +649,13 @@ private struct ToolStatusView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private func sourceLabel(_ source: FFmpegSourcePreference) -> String {
+        if model.isFFmpegSourceAvailable(source) {
+            return source.title
+        }
+        return "\(source.title) missing"
     }
 }
 
