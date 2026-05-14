@@ -932,6 +932,7 @@ private struct JobRow: View {
                         .font(.caption)
                         .foregroundStyle(job.state == .failed ? .red : .secondary)
                         .lineLimit(2)
+                        .textSelection(.enabled)
                 }
             }
 
@@ -943,6 +944,17 @@ private struct JobRow: View {
                 }
                 .buttonStyle(.borderless)
                 .help("Reveal output")
+            }
+
+            if job.state == .failed {
+                Button {
+                    copyFailureDiagnostic()
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.red)
+                .help("Copy error log")
             }
         }
         .padding(12)
@@ -956,6 +968,34 @@ private struct JobRow: View {
                     job.state == .failed
                         ? Color.red.opacity(0.4) : Color(nsColor: .separatorColor).opacity(0.35))
         }
+        .contextMenu {
+            if job.state == .failed {
+                Button("Copy Error Log") {
+                    copyFailureDiagnostic()
+                }
+            }
+        }
+    }
+
+    private func copyFailureDiagnostic() {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(copyableDiagnostic, forType: .string)
+    }
+
+    private var copyableDiagnostic: String {
+        if !job.diagnosticMessage.isEmpty {
+            return job.diagnosticMessage
+        }
+
+        return [
+            "GPhilCoder job \(job.state.label)",
+            "Input: \(job.item.url.path(percentEncoded: false))",
+            "Output: \(job.outputURL.path(percentEncoded: false))",
+            "",
+            "Message:",
+            job.message
+        ].joined(separator: "\n")
     }
 
     @ViewBuilder

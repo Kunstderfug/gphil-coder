@@ -423,6 +423,7 @@ struct EncodeJob: Identifiable {
     let outputURL: URL
     var state: JobState = .queued
     var message: String = ""
+    var diagnosticMessage: String = ""
     var startedAt: Date?
     var finishedAt: Date?
 

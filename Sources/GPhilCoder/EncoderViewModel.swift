@@ -1204,6 +1204,7 @@ final class EncoderViewModel: ObservableObject {
     private func markJobRunning(at index: Int) -> EncodeJob {
         jobs[index].state = .running
         jobs[index].message = "Encoding..."
+        jobs[index].diagnosticMessage = ""
         jobs[index].startedAt = Date()
         return jobs[index]
     }
@@ -1222,8 +1223,30 @@ final class EncoderViewModel: ObservableObject {
         } catch is CancellationError {
             return .cancelled(job.id)
         } catch {
-            return .failure(job.id, error.localizedDescription)
+            return .failure(
+                job.id,
+                error.localizedDescription,
+                failureDiagnosticMessage(for: job, settings: settings, error: error)
+            )
         }
+    }
+
+    private static func failureDiagnosticMessage(
+        for job: EncodeJob,
+        settings: EncodingSettingsSnapshot,
+        error: Error
+    ) -> String {
+        [
+            "GPhilCoder encoding failed",
+            "Input: \(job.item.url.path(percentEncoded: false))",
+            "Output: \(job.outputURL.path(percentEncoded: false))",
+            "FFmpeg: \(settings.ffmpegURL.path(percentEncoded: false))",
+            "Settings: \(settings.summary)",
+            "FFmpeg threads: \(settings.ffmpegThreads == 0 ? "Auto" : "\(settings.ffmpegThreads)")",
+            "",
+            "Error:",
+            error.localizedDescription
+        ].joined(separator: "\n")
     }
 
     private func apply(_ result: JobResult) {
@@ -1234,15 +1257,19 @@ final class EncoderViewModel: ObservableObject {
         case .success(_, let output):
             jobs[index].state = .succeeded
             jobs[index].message = summarizeFFmpegOutput(output)
+            jobs[index].diagnosticMessage = ""
         case .skipped(_, let message):
             jobs[index].state = .skipped
             jobs[index].message = message
-        case .failure(_, let message):
+            jobs[index].diagnosticMessage = ""
+        case .failure(_, let message, let diagnosticMessage):
             jobs[index].state = .failed
             jobs[index].message = message
+            jobs[index].diagnosticMessage = diagnosticMessage
         case .cancelled:
             jobs[index].state = .cancelled
             jobs[index].message = "Cancelled."
+            jobs[index].diagnosticMessage = ""
         }
     }
 
@@ -1261,14 +1288,14 @@ final class EncoderViewModel: ObservableObject {
 private enum JobResult {
     case success(UUID, String)
     case skipped(UUID, String)
-    case failure(UUID, String)
+    case failure(UUID, String, String)
     case cancelled(UUID)
 
     var jobID: UUID {
         switch self {
         case .success(let id, _),
             .skipped(let id, _),
-            .failure(let id, _),
+            .failure(let id, _, _),
             .cancelled(let id):
             id
         }
