@@ -21,15 +21,21 @@ final class EncoderViewModel: ObservableObject {
         static let oggBitrateKbps = "oggBitrateKbps"
         static let opusRateMode = "opusRateMode"
         static let opusBitrateKbps = "opusBitrateKbps"
+        static let flacCompressionLevel = "flacCompressionLevel"
         static let parallelJobs = "parallelJobs"
         static let ffmpegThreads = "ffmpegThreads"
     }
 
     private enum QueueFile {
-        static let fileExtension = "gphilcodecqueue"
+        static let fileExtension = "gphilcoderqueue"
+        static let legacyFileExtension = "gphilcodecqueue"
 
         static var contentType: UTType {
             UTType(filenameExtension: fileExtension) ?? .json
+        }
+
+        static var legacyContentType: UTType {
+            UTType(filenameExtension: legacyFileExtension) ?? .json
         }
     }
 
@@ -56,7 +62,9 @@ final class EncoderViewModel: ObservableObject {
     @Published var exportFolder: URL? {
         didSet {
             if let exportFolder {
-                UserDefaults.standard.set(exportFolder.standardizedFileURL.path(percentEncoded: false), forKey: DefaultsKey.exportFolderPath)
+                UserDefaults.standard.set(
+                    exportFolder.standardizedFileURL.path(percentEncoded: false),
+                    forKey: DefaultsKey.exportFolderPath)
             } else {
                 UserDefaults.standard.removeObject(forKey: DefaultsKey.exportFolderPath)
             }
@@ -64,15 +72,21 @@ final class EncoderViewModel: ObservableObject {
     }
 
     @Published var preserveSubfolders = true {
-        didSet { UserDefaults.standard.set(preserveSubfolders, forKey: DefaultsKey.preserveSubfolders) }
+        didSet {
+            UserDefaults.standard.set(preserveSubfolders, forKey: DefaultsKey.preserveSubfolders)
+        }
     }
 
     @Published var overwriteExisting = false {
-        didSet { UserDefaults.standard.set(overwriteExisting, forKey: DefaultsKey.overwriteExisting) }
+        didSet {
+            UserDefaults.standard.set(overwriteExisting, forKey: DefaultsKey.overwriteExisting)
+        }
     }
 
     @Published var outputFormat: AudioOutputFormat = .mp3 {
-        didSet { UserDefaults.standard.set(outputFormat.rawValue, forKey: DefaultsKey.outputFormat) }
+        didSet {
+            UserDefaults.standard.set(outputFormat.rawValue, forKey: DefaultsKey.outputFormat)
+        }
     }
 
     @Published var mp3Mode: MP3EncodingMode = .vbr {
@@ -104,11 +118,20 @@ final class EncoderViewModel: ObservableObject {
     }
 
     @Published var opusRateMode: OpusEncodingOptions.RateMode = .vbr {
-        didSet { UserDefaults.standard.set(opusRateMode.rawValue, forKey: DefaultsKey.opusRateMode) }
+        didSet {
+            UserDefaults.standard.set(opusRateMode.rawValue, forKey: DefaultsKey.opusRateMode)
+        }
     }
 
     @Published var opusBitrateKbps = 192 {
         didSet { UserDefaults.standard.set(opusBitrateKbps, forKey: DefaultsKey.opusBitrateKbps) }
+    }
+
+    @Published var flacCompressionLevel = 8 {
+        didSet {
+            UserDefaults.standard.set(
+                flacCompressionLevel, forKey: DefaultsKey.flacCompressionLevel)
+        }
     }
 
     @Published var parallelJobs = max(1, min(4, ProcessInfo.processInfo.activeProcessorCount)) {
@@ -126,10 +149,8 @@ final class EncoderViewModel: ObservableObject {
     }
 
     var canEncode: Bool {
-        !inputs.isEmpty &&
-        !isEncoding &&
-        ffmpegURL != nil &&
-        (outputMode == .sourceFolders || exportFolder != nil)
+        !inputs.isEmpty && !isEncoding && ffmpegURL != nil
+            && (outputMode == .sourceFolders || exportFolder != nil)
     }
 
     var completedCount: Int {
@@ -163,7 +184,20 @@ final class EncoderViewModel: ObservableObject {
     var sameFormatWarningMessage: String? {
         guard sameFormatInputCount > 0 else { return nil }
         let noun = sameFormatInputCount == 1 ? "source already uses" : "sources already use"
-        return "\(sameFormatInputCount) \(noun) .\(outputFormat.fileExtension). Same-format exports are written with \"-encoded\" before the extension, and exact source overwrites are blocked."
+        return
+            "\(sameFormatInputCount) \(noun) .\(outputFormat.fileExtension). Same-format exports are written with \"-encoded\" before the extension, and exact source overwrites are blocked."
+    }
+
+    var lossyToLosslessWarningMessage: String? {
+        guard outputFormat == .flac else { return nil }
+        let lossyInputCount = inputs.filter {
+            $0.url.pathExtension.lowercased() == InputAudioFormat.mp3.fileExtension
+        }.count
+        guard lossyInputCount > 0 else { return nil }
+
+        let noun = lossyInputCount == 1 ? "source is" : "sources are"
+        return
+            "\(lossyInputCount) \(noun) MP3. FLAC output will be lossless only from the already-compressed MP3 signal; it cannot restore detail lost during earlier lossy encoding."
     }
 
     var supportsOggBitrate: Bool {
@@ -192,8 +226,10 @@ final class EncoderViewModel: ObservableObject {
         ffmpegURL = FFmpegLocator.locate()
         if let ffmpegURL {
             ffmpegCapabilities = FFmpegCapabilities.detect(ffmpegURL: ffmpegURL)
-            let vorbisStatus = ffmpegCapabilities.hasLibVorbis ? "libvorbis available" : "native Vorbis only"
-            statusMessage = "Using FFmpeg at \(ffmpegURL.path(percentEncoded: false)) (\(vorbisStatus))."
+            let vorbisStatus =
+                ffmpegCapabilities.hasLibVorbis ? "libvorbis available" : "native Vorbis only"
+            statusMessage =
+                "Using FFmpeg at \(ffmpegURL.path(percentEncoded: false)) (\(vorbisStatus))."
         } else {
             ffmpegCapabilities = FFmpegCapabilities()
             statusMessage = FFmpegToolError.notFound.localizedDescription
@@ -208,7 +244,9 @@ final class EncoderViewModel: ObservableObject {
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.canCreateDirectories = false
-        panel.allowedContentTypes = selectedInputExtensions.compactMap { UTType(filenameExtension: $0) }
+        panel.allowedContentTypes = selectedInputExtensions.compactMap {
+            UTType(filenameExtension: $0)
+        }
         panel.directoryURL = lastInputDirectoryURL()
 
         guard panel.runModal() == .OK else { return }
@@ -284,6 +322,67 @@ final class EncoderViewModel: ObservableObject {
         statusMessage = inputs.isEmpty ? "Queue cleared." : "Removed \(item.name)."
     }
 
+    func trashInputSource(_ item: AudioInputItem) {
+        guard !isEncoding else { return }
+
+        let alert = NSAlert()
+        alert.messageText = "Move source file to Trash?"
+        alert.informativeText =
+            "This will move \(item.name) to the macOS Trash and remove it from the queue."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Move to Trash")
+        alert.addButton(withTitle: "Cancel")
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        do {
+            try FileManager.default.trashItem(at: item.url, resultingItemURL: nil)
+            inputs.removeAll { $0.id == item.id }
+            jobs.removeAll()
+            statusMessage = "Moved \(item.name) to Trash."
+        } catch {
+            statusMessage = "Could not move \(item.name) to Trash: \(error.localizedDescription)"
+        }
+    }
+
+    func trashAllInputSources() {
+        guard !isEncoding, !inputs.isEmpty else { return }
+
+        let count = inputs.count
+        let alert = NSAlert()
+        alert.messageText = "Move all queued source files to Trash?"
+        alert.informativeText =
+            "This will move \(count) source file\(count == 1 ? "" : "s") to the macOS Trash and remove successful items from the queue."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Move All to Trash")
+        alert.addButton(withTitle: "Cancel")
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        var trashedIDs = Set<UUID>()
+        var failures: [String] = []
+
+        for item in inputs {
+            do {
+                try FileManager.default.trashItem(at: item.url, resultingItemURL: nil)
+                trashedIDs.insert(item.id)
+            } catch {
+                failures.append(item.name)
+            }
+        }
+
+        inputs.removeAll { trashedIDs.contains($0.id) }
+        jobs.removeAll()
+
+        if failures.isEmpty {
+            statusMessage =
+                "Moved \(trashedIDs.count) source file\(trashedIDs.count == 1 ? "" : "s") to Trash."
+        } else {
+            statusMessage =
+                "Moved \(trashedIDs.count) source file\(trashedIDs.count == 1 ? "" : "s") to Trash. Could not move \(failures.count): \(failures.prefix(3).joined(separator: ", "))\(failures.count > 3 ? "..." : "")."
+        }
+    }
+
     func clearInputs() {
         guard !isEncoding else { return }
         inputs.removeAll()
@@ -322,7 +421,8 @@ final class EncoderViewModel: ObservableObject {
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let data = try encoder.encode(document)
             try data.write(to: url, options: .atomic)
-            statusMessage = "Saved queue with \(inputs.count) item\(inputs.count == 1 ? "" : "s") to \(url.lastPathComponent)."
+            statusMessage =
+                "Saved queue with \(inputs.count) item\(inputs.count == 1 ? "" : "s") to \(url.lastPathComponent)."
         } catch {
             statusMessage = "Could not save queue: \(error.localizedDescription)"
         }
@@ -338,7 +438,7 @@ final class EncoderViewModel: ObservableObject {
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.canCreateDirectories = false
-        panel.allowedContentTypes = [QueueFile.contentType, .json]
+        panel.allowedContentTypes = [QueueFile.contentType, QueueFile.legacyContentType, .json]
         panel.directoryURL = lastInputDirectoryURL()
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
@@ -355,18 +455,25 @@ final class EncoderViewModel: ObservableObject {
             jobs.removeAll()
             rememberInputDirectory(fromFiles: result.items.map(\.url))
 
-            var details = ["Loaded \(result.items.count) queued item\(result.items.count == 1 ? "" : "s")."]
+            var details = [
+                "Loaded \(result.items.count) queued item\(result.items.count == 1 ? "" : "s")."
+            ]
             if result.missing > 0 {
-                details.append("Skipped \(result.missing) missing file\(result.missing == 1 ? "" : "s").")
+                details.append(
+                    "Skipped \(result.missing) missing file\(result.missing == 1 ? "" : "s").")
             }
             if result.unsupported > 0 {
-                details.append("Skipped \(result.unsupported) unsupported item\(result.unsupported == 1 ? "" : "s").")
+                details.append(
+                    "Skipped \(result.unsupported) unsupported item\(result.unsupported == 1 ? "" : "s")."
+                )
             }
             if result.duplicates > 0 {
-                details.append("Ignored \(result.duplicates) duplicate\(result.duplicates == 1 ? "" : "s").")
+                details.append(
+                    "Ignored \(result.duplicates) duplicate\(result.duplicates == 1 ? "" : "s").")
             }
             if settingsWarning {
-                details.append("Export folder was unavailable, so output was set to source folders.")
+                details.append(
+                    "Export folder was unavailable, so output was set to source folders.")
             }
 
             statusMessage = details.joined(separator: " ")
@@ -406,12 +513,14 @@ final class EncoderViewModel: ObservableObject {
             oggBitrateKbps: oggBitrateKbps,
             opusRateMode: opusRateMode,
             opusBitrateKbps: opusBitrateKbps,
+            flacCompressionLevel: flacCompressionLevel,
             ffmpegThreads: ffmpegThreads,
             overwriteExisting: overwriteExisting,
             parallelJobs: max(1, min(parallelJobs, processorLimit))
         )
 
-        statusMessage = "Encoding \(plannedJobs.count) \(plannedJobs.count == 1 ? "file" : "files") with \(settings.summary)..."
+        statusMessage =
+            "Encoding \(plannedJobs.count) \(plannedJobs.count == 1 ? "file" : "files") with \(settings.summary)..."
 
         encodeTask = Task { [weak self] in
             await self?.runJobs(settings: settings)
@@ -426,7 +535,7 @@ final class EncoderViewModel: ObservableObject {
     private func defaultQueueFileName() -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH.mm"
-        return "GPhil Codec Queue \(formatter.string(from: Date())).\(QueueFile.fileExtension)"
+        return "GPhilCoder Queue \(formatter.string(from: Date())).\(QueueFile.fileExtension)"
     }
 
     private func normalizedQueueFileURL(_ url: URL) -> URL {
@@ -450,6 +559,7 @@ final class EncoderViewModel: ObservableObject {
             oggBitrateKbps: oggBitrateKbps,
             opusRateMode: opusRateMode.rawValue,
             opusBitrateKbps: opusBitrateKbps,
+            flacCompressionLevel: flacCompressionLevel,
             parallelJobs: max(1, min(parallelJobs, processorLimit)),
             ffmpegThreads: max(0, min(ffmpegThreads, processorLimit))
         )
@@ -466,7 +576,8 @@ final class EncoderViewModel: ObservableObject {
     private func applyQueueSettings(_ settings: QueueSettings) -> Bool {
         var requestedOutputMode = outputMode
         if let rawValue = settings.outputMode,
-           let value = OutputMode(rawValue: rawValue) {
+            let value = OutputMode(rawValue: rawValue)
+        {
             requestedOutputMode = value
         }
 
@@ -487,44 +598,59 @@ final class EncoderViewModel: ObservableObject {
             overwriteExisting = value
         }
         if let rawValue = settings.outputFormat,
-           let value = AudioOutputFormat(rawValue: rawValue) {
+            let value = AudioOutputFormat(rawValue: rawValue)
+        {
             outputFormat = value
         }
         if let rawValue = settings.mp3Mode,
-           let value = MP3EncodingMode(rawValue: rawValue) {
+            let value = MP3EncodingMode(rawValue: rawValue)
+        {
             mp3Mode = value
         }
         if let value = settings.vbrQuality,
-           MP3EncodingOptions.vbrQualities.contains(value) {
+            MP3EncodingOptions.vbrQualities.contains(value)
+        {
             vbrQuality = value
         }
         if let value = settings.cbrBitrateKbps,
-           MP3EncodingOptions.bitrateKbps.contains(value) {
+            MP3EncodingOptions.bitrateKbps.contains(value)
+        {
             cbrBitrateKbps = value
         }
         if let value = settings.abrBitrateKbps,
-           MP3EncodingOptions.bitrateKbps.contains(value) {
+            MP3EncodingOptions.bitrateKbps.contains(value)
+        {
             abrBitrateKbps = value
         }
         if let rawValue = settings.oggMode,
-           let value = OggEncodingOptions.Mode(rawValue: rawValue) {
+            let value = OggEncodingOptions.Mode(rawValue: rawValue)
+        {
             oggMode = value
         }
         if let value = settings.oggQuality,
-           OggEncodingOptions.qualities.contains(value) {
+            OggEncodingOptions.qualities.contains(value)
+        {
             oggQuality = value
         }
         if let value = settings.oggBitrateKbps,
-           OggEncodingOptions.bitrateKbps.contains(value) {
+            OggEncodingOptions.bitrateKbps.contains(value)
+        {
             oggBitrateKbps = value
         }
         if let rawValue = settings.opusRateMode,
-           let value = OpusEncodingOptions.RateMode(rawValue: rawValue) {
+            let value = OpusEncodingOptions.RateMode(rawValue: rawValue)
+        {
             opusRateMode = value
         }
         if let value = settings.opusBitrateKbps,
-           OpusEncodingOptions.bitrateKbps.contains(value) {
+            OpusEncodingOptions.bitrateKbps.contains(value)
+        {
             opusBitrateKbps = value
+        }
+        if let value = settings.flacCompressionLevel,
+            FLACEncodingOptions.compressionLevels.contains(value)
+        {
+            flacCompressionLevel = value
         }
         if let value = settings.parallelJobs {
             parallelJobs = max(1, min(value, processorLimit))
@@ -566,9 +692,13 @@ final class EncoderViewModel: ObservableObject {
                 continue
             }
 
-            let sourceRoot = entry.sourceRootPath.map { URL(fileURLWithPath: $0, isDirectory: true) }
-            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
-            let relativeDirectory = entry.relativeDirectory ?? relativeDirectory(for: url, sourceRoot: sourceRoot)
+            let sourceRoot = entry.sourceRootPath.map {
+                URL(fileURLWithPath: $0, isDirectory: true)
+            }
+            let size =
+                (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
+            let relativeDirectory =
+                entry.relativeDirectory ?? relativeDirectory(for: url, sourceRoot: sourceRoot)
 
             items.append(
                 AudioInputItem(
@@ -587,13 +717,14 @@ final class EncoderViewModel: ObservableObject {
 
     private func regularFileExists(atPath path: String) -> Bool {
         var isDirectory: ObjCBool = false
-        return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && !isDirectory.boolValue
+        return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
+            && !isDirectory.boolValue
     }
 
     private func directoryURLIfExists(atPath path: String) -> URL? {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
-              isDirectory.boolValue
+            isDirectory.boolValue
         else {
             return nil
         }
@@ -605,7 +736,8 @@ final class EncoderViewModel: ObservableObject {
         let defaults = UserDefaults.standard
 
         if let rawValue = defaults.string(forKey: DefaultsKey.outputMode),
-           let persistedOutputMode = OutputMode(rawValue: rawValue) {
+            let persistedOutputMode = OutputMode(rawValue: rawValue)
+        {
             outputMode = persistedOutputMode
         }
 
@@ -614,7 +746,9 @@ final class EncoderViewModel: ObservableObject {
             outputMode = .sourceFolders
         }
 
-        if let selectedInputExtensions = defaults.array(forKey: DefaultsKey.selectedInputExtensions) as? [String] {
+        if let selectedInputExtensions = defaults.array(forKey: DefaultsKey.selectedInputExtensions)
+            as? [String]
+        {
             setSelectedInputExtensions(Set(selectedInputExtensions))
         }
 
@@ -627,53 +761,69 @@ final class EncoderViewModel: ObservableObject {
         }
 
         if let rawValue = defaults.string(forKey: DefaultsKey.outputFormat),
-           let persistedOutputFormat = AudioOutputFormat(rawValue: rawValue) {
+            let persistedOutputFormat = AudioOutputFormat(rawValue: rawValue)
+        {
             outputFormat = persistedOutputFormat
         }
 
         if let rawValue = defaults.string(forKey: DefaultsKey.mp3Mode),
-           let persistedMP3Mode = MP3EncodingMode(rawValue: rawValue) {
+            let persistedMP3Mode = MP3EncodingMode(rawValue: rawValue)
+        {
             mp3Mode = persistedMP3Mode
         }
 
         if let value = persistedInt(forKey: DefaultsKey.vbrQuality),
-           MP3EncodingOptions.vbrQualities.contains(value) {
+            MP3EncodingOptions.vbrQualities.contains(value)
+        {
             vbrQuality = value
         }
 
         if let value = persistedInt(forKey: DefaultsKey.cbrBitrateKbps),
-           MP3EncodingOptions.bitrateKbps.contains(value) {
+            MP3EncodingOptions.bitrateKbps.contains(value)
+        {
             cbrBitrateKbps = value
         }
 
         if let value = persistedInt(forKey: DefaultsKey.abrBitrateKbps),
-           MP3EncodingOptions.bitrateKbps.contains(value) {
+            MP3EncodingOptions.bitrateKbps.contains(value)
+        {
             abrBitrateKbps = value
         }
 
         if let rawValue = defaults.string(forKey: DefaultsKey.oggMode),
-           let value = OggEncodingOptions.Mode(rawValue: rawValue) {
+            let value = OggEncodingOptions.Mode(rawValue: rawValue)
+        {
             oggMode = value
         }
 
         if let value = persistedInt(forKey: DefaultsKey.oggQuality),
-           OggEncodingOptions.qualities.contains(value) {
+            OggEncodingOptions.qualities.contains(value)
+        {
             oggQuality = value
         }
 
         if let value = persistedInt(forKey: DefaultsKey.oggBitrateKbps),
-           OggEncodingOptions.bitrateKbps.contains(value) {
+            OggEncodingOptions.bitrateKbps.contains(value)
+        {
             oggBitrateKbps = value
         }
 
         if let rawValue = defaults.string(forKey: DefaultsKey.opusRateMode),
-           let value = OpusEncodingOptions.RateMode(rawValue: rawValue) {
+            let value = OpusEncodingOptions.RateMode(rawValue: rawValue)
+        {
             opusRateMode = value
         }
 
         if let value = persistedInt(forKey: DefaultsKey.opusBitrateKbps),
-           OpusEncodingOptions.bitrateKbps.contains(value) {
+            OpusEncodingOptions.bitrateKbps.contains(value)
+        {
             opusBitrateKbps = value
+        }
+
+        if let value = persistedInt(forKey: DefaultsKey.flacCompressionLevel),
+            FLACEncodingOptions.compressionLevels.contains(value)
+        {
+            flacCompressionLevel = value
         }
 
         if let value = persistedInt(forKey: DefaultsKey.parallelJobs) {
@@ -700,7 +850,7 @@ final class EncoderViewModel: ObservableObject {
 
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
-              isDirectory.boolValue
+            isDirectory.boolValue
         else {
             return nil
         }
@@ -752,7 +902,10 @@ final class EncoderViewModel: ObservableObject {
             summary.added += 1
         }
 
-        inputs.append(contentsOf: additions.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending })
+        inputs.append(
+            contentsOf: additions.sorted {
+                $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            })
         jobs.removeAll()
         return summary
     }
@@ -763,11 +916,13 @@ final class EncoderViewModel: ObservableObject {
         var additions: [AudioInputItem] = []
         let keys: [URLResourceKey] = [.isRegularFileKey, .fileSizeKey]
 
-        guard let enumerator = FileManager.default.enumerator(
-            at: folder,
-            includingPropertiesForKeys: keys,
-            options: [.skipsHiddenFiles, .skipsPackageDescendants]
-        ) else {
+        guard
+            let enumerator = FileManager.default.enumerator(
+                at: folder,
+                includingPropertiesForKeys: keys,
+                options: [.skipsHiddenFiles, .skipsPackageDescendants]
+            )
+        else {
             return summary
         }
 
@@ -791,7 +946,10 @@ final class EncoderViewModel: ObservableObject {
             summary.added += 1
         }
 
-        inputs.append(contentsOf: additions.sorted { $0.url.path.localizedCaseInsensitiveCompare($1.url.path) == .orderedAscending })
+        inputs.append(
+            contentsOf: additions.sorted {
+                $0.url.path.localizedCaseInsensitiveCompare($1.url.path) == .orderedAscending
+            })
         jobs.removeAll()
         return summary
     }
@@ -814,7 +972,7 @@ final class EncoderViewModel: ObservableObject {
         let parentComponents = url.deletingLastPathComponent().standardizedFileURL.pathComponents
 
         guard parentComponents.count >= rootComponents.count,
-              Array(parentComponents.prefix(rootComponents.count)) == rootComponents
+            Array(parentComponents.prefix(rootComponents.count)) == rootComponents
         else {
             return nil
         }
@@ -880,7 +1038,8 @@ final class EncoderViewModel: ObservableObject {
         }
 
         if Task.isCancelled {
-            for index in jobs.indices where jobs[index].state == .queued || jobs[index].state == .running {
+            for index in jobs.indices
+            where jobs[index].state == .queued || jobs[index].state == .running {
                 jobs[index].state = .cancelled
                 jobs[index].message = "Cancelled."
                 jobs[index].finishedAt = Date()
@@ -895,7 +1054,8 @@ final class EncoderViewModel: ObservableObject {
         } else if skippedCount > 0 {
             statusMessage = "Finished. \(skippedCount) file\(skippedCount == 1 ? "" : "s") skipped."
         } else if completedCount > 0 {
-            statusMessage = "Finished \(completedCount) \(settings.outputFormat.title) export\(completedCount == 1 ? "" : "s")."
+            statusMessage =
+                "Finished \(completedCount) \(settings.outputFormat.title) export\(completedCount == 1 ? "" : "s")."
         } else {
             statusMessage = "No files were encoded."
         }
@@ -908,11 +1068,14 @@ final class EncoderViewModel: ObservableObject {
         return jobs[index]
     }
 
-    private static func encode(job: EncodeJob, settings: EncodingSettingsSnapshot) async -> JobResult {
+    private static func encode(job: EncodeJob, settings: EncodingSettingsSnapshot) async
+        -> JobResult
+    {
         let encoder = FFmpegEncoder(ffmpegURL: settings.ffmpegURL)
 
         do {
-            let output = try await encoder.encode(input: job.item.url, output: job.outputURL, settings: settings)
+            let output = try await encoder.encode(
+                input: job.item.url, output: job.outputURL, settings: settings)
             return .success(job.id, output)
         } catch EncodeSkipError.outputExists {
             return .skipped(job.id, "Output already exists.")
@@ -928,13 +1091,13 @@ final class EncoderViewModel: ObservableObject {
         jobs[index].finishedAt = Date()
 
         switch result {
-        case let .success(_, output):
+        case .success(_, let output):
             jobs[index].state = .succeeded
             jobs[index].message = summarizeFFmpegOutput(output)
-        case let .skipped(_, message):
+        case .skipped(_, let message):
             jobs[index].state = .skipped
             jobs[index].message = message
-        case let .failure(_, message):
+        case .failure(_, let message):
             jobs[index].state = .failed
             jobs[index].message = message
         case .cancelled:
@@ -944,12 +1107,14 @@ final class EncoderViewModel: ObservableObject {
     }
 
     private func summarizeFFmpegOutput(_ output: String) -> String {
-        let lines = output
+        let lines =
+            output
             .split(separator: "\n")
             .map(String.init)
             .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
-        return lines.last(where: { $0.contains("audio:") || $0.contains("video:") }) ?? "Output written."
+        return lines.last(where: { $0.contains("audio:") || $0.contains("video:") })
+            ?? "Output written."
     }
 }
 
@@ -961,10 +1126,10 @@ private enum JobResult {
 
     var jobID: UUID {
         switch self {
-        case let .success(id, _),
-             let .skipped(id, _),
-             let .failure(id, _),
-             let .cancelled(id):
+        case .success(let id, _),
+            .skipped(let id, _),
+            .failure(let id, _),
+            .cancelled(let id):
             id
         }
     }

@@ -140,6 +140,12 @@ struct FFmpegEncoder {
                 "-vbr", settings.opusRateMode.ffmpegValue,
                 "-compression_level", "10"
             ])
+
+        case .flac:
+            arguments.append(contentsOf: [
+                "-codec:a", "flac",
+                "-compression_level", "\(settings.flacCompressionLevel)"
+            ])
         }
 
         if settings.ffmpegThreads > 0 {

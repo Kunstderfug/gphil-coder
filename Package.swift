@@ -3,19 +3,16 @@
 import PackageDescription
 
 let package = Package(
-    name: "GPhilCodec",
+    name: "GPhilCoder",
     platforms: [
         .macOS(.v14)
     ],
     products: [
-        .executable(name: "GPhilCodec", targets: ["GPhilCodec"])
+        .executable(name: "GPhilCoder", targets: ["GPhilCoder"])
     ],
     targets: [
         .executableTarget(
-            name: "GPhilCodec",
-            resources: [
-                .process("Resources")
-            ]
+            name: "GPhilCoder"
         )
     ]
 )

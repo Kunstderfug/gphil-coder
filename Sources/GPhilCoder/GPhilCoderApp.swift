@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct GPhilCodecApp: App {
+struct GPhilCoderApp: App {
     @StateObject private var encoder = EncoderViewModel()
 
     var body: some Scene {

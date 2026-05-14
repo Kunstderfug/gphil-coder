@@ -45,7 +45,7 @@ struct ContentView: View {
             HeaderAppIcon()
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("GPhil Codec")
+                Text("GPhilCoder")
                     .font(.system(size: 24, weight: .bold, design: .rounded))
                 Text("Batch audio to MP3, Ogg, and Opus with parallel FFmpeg workers")
                     .font(.callout)
@@ -59,7 +59,7 @@ struct ContentView: View {
             }
         }
         .padding(.horizontal, 22)
-        // .padding(.top, 14)
+        .padding(.top, 54)
         .padding(.bottom, 14)
         .background(.bar)
     }
@@ -139,12 +139,24 @@ struct ContentView: View {
 
             Spacer()
 
-            Button(role: .destructive) {
-                model.clearInputs()
-            } label: {
-                Label("Clear queue", systemImage: "trash")
+            VStack(alignment: .leading, spacing: 8) {
+                Button(role: .destructive) {
+                    model.clearInputs()
+                } label: {
+                    Label("Clear queue", systemImage: "xmark.circle")
+                        .frame(maxWidth: .infinity)
+                }
+                .disabled(model.inputs.isEmpty || model.isEncoding)
+
+                Button(role: .destructive) {
+                    model.trashAllInputSources()
+                } label: {
+                    Label("Move all sources to Trash", systemImage: "trash")
+                        .frame(maxWidth: .infinity)
+                }
+                .disabled(model.inputs.isEmpty || model.isEncoding)
+                .help("Move every queued source file to the macOS Trash")
             }
-            .disabled(model.inputs.isEmpty || model.isEncoding)
         }
         .padding(18)
         .background(Color(nsColor: .controlBackgroundColor))
@@ -219,8 +231,10 @@ struct ContentView: View {
                 ScrollView {
                     LazyVStack(spacing: 8) {
                         ForEach(model.inputs) { item in
-                            InputRow(item: item) {
+                            InputRow(item: item, canModify: !model.isEncoding) {
                                 model.removeInput(item)
+                            } trashSource: {
+                                model.trashInputSource(item)
                             }
                         }
                     }
@@ -353,6 +367,13 @@ struct ContentView: View {
                             .foregroundStyle(.orange)
                             .fixedSize(horizontal: false, vertical: true)
                     }
+
+                    if let warning = model.lossyToLosslessWarningMessage {
+                        Label(warning, systemImage: "exclamationmark.triangle.fill")
+                            .font(.callout)
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
                 .padding(.vertical, 4)
             }
@@ -473,6 +494,21 @@ struct ContentView: View {
                 "512 kbps is valid for stereo Opus. Mono Opus sources may be limited to 256 kbps by libopus."
             )
             .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+
+        case .flac:
+            Picker("Compression", selection: $model.flacCompressionLevel) {
+                ForEach(FLACEncodingOptions.compressionLevels, id: \.self) { level in
+                    Text(FLACEncodingOptions.compressionLevelLabel(level)).tag(level)
+                }
+            }
+            .disabled(model.isEncoding)
+
+            Text(
+                "FLAC is lossless. Higher compression levels can make smaller files, but encoding is slower."
+            )
+            .font(.callout)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
         }
@@ -671,7 +707,9 @@ private struct EmptyQueueView: View {
 
 private struct InputRow: View {
     let item: AudioInputItem
+    let canModify: Bool
     let remove: () -> Void
+    let trashSource: () -> Void
 
     var body: some View {
         HStack(spacing: 12) {
@@ -701,12 +739,23 @@ private struct InputRow: View {
             }
 
             Button {
+                trashSource()
+            } label: {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.red)
+            .disabled(!canModify)
+            .help("Move source file to Trash")
+
+            Button {
                 remove()
             } label: {
                 Image(systemName: "xmark")
             }
             .buttonStyle(.borderless)
             .foregroundStyle(.secondary)
+            .disabled(!canModify)
             .help("Remove from queue")
         }
         .padding(12)
@@ -862,12 +911,23 @@ private struct HeaderAppIcon: View {
 
     private static func loadImage() -> NSImage? {
         if let url = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
-           let image = NSImage(contentsOf: url) {
+            let image = NSImage(contentsOf: url)
+        {
             return image
         }
 
-        if let url = Bundle.module.url(forResource: "appicon", withExtension: "png"),
-           let image = NSImage(contentsOf: url) {
+        let sourceAssetURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("assets/appicon.png")
+
+        if let image = NSImage(contentsOf: sourceAssetURL) {
+            return image
+        }
+
+        if let url = Bundle.main.url(forResource: "appicon", withExtension: "png"),
+            let image = NSImage(contentsOf: url)
+        {
             return image
         }
 

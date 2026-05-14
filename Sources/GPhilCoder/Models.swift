@@ -29,6 +29,7 @@ enum AudioOutputFormat: String, CaseIterable, Identifiable {
     case mp3
     case ogg
     case opus
+    case flac
 
     var id: String { rawValue }
 
@@ -40,6 +41,8 @@ enum AudioOutputFormat: String, CaseIterable, Identifiable {
             "Ogg"
         case .opus:
             "Opus"
+        case .flac:
+            "FLAC"
         }
     }
 
@@ -51,6 +54,8 @@ enum AudioOutputFormat: String, CaseIterable, Identifiable {
             "ogg"
         case .opus:
             "opus"
+        case .flac:
+            "flac"
         }
     }
 
@@ -62,6 +67,8 @@ enum AudioOutputFormat: String, CaseIterable, Identifiable {
             "Ogg Vorbis output with quality-based compression."
         case .opus:
             "Modern Opus output, efficient for music and speech."
+        case .flac:
+            "Lossless FLAC output with selectable compression level."
         }
     }
 
@@ -73,6 +80,8 @@ enum AudioOutputFormat: String, CaseIterable, Identifiable {
             "vorbis"
         case .opus:
             "libopus"
+        case .flac:
+            "flac"
         }
     }
 }
@@ -255,6 +264,27 @@ enum OpusEncodingOptions {
     static let bitrateKbps = [64, 96, 128, 160, 192, 224, 256, 320, 384, 448, 512]
 }
 
+enum FLACEncodingOptions {
+    static let compressionLevels = Array(0...12)
+
+    static func compressionLevelLabel(_ level: Int) -> String {
+        switch level {
+        case 0:
+            "Level 0 - fastest"
+        case 1...4:
+            "Level \(level) - fast"
+        case 5:
+            "Level 5 - default"
+        case 6...8:
+            "Level \(level) - smaller"
+        case 9...11:
+            "Level \(level) - very small"
+        default:
+            "Level 12 - maximum"
+        }
+    }
+}
+
 enum JobState: Equatable {
     case queued
     case running
@@ -350,6 +380,7 @@ struct EncodingSettingsSnapshot {
     let oggBitrateKbps: Int
     let opusRateMode: OpusEncodingOptions.RateMode
     let opusBitrateKbps: Int
+    let flacCompressionLevel: Int
     let ffmpegThreads: Int
     let overwriteExisting: Bool
     let parallelJobs: Int
@@ -374,6 +405,8 @@ struct EncodingSettingsSnapshot {
             }
         case .opus:
             "Opus \(opusBitrateKbps) kbps \(opusRateMode.title)"
+        case .flac:
+            "FLAC \(FLACEncodingOptions.compressionLevelLabel(flacCompressionLevel))"
         }
     }
 }
@@ -403,6 +436,7 @@ struct QueueSettings: Codable {
     var oggBitrateKbps: Int?
     var opusRateMode: String?
     var opusBitrateKbps: Int?
+    var flacCompressionLevel: Int?
     var parallelJobs: Int?
     var ffmpegThreads: Int?
 }

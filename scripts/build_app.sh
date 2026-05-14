@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_NAME="GPhilCodec"
+APP_NAME="GPhilCoder"
 CONFIGURATION="${CONFIGURATION:-release}"
 BUILD_DIR="$ROOT_DIR/.build/$CONFIGURATION"
 DIST_DIR="$ROOT_DIR/dist"
@@ -46,11 +46,11 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
   <key>CFBundleExecutable</key>
   <string>$APP_NAME</string>
   <key>CFBundleIdentifier</key>
-  <string>com.gphil.codec</string>
+  <string>com.gphil.coder</string>
   <key>CFBundleName</key>
-  <string>GPhil Codec</string>
+  <string>GPhilCoder</string>
   <key>CFBundleDisplayName</key>
-  <string>GPhil Codec</string>
+  <string>GPhilCoder</string>
   <key>CFBundleIconFile</key>
   <string>AppIcon</string>
   <key>CFBundlePackageType</key>
