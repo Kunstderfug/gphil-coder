@@ -461,15 +461,22 @@ final class EncoderViewModel: ObservableObject {
     }
 
     func trashAllInputSources() {
-        guard !isEncoding, !inputs.isEmpty else { return }
+        let itemsToTrash = activeInputs
+        guard !isEncoding, !itemsToTrash.isEmpty else { return }
 
-        let count = inputs.count
+        let count = itemsToTrash.count
+        let hiddenCount = inactiveInputCount
         let alert = NSAlert()
-        alert.messageText = "Move all queued source files to Trash?"
-        alert.informativeText =
-            "This will move \(count) source file\(count == 1 ? "" : "s") to the macOS Trash and remove successful items from the queue."
+        alert.messageText = "Move active source files to Trash?"
+        var details =
+            "This will move \(count) active source file\(count == 1 ? "" : "s") to the macOS Trash and remove successful items from the queue."
+        if hiddenCount > 0 {
+            details +=
+                " \(hiddenCount) hidden queued file\(hiddenCount == 1 ? "" : "s") will stay untouched."
+        }
+        alert.informativeText = details
         alert.alertStyle = .warning
-        alert.addButton(withTitle: "Move All to Trash")
+        alert.addButton(withTitle: "Move Active to Trash")
         alert.addButton(withTitle: "Cancel")
 
         guard alert.runModal() == .alertFirstButtonReturn else { return }
@@ -477,7 +484,7 @@ final class EncoderViewModel: ObservableObject {
         var trashedIDs = Set<UUID>()
         var failures: [String] = []
 
-        for item in inputs {
+        for item in itemsToTrash {
             do {
                 try FileManager.default.trashItem(at: item.url, resultingItemURL: nil)
                 trashedIDs.insert(item.id)
@@ -491,10 +498,10 @@ final class EncoderViewModel: ObservableObject {
 
         if failures.isEmpty {
             statusMessage =
-                "Moved \(trashedIDs.count) source file\(trashedIDs.count == 1 ? "" : "s") to Trash."
+                "Moved \(trashedIDs.count) active source file\(trashedIDs.count == 1 ? "" : "s") to Trash."
         } else {
             statusMessage =
-                "Moved \(trashedIDs.count) source file\(trashedIDs.count == 1 ? "" : "s") to Trash. Could not move \(failures.count): \(failures.prefix(3).joined(separator: ", "))\(failures.count > 3 ? "..." : "")."
+                "Moved \(trashedIDs.count) active source file\(trashedIDs.count == 1 ? "" : "s") to Trash. Could not move \(failures.count): \(failures.prefix(3).joined(separator: ", "))\(failures.count > 3 ? "..." : "")."
         }
     }
 

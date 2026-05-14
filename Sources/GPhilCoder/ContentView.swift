@@ -154,11 +154,11 @@ struct ContentView: View {
                 Button(role: .destructive) {
                     model.trashAllInputSources()
                 } label: {
-                    Label("Move all sources to Trash", systemImage: "trash")
+                    Label("Move active sources to Trash", systemImage: "trash")
                         .frame(maxWidth: .infinity)
                 }
-                .disabled(model.inputs.isEmpty || model.isEncoding)
-                .help("Move every queued source file to the macOS Trash")
+                .disabled(model.activeInputs.isEmpty || model.isEncoding)
+                .help("Move only source files matching the active input filters to the macOS Trash")
             }
         }
         .padding(18)
