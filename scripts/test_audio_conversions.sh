@@ -96,6 +96,22 @@ make_input() {
   fi
 }
 
+make_custom_input() {
+  local label="$1"
+  local extension="$2"
+  shift 2
+  local output="$WORK_DIR/input-$label.$extension"
+
+  if "$GENERATOR_FFMPEG" -hide_banner -nostdin -y \
+    -f lavfi -i sine=frequency=440:duration=0.35 \
+    "$@" "$output" >/dev/null 2>"$WORK_DIR/create-$label.log"; then
+    echo "$output"
+  else
+    echo "SKIP input $label ($(tail -n 1 "$WORK_DIR/create-$label.log"))" >&2
+    return 1
+  fi
+}
+
 probe_codec() {
   "$FFPROBE" -hide_banner -v error \
     -show_entries stream=codec_name \
@@ -117,6 +133,11 @@ for input_format in "${INPUT_FORMATS[@]}"; do
     echo "Generated .$input_format ($(probe_codec "$input_path"))"
   fi
 done
+
+if input_path="$(make_custom_input wav-s24le wav -codec:a pcm_s24le)"; then
+  generated_inputs+=("$input_path")
+  echo "Generated .wav 24-bit ($(probe_codec "$input_path"))"
+fi
 
 echo
 
