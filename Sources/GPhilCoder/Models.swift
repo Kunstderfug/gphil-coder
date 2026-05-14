@@ -526,7 +526,7 @@ struct AddSummary {
             parts.append("ignored \(duplicates) duplicate\(duplicates == 1 ? "" : "s")")
         }
         if unsupported > 0 {
-            parts.append("filtered \(unsupported) unsupported item\(unsupported == 1 ? "" : "s")")
+            parts.append("skipped \(unsupported) unsupported item\(unsupported == 1 ? "" : "s")")
         }
         return parts.isEmpty ? "No compatible audio files found." : parts.joined(separator: ", ") + "."
     }

@@ -118,10 +118,10 @@ struct ContentView: View {
 
             VStack(alignment: .leading, spacing: 10) {
                 StatLine(
-                    title: "Queued", value: "\(model.inputs.count)", symbol: "music.note.list",
+                    title: "Active", value: "\(model.activeInputs.count)", symbol: "music.note.list",
                     color: .teal)
                 StatLine(
-                    title: "Input size", value: model.totalInputSize.formattedFileSize,
+                    title: "Active size", value: model.activeInputSize.formattedFileSize,
                     symbol: "externaldrive", color: .indigo)
                 StatLine(
                     title: "Filter", value: model.selectedInputReadableList,
@@ -229,10 +229,12 @@ struct ContentView: View {
         Group {
             if model.inputs.isEmpty {
                 EmptyQueueView()
+            } else if model.activeInputs.isEmpty {
+                EmptyFilteredQueueView(hiddenCount: model.inactiveInputCount)
             } else {
                 ScrollView {
                     LazyVStack(spacing: 8) {
-                        ForEach(model.inputs) { item in
+                        ForEach(model.activeInputs) { item in
                             InputRow(item: item, canModify: !model.isEncoding) {
                                 model.removeInput(item)
                             } trashSource: {
@@ -356,7 +358,7 @@ struct ContentView: View {
                         FormatPill(text: model.outputFormat.title)
                     }
                     Text(
-                        "Input is filtered by extension before jobs are queued. Output uses FFmpeg's \(model.selectedEncoderName) encoder."
+                        "The queue keeps every supported audio file you add. Input filters choose which queued formats are visible and sent to FFmpeg's \(model.selectedEncoderName) encoder."
                     )
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -594,7 +596,7 @@ struct ContentView: View {
         if model.jobs.isEmpty {
             return model.inputs.isEmpty
                 ? "Drop into the workflow by adding files or folders."
-                : "\(model.inputs.count) audio file\(model.inputs.count == 1 ? "" : "s") ready."
+                : "\(model.activeInputs.count) of \(model.inputs.count) queued audio file\(model.inputs.count == 1 ? "" : "s") active."
         }
 
         if model.isEncoding {
@@ -808,6 +810,27 @@ private struct EmptyQueueView: View {
                     .font(.title3.weight(.semibold))
                 Text("Use Add Files or Add Folder to collect audio files for batch encoding.")
                     .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private struct EmptyFilteredQueueView: View {
+    let hiddenCount: Int
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "line.3.horizontal.decrease.circle")
+                .font(.system(size: 56, weight: .light))
+                .foregroundStyle(.orange)
+            VStack(spacing: 5) {
+                Text("No queued files match the active filters")
+                    .font(.title3.weight(.semibold))
+                Text(
+                    "\(hiddenCount) queued file\(hiddenCount == 1 ? "" : "s") will return when its format is re-enabled."
+                )
+                .foregroundStyle(.secondary)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

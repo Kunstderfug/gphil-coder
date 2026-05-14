@@ -164,7 +164,7 @@ final class EncoderViewModel: ObservableObject {
     }
 
     var canEncode: Bool {
-        !inputs.isEmpty && !isEncoding && ffmpegURL != nil
+        !activeInputs.isEmpty && !isEncoding && ffmpegURL != nil
             && (outputMode == .sourceFolders || exportFolder != nil)
     }
 
@@ -192,8 +192,21 @@ final class EncoderViewModel: ObservableObject {
         inputs.reduce(0) { $0 + $1.fileSizeBytes }
     }
 
+    var activeInputs: [AudioInputItem] {
+        inputs.filter { isSelectedInputAudio($0.url) }
+    }
+
+    var inactiveInputCount: Int {
+        inputs.count - activeInputs.count
+    }
+
+    var activeInputSize: Int64 {
+        activeInputs.reduce(0) { $0 + $1.fileSizeBytes }
+    }
+
     var sameFormatInputCount: Int {
-        inputs.filter { $0.url.pathExtension.lowercased() == outputFormat.fileExtension }.count
+        activeInputs.filter { $0.url.pathExtension.lowercased() == outputFormat.fileExtension }
+            .count
     }
 
     var sameFormatWarningMessage: String? {
@@ -206,7 +219,7 @@ final class EncoderViewModel: ObservableObject {
     var lossyToLosslessWarningMessage: String? {
         guard outputFormat == .flac else { return nil }
         let lossyExtensions: Set<String> = ["aac", "m4a", "mp3", "ogg", "opus"]
-        let lossyInputCount = inputs.filter {
+        let lossyInputCount = activeInputs.filter {
             lossyExtensions.contains($0.url.pathExtension.lowercased())
         }.count
         guard lossyInputCount > 0 else { return nil }
@@ -254,6 +267,20 @@ final class EncoderViewModel: ObservableObject {
 
     var hasSelectedInputFilters: Bool {
         !selectedInputExtensions.isEmpty
+    }
+
+    var activeFilterStatusMessage: String {
+        if inputs.isEmpty {
+            return "Input filter set to \(selectedInputReadableList)."
+        }
+
+        let activeCount = activeInputs.count
+        let hiddenCount = inactiveInputCount
+        if hiddenCount == 0 {
+            return "Input filter set to \(selectedInputReadableList). \(activeCount) queued file\(activeCount == 1 ? "" : "s") active."
+        }
+
+        return "Input filter set to \(selectedInputReadableList). \(activeCount) active, \(hiddenCount) hidden until their formats are re-enabled."
     }
 
     var ffmpegSourceTitle: String {
@@ -312,11 +339,6 @@ final class EncoderViewModel: ObservableObject {
     }
 
     func addFiles() {
-        guard hasSelectedInputFilters else {
-            statusMessage = "Select at least one input filter before adding files."
-            return
-        }
-
         let panel = NSOpenPanel()
         panel.title = "Add Audio Files"
         panel.prompt = "Add Files"
@@ -324,7 +346,7 @@ final class EncoderViewModel: ObservableObject {
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.canCreateDirectories = false
-        panel.allowedContentTypes = selectedInputExtensions.compactMap {
+        panel.allowedContentTypes = AudioFormat.inputExtensions.compactMap {
             UTType(filenameExtension: $0)
         }
         panel.directoryURL = lastInputDirectoryURL()
@@ -332,15 +354,10 @@ final class EncoderViewModel: ObservableObject {
         guard panel.runModal() == .OK else { return }
         rememberInputDirectory(fromFiles: panel.urls)
         let summary = addFileURLs(panel.urls)
-        statusMessage = summary.message
+        statusMessage = queueAddStatusMessage(for: summary)
     }
 
     func addFolder() {
-        guard hasSelectedInputFilters else {
-            statusMessage = "Select at least one input filter before adding folders."
-            return
-        }
-
         let panel = NSOpenPanel()
         panel.title = "Add Folder"
         panel.prompt = "Add Folder"
@@ -360,7 +377,7 @@ final class EncoderViewModel: ObservableObject {
             combined.duplicates += summary.duplicates
             combined.unsupported += summary.unsupported
         }
-        statusMessage = combined.message
+        statusMessage = queueAddStatusMessage(for: combined)
     }
 
     func toggleInputFormat(_ format: InputAudioFormat) {
@@ -375,7 +392,8 @@ final class EncoderViewModel: ObservableObject {
         } else {
             selectedInputExtensions.subtract(format.fileExtensions)
         }
-        statusMessage = "Input filter set to \(selectedInputReadableList)."
+        jobs.removeAll()
+        statusMessage = activeFilterStatusMessage
     }
 
     func isInputFormatEnabled(_ format: InputAudioFormat) -> Bool {
@@ -385,13 +403,15 @@ final class EncoderViewModel: ObservableObject {
     func selectAllInputFormats() {
         guard !isEncoding else { return }
         selectedInputExtensions = AudioFormat.inputExtensions
-        statusMessage = "Input filter set to \(selectedInputReadableList)."
+        jobs.removeAll()
+        statusMessage = activeFilterStatusMessage
     }
 
     func deselectAllInputFormats() {
         guard !isEncoding else { return }
         selectedInputExtensions.removeAll()
-        statusMessage = "Input filter set to \(selectedInputReadableList)."
+        jobs.removeAll()
+        statusMessage = activeFilterStatusMessage
     }
 
     func chooseExportFolder() {
@@ -589,7 +609,13 @@ final class EncoderViewModel: ObservableObject {
             return
         }
 
-        let plannedJobs = inputs.map {
+        let itemsToEncode = activeInputs
+        guard !itemsToEncode.isEmpty else {
+            statusMessage = "No queued files match the selected input filters."
+            return
+        }
+
+        let plannedJobs = itemsToEncode.map {
             EncodeJob(item: $0, outputURL: outputURL(for: $0))
         }
         jobs = plannedJobs
@@ -983,6 +1009,15 @@ final class EncoderViewModel: ObservableObject {
     private func setSelectedInputExtensions(_ extensions: Set<String>) {
         let supported = extensions.intersection(AudioFormat.inputExtensions)
         selectedInputExtensions = supported
+        jobs.removeAll()
+    }
+
+    private func queueAddStatusMessage(for summary: AddSummary) -> String {
+        guard summary.added > 0, !inputs.isEmpty else {
+            return summary.message
+        }
+
+        return "\(summary.message) \(activeInputs.count) of \(inputs.count) queued file\(inputs.count == 1 ? "" : "s") active."
     }
 
     private func addFileURLs(_ urls: [URL]) -> AddSummary {
@@ -991,7 +1026,7 @@ final class EncoderViewModel: ObservableObject {
         var additions: [AudioInputItem] = []
 
         for url in urls {
-            guard isSelectedInputAudio(url) else {
+            guard isSupportedAudio(url) else {
                 summary.unsupported += 1
                 continue
             }
@@ -1035,7 +1070,7 @@ final class EncoderViewModel: ObservableObject {
             let values = try? url.resourceValues(forKeys: [.isRegularFileKey])
             guard values?.isRegularFile == true else { continue }
 
-            guard isSelectedInputAudio(url) else {
+            guard isSupportedAudio(url) else {
                 summary.unsupported += 1
                 continue
             }
