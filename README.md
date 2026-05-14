@@ -62,6 +62,15 @@ Use an FFmpeg build that reports `libvorbis` in `ffmpeg -hide_banner -encoders` 
 
 The build script keeps bundled FFmpeg in the conservative LGPL lane by rejecting binaries whose `ffmpeg -hide_banner -buildconf` output contains `--enable-gpl`, `--enable-nonfree`, or `--enable-version3`. Use `ALLOW_NON_LGPL_FFMPEG=1` only for private experiments, not release builds.
 
+To build a local LGPL-compatible, audio-only FFmpeg candidate with libvorbis:
+
+```sh
+./scripts/build_lgpl_ffmpeg.sh
+BUNDLED_FFMPEG=vendor/ffmpeg-lgpl/prefix/bin/ffmpeg ./scripts/build_app.sh
+```
+
+The helper script builds static libogg, libvorbis, libopus, libmp3lame, and a trimmed audio-only FFmpeg into `vendor/ffmpeg-lgpl/`, then validates that the resulting FFmpeg has no GPL/nonfree/version3 configure flags and no Homebrew runtime library links.
+
 The app bundle is written to:
 
 ```text

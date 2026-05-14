@@ -33,9 +33,15 @@ WORK_DIR="$(mktemp -d /tmp/gphilcoder-audio-test.XXXXXX)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
 ENCODERS="$("$FFMPEG" -hide_banner -encoders 2>/dev/null || true)"
+GENERATOR_FFMPEG="${GENERATOR_FFMPEG:-$FFMPEG}"
+GENERATOR_ENCODERS="$("$GENERATOR_FFMPEG" -hide_banner -encoders 2>/dev/null || true)"
 HAS_LIBVORBIS=0
 if [[ "$ENCODERS" == *"libvorbis"* ]]; then
   HAS_LIBVORBIS=1
+fi
+GENERATOR_HAS_LIBVORBIS=0
+if [[ "$GENERATOR_ENCODERS" == *"libvorbis"* ]]; then
+  GENERATOR_HAS_LIBVORBIS=1
 fi
 
 INPUT_FORMATS=(wav aiff flac mp3 m4a aac ogg opus)
@@ -50,7 +56,7 @@ input_args() {
     m4a) echo "-codec:a aac -b:a 192k" ;;
     aac) echo "-codec:a aac -b:a 192k -f adts" ;;
     ogg)
-      if [[ "$HAS_LIBVORBIS" -eq 1 ]]; then
+      if [[ "$GENERATOR_HAS_LIBVORBIS" -eq 1 ]]; then
         echo "-codec:a libvorbis -ac 2 -qscale:a 5"
       else
         echo "-codec:a vorbis -ac 2 -qscale:a 5 -strict -2"
@@ -80,7 +86,7 @@ make_input() {
   local output="$WORK_DIR/input.$format"
   read -r -a args <<<"$(input_args "$format")"
 
-  if "$FFMPEG" -hide_banner -nostdin -y \
+  if "$GENERATOR_FFMPEG" -hide_banner -nostdin -y \
     -f lavfi -i sine=frequency=440:duration=0.35 \
     "${args[@]}" "$output" >/dev/null 2>"$WORK_DIR/create-$format.log"; then
     echo "$output"
@@ -100,6 +106,7 @@ failures=0
 declare -a generated_inputs=()
 
 echo "Using FFmpeg: $FFMPEG"
+echo "Using generator FFmpeg: $GENERATOR_FFMPEG"
 echo "Using ffprobe: $FFPROBE"
 echo "Work dir: $WORK_DIR"
 echo
