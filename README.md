@@ -19,6 +19,7 @@ Native macOS batch audio encoder built with SwiftUI and FFmpeg.
 - Protect same-format encodes by writing `-encoded` output names and blocking exact source overwrites.
 - Warn when transcoding lossy sources to lossless FLAC or WavPack output.
 - Remove queued items, move individual source files to Trash, or move all queued source files to Trash.
+- Restore source files moved to Trash by GPhilCoder when the recorded Trash item still exists.
 - Export beside each source file or into a selected export folder.
 - Preserve nested folder structure when exporting to a custom folder.
 - Process files in parallel while optionally passing a thread count to FFmpeg.

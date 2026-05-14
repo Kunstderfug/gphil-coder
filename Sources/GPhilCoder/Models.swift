@@ -538,6 +538,37 @@ struct QueueInput: Codable {
     let relativeDirectory: String?
 }
 
+struct TrashedSourceRecord: Codable, Identifiable {
+    let id: UUID
+    let name: String
+    let originalPath: String
+    let trashPath: String
+    let sourceRootPath: String?
+    let relativeDirectory: String?
+    let fileSizeBytes: Int64
+    let trashedAt: Date
+
+    init(
+        id: UUID = UUID(),
+        name: String,
+        originalPath: String,
+        trashPath: String,
+        sourceRootPath: String?,
+        relativeDirectory: String?,
+        fileSizeBytes: Int64,
+        trashedAt: Date = Date()
+    ) {
+        self.id = id
+        self.name = name
+        self.originalPath = originalPath
+        self.trashPath = trashPath
+        self.sourceRootPath = sourceRootPath
+        self.relativeDirectory = relativeDirectory
+        self.fileSizeBytes = fileSizeBytes
+        self.trashedAt = trashedAt
+    }
+}
+
 struct AddSummary {
     var added = 0
     var duplicates = 0

@@ -25,6 +25,7 @@ final class EncoderViewModel: ObservableObject {
         static let parallelJobs = "parallelJobs"
         static let ffmpegThreads = "ffmpegThreads"
         static let ffmpegSourcePreference = "ffmpegSourcePreference"
+        static let trashedSourceRecords = "trashedSourceRecords"
     }
 
     private enum QueueFile {
@@ -48,6 +49,9 @@ final class EncoderViewModel: ObservableObject {
     @Published private(set) var systemFFmpegURL: URL?
     @Published private(set) var ffmpegCapabilities = FFmpegCapabilities()
     @Published private(set) var statusMessage = "Add audio files or folders to begin."
+    @Published private(set) var trashedSourceRecords: [TrashedSourceRecord] = [] {
+        didSet { persistTrashedSourceRecords() }
+    }
 
     @Published private(set) var selectedInputExtensions: Set<String> = AudioFormat.inputExtensions {
         didSet {
@@ -269,6 +273,10 @@ final class EncoderViewModel: ObservableObject {
         !selectedInputExtensions.isEmpty
     }
 
+    var canRestoreTrashedSources: Bool {
+        !isEncoding && !trashedSourceRecords.isEmpty
+    }
+
     var activeFilterStatusMessage: String {
         if inputs.isEmpty {
             return "Input filter set to \(selectedInputReadableList)."
@@ -451,7 +459,7 @@ final class EncoderViewModel: ObservableObject {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
         do {
-            try FileManager.default.trashItem(at: item.url, resultingItemURL: nil)
+            try moveItemToTrashAndRecord(item)
             inputs.removeAll { $0.id == item.id }
             jobs.removeAll()
             statusMessage = "Moved \(item.name) to Trash."
@@ -486,7 +494,7 @@ final class EncoderViewModel: ObservableObject {
 
         for item in itemsToTrash {
             do {
-                try FileManager.default.trashItem(at: item.url, resultingItemURL: nil)
+                try moveItemToTrashAndRecord(item)
                 trashedIDs.insert(item.id)
             } catch {
                 failures.append(item.name)
@@ -503,6 +511,77 @@ final class EncoderViewModel: ObservableObject {
             statusMessage =
                 "Moved \(trashedIDs.count) active source file\(trashedIDs.count == 1 ? "" : "s") to Trash. Could not move \(failures.count): \(failures.prefix(3).joined(separator: ", "))\(failures.count > 3 ? "..." : "")."
         }
+    }
+
+    func restoreTrashedSources() {
+        guard canRestoreTrashedSources else { return }
+
+        let count = trashedSourceRecords.count
+        let alert = NSAlert()
+        alert.messageText = "Restore trashed source files?"
+        alert.informativeText =
+            "GPhilCoder will move \(count) recorded Trash item\(count == 1 ? "" : "s") back to their original folder when the Trash item still exists and the original path is free."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Restore")
+        alert.addButton(withTitle: "Cancel")
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        var restored: [TrashedSourceRecord] = []
+        var unavailable: [TrashedSourceRecord] = []
+        var conflicts: [TrashedSourceRecord] = []
+        var failures: [String] = []
+
+        for record in trashedSourceRecords {
+            let trashURL = URL(fileURLWithPath: record.trashPath)
+            let originalURL = URL(fileURLWithPath: record.originalPath)
+
+            guard regularFileExists(atPath: trashURL.path) else {
+                unavailable.append(record)
+                continue
+            }
+
+            guard !FileManager.default.fileExists(atPath: originalURL.path) else {
+                conflicts.append(record)
+                continue
+            }
+
+            do {
+                try FileManager.default.createDirectory(
+                    at: originalURL.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try FileManager.default.moveItem(at: trashURL, to: originalURL)
+                restored.append(record)
+                appendRestoredInput(from: record, restoredURL: originalURL)
+            } catch {
+                failures.append(record.name)
+            }
+        }
+
+        let restoredIDs = Set(restored.map(\.id))
+        trashedSourceRecords.removeAll { restoredIDs.contains($0.id) }
+        jobs.removeAll()
+
+        var details = [
+            "Restored \(restored.count) source file\(restored.count == 1 ? "" : "s")."
+        ]
+        if !unavailable.isEmpty {
+            details.append(
+                "\(unavailable.count) Trash item\(unavailable.count == 1 ? "" : "s") no longer found."
+            )
+        }
+        if !conflicts.isEmpty {
+            details.append(
+                "\(conflicts.count) original path conflict\(conflicts.count == 1 ? "" : "s") skipped."
+            )
+        }
+        if !failures.isEmpty {
+            details.append(
+                "Could not restore \(failures.count): \(failures.prefix(3).joined(separator: ", "))\(failures.count > 3 ? "..." : "")."
+            )
+        }
+        statusMessage = details.joined(separator: " ")
     }
 
     func clearInputs() {
@@ -863,6 +942,12 @@ final class EncoderViewModel: ObservableObject {
     private func loadPersistedSettings() {
         let defaults = UserDefaults.standard
 
+        if let data = defaults.data(forKey: DefaultsKey.trashedSourceRecords),
+            let records = try? JSONDecoder().decode([TrashedSourceRecord].self, from: data)
+        {
+            trashedSourceRecords = records
+        }
+
         if let rawValue = defaults.string(forKey: DefaultsKey.ffmpegSourcePreference),
             let value = FFmpegSourcePreference(rawValue: rawValue)
         {
@@ -1013,10 +1098,67 @@ final class EncoderViewModel: ObservableObject {
         )
     }
 
+    private func persistTrashedSourceRecords() {
+        if trashedSourceRecords.isEmpty {
+            UserDefaults.standard.removeObject(forKey: DefaultsKey.trashedSourceRecords)
+            return
+        }
+
+        if let data = try? JSONEncoder().encode(trashedSourceRecords) {
+            UserDefaults.standard.set(data, forKey: DefaultsKey.trashedSourceRecords)
+        }
+    }
+
     private func setSelectedInputExtensions(_ extensions: Set<String>) {
         let supported = extensions.intersection(AudioFormat.inputExtensions)
         selectedInputExtensions = supported
         jobs.removeAll()
+    }
+
+    private func moveItemToTrashAndRecord(_ item: AudioInputItem) throws {
+        let originalPath = item.url.standardizedFileURL.path(percentEncoded: false)
+        var resultingItemURL: NSURL?
+        try FileManager.default.trashItem(at: item.url, resultingItemURL: &resultingItemURL)
+
+        guard let trashURL = resultingItemURL as URL? else { return }
+
+        let record = TrashedSourceRecord(
+            name: item.name,
+            originalPath: originalPath,
+            trashPath: trashURL.standardizedFileURL.path(percentEncoded: false),
+            sourceRootPath: item.sourceRoot?.standardizedFileURL.path(percentEncoded: false),
+            relativeDirectory: item.relativeDirectory,
+            fileSizeBytes: item.fileSizeBytes
+        )
+        trashedSourceRecords.insert(record, at: 0)
+    }
+
+    private func appendRestoredInput(from record: TrashedSourceRecord, restoredURL: URL) {
+        guard isSupportedAudio(restoredURL) else { return }
+
+        let key = restoredURL.standardizedFileURL.path
+        guard !inputs.contains(where: { $0.url.standardizedFileURL.path == key }) else { return }
+
+        let sourceRoot = record.sourceRootPath.map {
+            URL(fileURLWithPath: $0, isDirectory: true)
+        }
+        let size =
+            (try? restoredURL.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init)
+            ?? record.fileSizeBytes
+        let relativeDirectory =
+            record.relativeDirectory ?? relativeDirectory(for: restoredURL, sourceRoot: sourceRoot)
+
+        inputs.append(
+            AudioInputItem(
+                url: restoredURL,
+                sourceRoot: sourceRoot,
+                relativeDirectory: relativeDirectory,
+                fileSizeBytes: size
+            )
+        )
+        inputs.sort {
+            $0.url.path.localizedCaseInsensitiveCompare($1.url.path) == .orderedAscending
+        }
     }
 
     private func queueAddStatusMessage(for summary: AddSummary) -> String {

@@ -159,6 +159,20 @@ struct ContentView: View {
                 }
                 .disabled(model.activeInputs.isEmpty || model.isEncoding)
                 .help("Move only source files matching the active input filters to the macOS Trash")
+
+                Button {
+                    model.restoreTrashedSources()
+                } label: {
+                    Label(
+                        "Restore trashed sources\(model.trashedSourceRecords.isEmpty ? "" : " (\(model.trashedSourceRecords.count))")",
+                        systemImage: "arrow.uturn.backward.circle"
+                    )
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .frame(maxWidth: .infinity)
+                }
+                .disabled(!model.canRestoreTrashedSources)
+                .help("Restore source files moved to Trash by GPhilCoder")
             }
         }
         .padding(18)
