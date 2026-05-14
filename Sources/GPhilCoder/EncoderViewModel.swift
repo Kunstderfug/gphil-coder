@@ -190,14 +190,26 @@ final class EncoderViewModel: ObservableObject {
 
     var lossyToLosslessWarningMessage: String? {
         guard outputFormat == .flac else { return nil }
+        let lossyExtensions: Set<String> = ["aac", "m4a", "mp3", "ogg", "opus"]
         let lossyInputCount = inputs.filter {
-            $0.url.pathExtension.lowercased() == InputAudioFormat.mp3.fileExtension
+            lossyExtensions.contains($0.url.pathExtension.lowercased())
         }.count
         guard lossyInputCount > 0 else { return nil }
 
-        let noun = lossyInputCount == 1 ? "source is" : "sources are"
+        let noun = lossyInputCount == 1 ? "source appears" : "sources appear"
         return
-            "\(lossyInputCount) \(noun) MP3. FLAC output will be lossless only from the already-compressed MP3 signal; it cannot restore detail lost during earlier lossy encoding."
+            "\(lossyInputCount) \(noun) to be lossy. FLAC output will be lossless only from the already-compressed signal; it cannot restore detail lost during earlier lossy encoding."
+    }
+
+    var nativeOggReencodeWarningMessage: String? {
+        guard outputFormat == .ogg,
+              sameFormatInputCount > 0,
+              !supportsOggBitrate
+        else {
+            return nil
+        }
+
+        return "This FFmpeg build is using the native Vorbis encoder. Ogg-to-Ogg re-encoding may fail on some files; install an FFmpeg build with libvorbis for the most reliable Ogg output."
     }
 
     var supportsOggBitrate: Bool {
@@ -214,7 +226,19 @@ final class EncoderViewModel: ObservableObject {
     }
 
     var selectedInputReadableList: String {
-        AudioFormat.readableList(for: selectedInputExtensions)
+        if selectedInputExtensions == AudioFormat.inputExtensions {
+            return "All formats"
+        }
+
+        let selectedFormats = InputAudioFormat.allCases
+            .filter { !$0.fileExtensions.isDisjoint(with: selectedInputExtensions) }
+            .map(\.title)
+
+        return selectedFormats.isEmpty ? "None" : selectedFormats.joined(separator: ", ")
+    }
+
+    var hasSelectedInputFilters: Bool {
+        !selectedInputExtensions.isEmpty
     }
 
     init() {
@@ -228,8 +252,9 @@ final class EncoderViewModel: ObservableObject {
             ffmpegCapabilities = FFmpegCapabilities.detect(ffmpegURL: ffmpegURL)
             let vorbisStatus =
                 ffmpegCapabilities.hasLibVorbis ? "libvorbis available" : "native Vorbis only"
+            let source = FFmpegLocator.isBundled(ffmpegURL) ? "bundled FFmpeg" : "FFmpeg"
             statusMessage =
-                "Using FFmpeg at \(ffmpegURL.path(percentEncoded: false)) (\(vorbisStatus))."
+                "Using \(source) at \(ffmpegURL.path(percentEncoded: false)) (\(vorbisStatus))."
         } else {
             ffmpegCapabilities = FFmpegCapabilities()
             statusMessage = FFmpegToolError.notFound.localizedDescription
@@ -237,6 +262,11 @@ final class EncoderViewModel: ObservableObject {
     }
 
     func addFiles() {
+        guard hasSelectedInputFilters else {
+            statusMessage = "Select at least one input filter before adding files."
+            return
+        }
+
         let panel = NSOpenPanel()
         panel.title = "Add Audio Files"
         panel.prompt = "Add Files"
@@ -256,6 +286,11 @@ final class EncoderViewModel: ObservableObject {
     }
 
     func addFolder() {
+        guard hasSelectedInputFilters else {
+            statusMessage = "Select at least one input filter before adding folders."
+            return
+        }
+
         let panel = NSOpenPanel()
         panel.title = "Add Folder"
         panel.prompt = "Add Folder"
@@ -280,23 +315,33 @@ final class EncoderViewModel: ObservableObject {
 
     func toggleInputFormat(_ format: InputAudioFormat) {
         guard !isEncoding else { return }
-        let fileExtension = format.fileExtension
+        setInputFormat(format, enabled: !isInputFormatEnabled(format))
+    }
 
-        if selectedInputExtensions.contains(fileExtension) {
-            guard selectedInputExtensions.count > 1 else {
-                statusMessage = "Keep at least one input filter enabled."
-                return
-            }
-            selectedInputExtensions.remove(fileExtension)
+    func setInputFormat(_ format: InputAudioFormat, enabled: Bool) {
+        guard !isEncoding else { return }
+        if enabled {
+            selectedInputExtensions.formUnion(format.fileExtensions)
         } else {
-            selectedInputExtensions.insert(fileExtension)
+            selectedInputExtensions.subtract(format.fileExtensions)
         }
-
         statusMessage = "Input filter set to \(selectedInputReadableList)."
     }
 
     func isInputFormatEnabled(_ format: InputAudioFormat) -> Bool {
-        selectedInputExtensions.contains(format.fileExtension)
+        format.fileExtensions.isSubset(of: selectedInputExtensions)
+    }
+
+    func selectAllInputFormats() {
+        guard !isEncoding else { return }
+        selectedInputExtensions = AudioFormat.inputExtensions
+        statusMessage = "Input filter set to \(selectedInputReadableList)."
+    }
+
+    func deselectAllInputFormats() {
+        guard !isEncoding else { return }
+        selectedInputExtensions.removeAll()
+        statusMessage = "Input filter set to \(selectedInputReadableList)."
     }
 
     func chooseExportFolder() {
@@ -877,7 +922,7 @@ final class EncoderViewModel: ObservableObject {
 
     private func setSelectedInputExtensions(_ extensions: Set<String>) {
         let supported = extensions.intersection(AudioFormat.inputExtensions)
-        selectedInputExtensions = supported.isEmpty ? AudioFormat.inputExtensions : supported
+        selectedInputExtensions = supported
     }
 
     private func addFileURLs(_ urls: [URL]) -> AddSummary {

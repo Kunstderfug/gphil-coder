@@ -1,11 +1,12 @@
 import Foundation
 
 enum AudioFormat {
-    static let inputExtensions: Set<String> = Set(InputAudioFormat.allCases.map(\.fileExtension))
+    static let inputExtensions: Set<String> = Set(InputAudioFormat.allCases.flatMap(\.fileExtensions))
     static let readableInputList = readableList(for: inputExtensions)
 
     static func readableList(for extensions: Set<String>) -> String {
-        extensions.sorted().map { ".\($0)" }.joined(separator: ", ")
+        guard !extensions.isEmpty else { return "None" }
+        return extensions.sorted().map { ".\($0)" }.joined(separator: ", ")
     }
 }
 
@@ -13,15 +14,54 @@ enum InputAudioFormat: String, CaseIterable, Identifiable {
     case flac
     case wav
     case mp3
+    case m4a
+    case aac
+    case aiff
+    case ogg
+    case opus
 
     var id: String { rawValue }
 
     var title: String {
-        rawValue.uppercased()
+        switch self {
+        case .flac:
+            "FLAC"
+        case .wav:
+            "WAV"
+        case .mp3:
+            "MP3"
+        case .m4a:
+            "M4A"
+        case .aac:
+            "AAC"
+        case .aiff:
+            "AIFF"
+        case .ogg:
+            "Ogg"
+        case .opus:
+            "Opus"
+        }
     }
 
-    var fileExtension: String {
-        rawValue
+    var fileExtensions: Set<String> {
+        switch self {
+        case .flac:
+            ["flac"]
+        case .wav:
+            ["wav"]
+        case .mp3:
+            ["mp3"]
+        case .m4a:
+            ["m4a"]
+        case .aac:
+            ["aac"]
+        case .aiff:
+            ["aif", "aiff"]
+        case .ogg:
+            ["ogg"]
+        case .opus:
+            ["opus"]
+        }
     }
 }
 
@@ -181,9 +221,9 @@ enum OggEncodingOptions {
         var detail: String {
             switch self {
             case .bitrate:
-                "Target an average Vorbis bitrate."
+                "Target a total Vorbis audio stream bitrate, not a per-channel bitrate."
             case .quality:
-                "Use Vorbis quality scale. Higher values keep more detail."
+                "Use Vorbis VBR quality scale. Higher values keep more detail, but the displayed bitrate still depends on the source."
             }
         }
     }

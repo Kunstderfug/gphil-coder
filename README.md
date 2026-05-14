@@ -5,7 +5,7 @@ Native macOS batch audio encoder built with SwiftUI and FFmpeg.
 ## Current Scope
 
 - Add individual files or whole folders.
-- Filter inputs to `.flac`, `.wav`, and `.mp3`.
+- Filter inputs to common audio formats: `.flac`, `.wav`, `.mp3`, `.m4a`, `.aac`, `.aif`, `.aiff`, `.ogg`, and `.opus`.
 - Persist selected input filters across launches and queue files.
 - Remember the last selected input folder across launches.
 - Remember the last selected output format, export route, and encoder settings across launches.
@@ -27,6 +27,7 @@ Native macOS batch audio encoder built with SwiftUI and FFmpeg.
 - macOS 14 or newer.
 - Xcode command line tools.
 - FFmpeg available at one of:
+  - bundled in the app at `Contents/Resources/ffmpeg`
   - `/opt/homebrew/bin/ffmpeg`
   - `/usr/local/bin/ffmpeg`
   - `ffmpeg` on `PATH`
@@ -51,8 +52,28 @@ swift run GPhilCoder
 
 The app icon source is `Sources/assets/appicon.png`. The build script regenerates the bundled `.icns` from that file, and `swift run` uses the same PNG for the in-app header.
 
+To bundle a specific FFmpeg binary into the app:
+
+```sh
+BUNDLED_FFMPEG=/path/to/ffmpeg ./scripts/build_app.sh
+```
+
+Use an FFmpeg build that reports `libvorbis` in `ffmpeg -hide_banner -encoders` to enable full Ogg bitrate controls without depending on the user's installed FFmpeg. For distribution, prefer a self-contained/static FFmpeg build; copying a Homebrew `ffmpeg` binary usually leaves links to Homebrew `.dylib` files on the developer machine.
+
+The build script keeps bundled FFmpeg in the conservative LGPL lane by rejecting binaries whose `ffmpeg -hide_banner -buildconf` output contains `--enable-gpl`, `--enable-nonfree`, or `--enable-version3`. Use `ALLOW_NON_LGPL_FFMPEG=1` only for private experiments, not release builds.
+
 The app bundle is written to:
 
 ```text
 dist/GPhilCoder.app
 ```
+
+## Test Common Conversions
+
+```sh
+./scripts/test_audio_conversions.sh
+```
+
+The script generates short synthetic audio files in common input formats, then verifies conversion to MP3, Ogg, Opus, and FLAC with the local FFmpeg build. Same-format re-encodes are skipped so the test focuses on format conversion.
+
+Ogg/Vorbis bitrate values are total stream bitrates, not per-channel bitrates. Quality mode is VBR, so player bitrate readouts vary with source complexity and may be lower than the quality label suggests.

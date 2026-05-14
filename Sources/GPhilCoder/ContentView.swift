@@ -3,6 +3,7 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject private var model: EncoderViewModel
+    @State private var showingInputFilterSheet = false
 
     var body: some View {
         ZStack {
@@ -32,6 +33,10 @@ struct ContentView: View {
             }
         }
         .accentColor(.teal)
+        .sheet(isPresented: $showingInputFilterSheet) {
+            InputFilterSheet()
+                .environmentObject(model)
+        }
     }
 
     private var titlebarSpacer: some View {
@@ -47,7 +52,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("GPhilCoder")
                     .font(.system(size: 24, weight: .bold, design: .rounded))
-                Text("Batch audio to MP3, Ogg, and Opus with parallel FFmpeg workers")
+                Text("Batch audio to MP3, Ogg, Opus, and FLAC with parallel FFmpeg workers")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -167,23 +172,22 @@ struct ContentView: View {
             Label("Input filters", systemImage: "line.3.horizontal.decrease.circle")
                 .font(.subheadline.weight(.semibold))
 
-            HStack(spacing: 12) {
-                ForEach(InputAudioFormat.allCases) { format in
-                    Toggle(
-                        format.title,
-                        isOn: Binding(
-                            get: { model.isInputFormatEnabled(format) },
-                            set: { newValue in
-                                if newValue != model.isInputFormatEnabled(format) {
-                                    model.toggleInputFormat(format)
-                                }
-                            }
-                        )
-                    )
-                    .toggleStyle(.checkbox)
-                    .disabled(model.isEncoding)
+            Button {
+                showingInputFilterSheet = true
+            } label: {
+                HStack(spacing: 8) {
+                    Text(model.selectedInputReadableList)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Spacer()
+                    Image(systemName: "chevron.down")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
                 }
+                .frame(maxWidth: .infinity)
             }
+            .disabled(model.isEncoding)
+            .help("Choose input audio formats")
         }
     }
 
@@ -312,9 +316,8 @@ struct ContentView: View {
                             Text(format.title).tag(format)
                         }
                     }
-                    .pickerStyle(.segmented)
+                    .pickerStyle(.menu)
                     .disabled(model.isEncoding)
-                    .arrowCursorOnHover()
 
                     Text(model.outputFormat.detail)
                         .font(.callout)
@@ -369,6 +372,13 @@ struct ContentView: View {
                     }
 
                     if let warning = model.lossyToLosslessWarningMessage {
+                        Label(warning, systemImage: "exclamationmark.triangle.fill")
+                            .font(.callout)
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    if let warning = model.nativeOggReencodeWarningMessage {
                         Label(warning, systemImage: "exclamationmark.triangle.fill")
                             .font(.callout)
                             .foregroundStyle(.orange)
@@ -466,6 +476,13 @@ struct ContentView: View {
                     }
                 }
                 .disabled(model.isEncoding)
+
+                Text(
+                    "Quality mode does not set a fixed bitrate. Player bitrate readouts show the total stream average, so stereo files are not shown as per-channel values."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             }
 
         case .opus:
@@ -622,6 +639,81 @@ private struct ToolStatusView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+private struct InputFilterSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var model: EncoderViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Input Filters")
+                        .font(.title3.weight(.semibold))
+                    Text("Choose which file extensions are accepted when adding files or folders.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.borderless)
+                .help("Close")
+            }
+
+            Divider()
+
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 12)], spacing: 12) {
+                ForEach(InputAudioFormat.allCases) { format in
+                    Toggle(
+                        format.title,
+                        isOn: Binding(
+                            get: { model.isInputFormatEnabled(format) },
+                            set: { model.setInputFormat(format, enabled: $0) }
+                        )
+                    )
+                    .toggleStyle(.checkbox)
+                    .disabled(model.isEncoding)
+                }
+            }
+
+            Text("Current selection: \(model.selectedInputReadableList)")
+                .font(.callout)
+                .foregroundStyle(model.hasSelectedInputFilters ? Color.secondary : Color.orange)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 10) {
+                Button {
+                    model.selectAllInputFormats()
+                } label: {
+                    Label("Select all", systemImage: "checklist.checked")
+                }
+                .disabled(model.isEncoding)
+
+                Button {
+                    model.deselectAllInputFormats()
+                } label: {
+                    Label("Deselect all", systemImage: "checklist.unchecked")
+                }
+                .disabled(model.isEncoding)
+
+                Spacer()
+
+                Button("Done") {
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(22)
+        .frame(width: 460)
     }
 }
 
