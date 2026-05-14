@@ -44,8 +44,8 @@ if [[ "$GENERATOR_ENCODERS" == *"libvorbis"* ]]; then
   GENERATOR_HAS_LIBVORBIS=1
 fi
 
-INPUT_FORMATS=(wav aiff flac mp3 m4a aac ogg opus)
-OUTPUT_FORMATS=(mp3 ogg opus flac)
+INPUT_FORMATS=(wav aiff flac mp3 m4a aac ogg opus wv)
+OUTPUT_FORMATS=(mp3 ogg opus flac wv)
 
 input_args() {
   case "$1" in
@@ -63,6 +63,7 @@ input_args() {
       fi
       ;;
     opus) echo "-codec:a libopus -b:a 128k -vbr on" ;;
+    wv) echo "-codec:a wavpack" ;;
   esac
 }
 
@@ -78,6 +79,7 @@ output_args() {
       ;;
     opus) echo "-codec:a libopus -b:a 192k -vbr on -compression_level 10" ;;
     flac) echo "-codec:a flac -compression_level 8" ;;
+    wv) echo "-codec:a wavpack" ;;
   esac
 }
 
@@ -139,10 +141,26 @@ if input_path="$(make_custom_input wav-s24le wav -codec:a pcm_s24le)"; then
   echo "Generated .wav 24-bit ($(probe_codec "$input_path"))"
 fi
 
+if input_path="$(make_custom_input flac-s24 flac -af aformat=sample_fmts=s32 -bits_per_raw_sample 24 -codec:a flac)"; then
+  generated_inputs+=("$input_path")
+  echo "Generated .flac 24-bit ($(probe_codec "$input_path"))"
+fi
+
+if input_path="$(make_custom_input wv-s24 wv -af aformat=sample_fmts=s32 -bits_per_raw_sample 24 -codec:a wavpack)"; then
+  generated_inputs+=("$input_path")
+  echo "Generated .wv 24-bit ($(probe_codec "$input_path"))"
+fi
+
+if input_path="$(make_custom_input wv-s32 wv -af aformat=sample_fmts=s32 -codec:a wavpack)"; then
+  generated_inputs+=("$input_path")
+  echo "Generated .wv 32-bit ($(probe_codec "$input_path"))"
+fi
+
 echo
 
 for input_path in "${generated_inputs[@]}"; do
   input_format="${input_path##*.}"
+  input_label="$(basename "${input_path%.*}")"
 
   for output_format in "${OUTPUT_FORMATS[@]}"; do
     if [[ "$input_format" == "$output_format" ]]; then
@@ -150,7 +168,7 @@ for input_path in "${generated_inputs[@]}"; do
       continue
     fi
 
-    output_path="$WORK_DIR/${input_format}-to-${output_format}.$output_format"
+    output_path="$WORK_DIR/${input_label}-to-${output_format}.$output_format"
     read -r -a args <<<"$(output_args "$output_format")"
 
     if "$FFMPEG" -hide_banner -nostdin -y \

@@ -217,7 +217,7 @@ final class EncoderViewModel: ObservableObject {
     }
 
     var lossyToLosslessWarningMessage: String? {
-        guard outputFormat == .flac else { return nil }
+        guard outputFormat.isLossless else { return nil }
         let lossyExtensions: Set<String> = ["aac", "m4a", "mp3", "ogg", "opus"]
         let lossyInputCount = activeInputs.filter {
             lossyExtensions.contains($0.url.pathExtension.lowercased())
@@ -226,7 +226,7 @@ final class EncoderViewModel: ObservableObject {
 
         let noun = lossyInputCount == 1 ? "source appears" : "sources appear"
         return
-            "\(lossyInputCount) \(noun) to be lossy. FLAC output will be lossless only from the already-compressed signal; it cannot restore detail lost during earlier lossy encoding."
+            "\(lossyInputCount) \(noun) to be lossy. \(outputFormat.title) output will be lossless only from the already-compressed signal; it cannot restore detail lost during earlier lossy encoding."
     }
 
     var nativeOggReencodeWarningMessage: String? {

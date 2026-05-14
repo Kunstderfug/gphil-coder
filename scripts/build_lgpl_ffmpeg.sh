@@ -100,6 +100,10 @@ validate_binary() {
     echo "error: FFmpeg build does not include libopus encoder." >&2
     exit 1
   }
+  "$ffmpeg" -hide_banner -encoders | grep -q 'wavpack' || {
+    echo "error: FFmpeg build does not include WavPack encoder." >&2
+    exit 1
+  }
 
   if command -v otool >/dev/null 2>&1 &&
     otool -L "$ffmpeg" | grep -E '/opt/homebrew|/usr/local' >/dev/null; then
@@ -182,10 +186,12 @@ echo "Building ffmpeg-$FFMPEG_VERSION"
     --enable-demuxer=mp3 \
     --enable-demuxer=ogg \
     --enable-demuxer=wav \
+    --enable-demuxer=wv \
     --enable-muxer=flac \
     --enable-muxer=mp3 \
     --enable-muxer=ogg \
     --enable-muxer=opus \
+    --enable-muxer=wv \
     --enable-decoder=aac \
     --enable-decoder=flac \
     --enable-decoder=mp3 \
@@ -203,10 +209,12 @@ echo "Building ffmpeg-$FFMPEG_VERSION"
     --enable-decoder=pcm_s8 \
     --enable-decoder=pcm_u8 \
     --enable-decoder=vorbis \
+    --enable-decoder=wavpack \
     --enable-encoder=flac \
     --enable-encoder=libmp3lame \
     --enable-encoder=libopus \
     --enable-encoder=libvorbis \
+    --enable-encoder=wavpack \
     --enable-parser=aac \
     --enable-parser=flac \
     --enable-parser=mpegaudio \

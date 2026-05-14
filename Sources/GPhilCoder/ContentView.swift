@@ -52,7 +52,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("GPhilCoder")
                     .font(.system(size: 24, weight: .bold, design: .rounded))
-                Text("Batch audio to MP3, Ogg, Opus, and FLAC with parallel FFmpeg workers")
+                Text("Batch audio to MP3, Ogg, Opus, FLAC, and WavPack with parallel FFmpeg workers")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -524,6 +524,14 @@ struct ContentView: View {
 
             Text(
                 "FLAC is lossless. Higher compression levels can make smaller files, but encoding is slower."
+            )
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+
+        case .wavpack:
+            Text(
+                "WavPack output is lossless and preserves high-bit-depth sources. This FFmpeg encoder does not expose a FLAC-style compression level."
             )
             .font(.callout)
             .foregroundStyle(.secondary)

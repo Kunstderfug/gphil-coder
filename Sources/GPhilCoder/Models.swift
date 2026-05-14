@@ -44,6 +44,7 @@ enum InputAudioFormat: String, CaseIterable, Identifiable {
     case aiff
     case ogg
     case opus
+    case wavpack
 
     var id: String { rawValue }
 
@@ -65,6 +66,8 @@ enum InputAudioFormat: String, CaseIterable, Identifiable {
             "Ogg"
         case .opus:
             "Opus"
+        case .wavpack:
+            "WavPack"
         }
     }
 
@@ -86,6 +89,8 @@ enum InputAudioFormat: String, CaseIterable, Identifiable {
             ["ogg"]
         case .opus:
             ["opus"]
+        case .wavpack:
+            ["wv"]
         }
     }
 }
@@ -95,6 +100,7 @@ enum AudioOutputFormat: String, CaseIterable, Identifiable {
     case ogg
     case opus
     case flac
+    case wavpack
 
     var id: String { rawValue }
 
@@ -108,6 +114,8 @@ enum AudioOutputFormat: String, CaseIterable, Identifiable {
             "Opus"
         case .flac:
             "FLAC"
+        case .wavpack:
+            "WavPack"
         }
     }
 
@@ -121,6 +129,8 @@ enum AudioOutputFormat: String, CaseIterable, Identifiable {
             "opus"
         case .flac:
             "flac"
+        case .wavpack:
+            "wv"
         }
     }
 
@@ -134,6 +144,8 @@ enum AudioOutputFormat: String, CaseIterable, Identifiable {
             "Modern Opus output, efficient for music and speech."
         case .flac:
             "Lossless FLAC output with selectable compression level."
+        case .wavpack:
+            "Lossless WavPack output, excellent for high-bit-depth audio archives."
         }
     }
 
@@ -147,6 +159,17 @@ enum AudioOutputFormat: String, CaseIterable, Identifiable {
             "libopus"
         case .flac:
             "flac"
+        case .wavpack:
+            "wavpack"
+        }
+    }
+
+    var isLossless: Bool {
+        switch self {
+        case .flac, .wavpack:
+            true
+        case .mp3, .ogg, .opus:
+            false
         }
     }
 }
@@ -473,6 +496,8 @@ struct EncodingSettingsSnapshot {
             "Opus \(opusBitrateKbps) kbps \(opusRateMode.title)"
         case .flac:
             "FLAC \(FLACEncodingOptions.compressionLevelLabel(flacCompressionLevel))"
+        case .wavpack:
+            "WavPack lossless"
         }
     }
 }

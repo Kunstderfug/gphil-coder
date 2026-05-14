@@ -181,6 +181,9 @@ struct FFmpegEncoder {
                 "-codec:a", "flac",
                 "-compression_level", "\(settings.flacCompressionLevel)"
             ])
+
+        case .wavpack:
+            arguments.append(contentsOf: ["-codec:a", "wavpack"])
         }
 
         if settings.ffmpegThreads > 0 {

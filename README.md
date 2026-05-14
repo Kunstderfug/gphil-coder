@@ -5,7 +5,7 @@ Native macOS batch audio encoder built with SwiftUI and FFmpeg.
 ## Current Scope
 
 - Add individual files or whole folders.
-- Filter inputs to common audio formats: `.flac`, `.wav`, `.mp3`, `.m4a`, `.aac`, `.aif`, `.aiff`, `.ogg`, and `.opus`.
+- Filter inputs to common audio formats: `.flac`, `.wav`, `.mp3`, `.m4a`, `.aac`, `.aif`, `.aiff`, `.ogg`, `.opus`, and `.wv`.
 - Persist selected input filters across launches and queue files.
 - Remember the last selected input folder across launches.
 - Remember the last selected output format, export route, and encoder settings across launches.
@@ -14,9 +14,10 @@ Native macOS batch audio encoder built with SwiftUI and FFmpeg.
 - Encode audio to Ogg Vorbis. Bitrate mode uses `libvorbis` when the installed FFmpeg build provides it; otherwise use quality mode with FFmpeg's native `vorbis` encoder.
 - Encode audio to Opus with `libopus`.
 - Encode audio to lossless FLAC with selectable compression level.
+- Encode audio to lossless WavPack.
 - Choose format-specific settings: MP3 VBR/CBR/ABR, Ogg quality or bitrate, Opus VBR/CVBR/CBR with bitrates up to 512 kbps, and FLAC compression level.
 - Protect same-format encodes by writing `-encoded` output names and blocking exact source overwrites.
-- Warn when transcoding lossy MP3 sources to lossless FLAC output.
+- Warn when transcoding lossy sources to lossless FLAC or WavPack output.
 - Remove queued items, move individual source files to Trash, or move all queued source files to Trash.
 - Export beside each source file or into a selected export folder.
 - Preserve nested folder structure when exporting to a custom folder.
@@ -83,6 +84,6 @@ dist/GPhilCoder.app
 ./scripts/test_audio_conversions.sh
 ```
 
-The script generates short synthetic audio files in common input formats, then verifies conversion to MP3, Ogg, Opus, and FLAC with the local FFmpeg build. Same-format re-encodes are skipped so the test focuses on format conversion.
+The script generates short synthetic audio files in common input formats, then verifies conversion to MP3, Ogg, Opus, FLAC, and WavPack with the local FFmpeg build. Same-format re-encodes are skipped so the test focuses on format conversion.
 
 Ogg/Vorbis bitrate values are total stream bitrates, not per-channel bitrates. Quality mode is VBR, so player bitrate readouts vary with source complexity and may be lower than the quality label suggests.
