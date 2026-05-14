@@ -2,6 +2,9 @@
 .build/
 dist/
 vendor/
+restore-plan-*/
+__pycache__/
+*.pyc
 *.xcuserdata/
 DerivedData/
 *.swp

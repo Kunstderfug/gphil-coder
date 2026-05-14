@@ -88,3 +88,28 @@ dist/GPhilCoder.app
 The script generates short synthetic audio files in common input formats, then verifies conversion to MP3, Ogg, Opus, FLAC, and WavPack with the local FFmpeg build. Same-format re-encodes are skipped so the test focuses on format conversion.
 
 Ogg/Vorbis bitrate values are total stream bitrates, not per-channel bitrates. Quality mode is VBR, so player bitrate readouts vary with source complexity and may be lower than the quality label suggests.
+
+## Plan File Restore From Backup
+
+If source files were copied out of Trash into a temporary folder but their
+original paths are unknown, use the restore planner to infer paths from a
+structured backup tree. It is non-destructive by default.
+
+```sh
+./scripts/plan_restore_from_backup.py \
+  --deleted-dir "/path/to/deleted-files" \
+  --backup-root "/Volumes/STUDIO_PROJECTS" \
+  --restore-root "/Volumes/PROJECTS" \
+  --output-dir restore-plan-projects
+```
+
+The helper writes:
+
+- `restore_plan.json` with all matches, missing files, and ambiguous files.
+- `restore_plan.csv` for spreadsheet review.
+- `restore_copy.sh`, a reviewable shell script that copies matched files back
+  to the inferred `/Volumes/PROJECTS/...` path without overwriting by default.
+
+By default the generated copy script restores from the deleted-files folder. Use
+`--copy-source backup` if you prefer to restore from the backup tree instead.
+Run with `--apply` only after reviewing the plan.
