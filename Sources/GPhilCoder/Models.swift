@@ -353,6 +353,7 @@ enum OpusEncodingOptions {
 }
 
 enum FLACEncodingOptions {
+    static let maximumChannelCount = 8
     static let compressionLevels = Array(0...12)
 
     static func compressionLevelLabel(_ level: Int) -> String {
@@ -373,6 +374,14 @@ enum FLACEncodingOptions {
     }
 }
 
+enum WavPackEncodingOptions {
+    static let compatibleNamedChannelCount = 18
+}
+
+enum MultichannelSplitOptions {
+    static let wavPackGroupSize = 10
+}
+
 enum JobState: Equatable {
     case queued
     case running
@@ -389,6 +398,23 @@ enum JobState: Equatable {
             "Encoding"
         case .succeeded:
             "Done"
+        case .skipped:
+            "Skipped"
+        case .failed:
+            "Failed"
+        case .cancelled:
+            "Cancelled"
+        }
+    }
+
+    var filterTitle: String {
+        switch self {
+        case .queued:
+            "Queued"
+        case .running:
+            "Running"
+        case .succeeded:
+            "Success"
         case .skipped:
             "Skipped"
         case .failed:
@@ -470,6 +496,7 @@ struct EncodingSettingsSnapshot {
     let opusRateMode: OpusEncodingOptions.RateMode
     let opusBitrateKbps: Int
     let flacCompressionLevel: Int
+    let splitOversizedMultichannel: Bool
     let ffmpegThreads: Int
     let overwriteExisting: Bool
     let parallelJobs: Int
@@ -495,9 +522,13 @@ struct EncodingSettingsSnapshot {
         case .opus:
             "Opus \(opusBitrateKbps) kbps \(opusRateMode.title)"
         case .flac:
-            "FLAC \(FLACEncodingOptions.compressionLevelLabel(flacCompressionLevel))"
+            splitOversizedMultichannel
+                ? "FLAC \(FLACEncodingOptions.compressionLevelLabel(flacCompressionLevel)) with multichannel split"
+                : "FLAC \(FLACEncodingOptions.compressionLevelLabel(flacCompressionLevel))"
         case .wavpack:
-            "WavPack lossless"
+            splitOversizedMultichannel
+                ? "WavPack lossless with multichannel split"
+                : "WavPack lossless"
         }
     }
 }
@@ -528,6 +559,7 @@ struct QueueSettings: Codable {
     var opusRateMode: String?
     var opusBitrateKbps: Int?
     var flacCompressionLevel: Int?
+    var splitOversizedMultichannel: Bool?
     var parallelJobs: Int?
     var ffmpegThreads: Int?
 }

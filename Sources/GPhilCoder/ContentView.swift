@@ -57,9 +57,11 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("GPhilCoder")
                     .font(.system(size: 24, weight: .bold, design: .rounded))
-                Text("Batch audio to MP3, Ogg, Opus, FLAC, and WavPack with parallel FFmpeg workers")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+                Text(
+                    "Batch audio to MP3, Ogg, Opus, FLAC, and WavPack with parallel FFmpeg workers"
+                )
+                .font(.callout)
+                .foregroundStyle(.secondary)
             }
 
             Spacer()
@@ -67,7 +69,7 @@ struct ContentView: View {
             ToolStatusView()
         }
         .padding(.horizontal, 22)
-        .padding(.top, 54)
+        .padding(.top, 34)
         .padding(.bottom, 14)
         .background(.bar)
     }
@@ -104,7 +106,7 @@ struct ContentView: View {
                             .minimumScaleFactor(0.85)
                             .frame(maxWidth: .infinity)
                     }
-                    .disabled(model.inputs.isEmpty || model.isEncoding)
+                    .disabled(!model.canSaveQueue)
 
                     Button {
                         model.loadQueue()
@@ -123,7 +125,8 @@ struct ContentView: View {
 
             VStack(alignment: .leading, spacing: 10) {
                 StatLine(
-                    title: "Active", value: "\(model.activeInputs.count)", symbol: "music.note.list",
+                    title: "Active", value: "\(model.activeInputs.count)",
+                    symbol: "music.note.list",
                     color: .teal)
                 StatLine(
                     title: "Active size", value: model.activeInputSize.formattedFileSize,
@@ -159,11 +162,16 @@ struct ContentView: View {
                 Button(role: .destructive) {
                     model.trashAllInputSources()
                 } label: {
-                    Label("Move active sources to Trash", systemImage: "trash")
-                        .frame(maxWidth: .infinity)
+                    Label(
+                        model.jobStateFilterTitle == nil
+                            ? "Move active sources to Trash" : "Move filtered sources to Trash",
+                        systemImage: "trash"
+                    )
+                    .frame(maxWidth: .infinity)
                 }
-                .disabled(model.activeInputs.isEmpty || model.isEncoding)
-                .help("Move only source files matching the active input filters to the macOS Trash")
+                .disabled(!model.canTrashQueueSources)
+                .help(
+                    "Move only source files matching the current queue filters to the macOS Trash")
 
                 Button {
                     model.restoreTrashedSources()
@@ -178,6 +186,20 @@ struct ContentView: View {
                 }
                 .disabled(!model.canRestoreTrashedSources)
                 .help("Restore source files moved to Trash by GPhilCoder")
+
+                Button(role: .destructive) {
+                    model.clearTrashedSourceRecords()
+                } label: {
+                    Label(
+                        "Clear restore records\(model.trashedSourceRecords.isEmpty ? "" : " (\(model.trashedSourceRecords.count))")",
+                        systemImage: "trash.slash"
+                    )
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .frame(maxWidth: .infinity)
+                }
+                .disabled(!model.canClearTrashedSourceRecords)
+                .help("Forget saved restore records without changing any files")
 
                 Button {
                     showingRestoreFromBackupSheet = true
@@ -238,8 +260,11 @@ struct ContentView: View {
                         running: model.runningCount,
                         queued: model.queuedCount,
                         skipped: model.skippedCount,
-                        failed: model.failedCount
-                    )
+                        failed: model.failedCount,
+                        selectedState: model.jobStateFilter
+                    ) { state in
+                        model.toggleJobStateFilter(state)
+                    }
                 }
             }
             .padding(.horizontal, 22)
@@ -279,15 +304,21 @@ struct ContentView: View {
     }
 
     private var jobList: some View {
-        ScrollView {
-            LazyVStack(spacing: 8) {
-                ForEach(model.jobs) { job in
-                    JobRow(job: job) {
-                        model.revealOutput(for: job)
+        Group {
+            if model.visibleJobs.isEmpty {
+                EmptyJobFilterView(filterTitle: model.jobStateFilterTitle ?? "selected")
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 8) {
+                        ForEach(model.visibleJobs) { job in
+                            JobRow(job: job) {
+                                model.revealOutput(for: job)
+                            }
+                        }
                     }
+                    .padding(18)
                 }
             }
-            .padding(18)
         }
     }
 
@@ -553,17 +584,38 @@ struct ContentView: View {
             .disabled(model.isEncoding)
 
             Text(
-                "FLAC is lossless. Higher compression levels can make smaller files, but encoding is slower."
+                "FLAC is lossless. Higher compression levels can make smaller files, but encoding is slower. FLAC supports up to 8 channels; use WavPack for larger immersive layouts."
             )
             .font(.callout)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
 
+            multichannelSplitToggle
+
         case .wavpack:
             Text(
-                "WavPack output is lossless and preserves high-bit-depth sources. This FFmpeg encoder does not expose a FLAC-style compression level."
+                "WavPack output is lossless and preserves high-bit-depth sources. For DAW/player compatibility, keep immersive layouts within the 18 standard named speaker channels; larger layouts should stay as WAV/RF64/W64 or split stems."
             )
             .font(.callout)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+
+            multichannelSplitToggle
+        }
+    }
+
+    private var multichannelSplitToggle: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle(
+                "Split oversized multichannel sources",
+                isOn: $model.splitOversizedMultichannel
+            )
+            .disabled(model.isEncoding)
+
+            Text(
+                "When a source exceeds the selected codec's compatible channel count, write channel-order chunks instead of one unsupported file. WavPack uses chunks like _ch1-10 and _ch11-21; FLAC uses up to 8 channels per chunk."
+            )
+            .font(.caption)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
         }
@@ -641,6 +693,11 @@ struct ContentView: View {
             return "\(model.runningCount) running, \(model.queuedCount) waiting."
         }
 
+        if let filterTitle = model.jobStateFilterTitle {
+            return
+                "\(model.visibleJobCount) \(filterTitle.lowercased()) job\(model.visibleJobCount == 1 ? "" : "s") shown. Queue actions use this filtered set."
+        }
+
         return
             "\(model.completedCount) done, \(model.skippedCount) skipped, \(model.failedCount) failed."
     }
@@ -655,8 +712,12 @@ private struct ToolStatusView: View {
                 .foregroundStyle(model.ffmpegURL == nil ? .orange : .green)
 
             VStack(alignment: .leading, spacing: 1) {
-                Text(model.ffmpegURL == nil ? "\(model.ffmpegSourceTitle) FFmpeg missing" : "\(model.ffmpegSourceTitle) FFmpeg ready")
-                    .font(.subheadline.weight(.semibold))
+                Text(
+                    model.ffmpegURL == nil
+                        ? "\(model.ffmpegSourceTitle) FFmpeg missing"
+                        : "\(model.ffmpegSourceTitle) FFmpeg ready"
+                )
+                .font(.subheadline.weight(.semibold))
                 Text(model.activeFFmpegPath)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -676,7 +737,9 @@ private struct ToolStatusView: View {
             .controlSize(.small)
             .frame(width: 118)
             .disabled(model.isEncoding)
-            .help("Choose whether encoding uses the app-bundled FFmpeg or the FFmpeg installed on this Mac.")
+            .help(
+                "Choose whether encoding uses the app-bundled FFmpeg or the FFmpeg installed on this Mac."
+            )
 
             Button {
                 model.refreshFFmpeg()
@@ -806,34 +869,97 @@ private struct JobSummaryStrip: View {
     let queued: Int
     let skipped: Int
     let failed: Int
+    let selectedState: JobState?
+    let toggle: (JobState) -> Void
 
     var body: some View {
         HStack(spacing: 8) {
-            SummaryChip(value: completed, symbol: "checkmark", color: .green)
-            SummaryChip(value: running, symbol: "waveform", color: .teal)
-            SummaryChip(value: queued, symbol: "clock", color: .secondary)
-            SummaryChip(value: skipped, symbol: "forward.end", color: .orange)
-            SummaryChip(value: failed, symbol: "xmark", color: .red)
+            SummaryChip(
+                title: "Success",
+                value: completed,
+                symbol: "checkmark",
+                color: .green,
+                isSelected: selectedState == .succeeded
+            ) {
+                toggle(.succeeded)
+            }
+            SummaryChip(
+                title: "Running",
+                value: running,
+                symbol: "waveform",
+                color: .teal,
+                isSelected: selectedState == .running
+            ) {
+                toggle(.running)
+            }
+            SummaryChip(
+                title: "Queued",
+                value: queued,
+                symbol: "clock",
+                color: .secondary,
+                isSelected: selectedState == .queued
+            ) {
+                toggle(.queued)
+            }
+            SummaryChip(
+                title: "Skipped",
+                value: skipped,
+                symbol: "forward.end",
+                color: .orange,
+                isSelected: selectedState == .skipped
+            ) {
+                toggle(.skipped)
+            }
+            SummaryChip(
+                title: "Failed",
+                value: failed,
+                symbol: "xmark",
+                color: .red,
+                isSelected: selectedState == .failed
+            ) {
+                toggle(.failed)
+            }
         }
     }
 }
 
 private struct SummaryChip: View {
+    let title: String
     let value: Int
     let symbol: String
     let color: Color
+    let isSelected: Bool
+    let action: () -> Void
 
     var body: some View {
-        HStack(spacing: 5) {
-            Image(systemName: symbol)
-            Text("\(value)")
-                .fontWeight(.semibold)
+        Button {
+            action()
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: symbol)
+                Text(title)
+                    .lineLimit(1)
+                Text("\(value)")
+                    .fontWeight(.semibold)
+                    .monospacedDigit()
+            }
+            .font(.caption)
+            .foregroundStyle(color)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(
+                isSelected
+                    ? color.opacity(0.18) : Color(nsColor: .quaternaryLabelColor).opacity(0.18),
+                in: Capsule()
+            )
+            .overlay {
+                Capsule()
+                    .stroke(isSelected ? color.opacity(0.7) : Color.clear, lineWidth: 1)
+            }
         }
-        .font(.caption)
-        .foregroundStyle(color)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 5)
-        .background(.quaternary, in: Capsule())
+        .buttonStyle(.plain)
+        .disabled(value == 0 && !isSelected)
+        .help(isSelected ? "Show all jobs" : "Show only \(title.lowercased()) jobs")
     }
 }
 
@@ -869,6 +995,25 @@ private struct EmptyFilteredQueueView: View {
                     "\(hiddenCount) queued file\(hiddenCount == 1 ? "" : "s") will return when its format is re-enabled."
                 )
                 .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private struct EmptyJobFilterView: View {
+    let filterTitle: String
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "line.3.horizontal.decrease.circle")
+                .font(.system(size: 56, weight: .light))
+                .foregroundStyle(.orange)
+            VStack(spacing: 5) {
+                Text("No \(filterTitle.lowercased()) jobs")
+                    .font(.title3.weight(.semibold))
+                Text("Click the selected badge again to show all encoding jobs.")
+                    .foregroundStyle(.secondary)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1032,7 +1177,7 @@ private struct JobRow: View {
             "Output: \(job.outputURL.path(percentEncoded: false))",
             "",
             "Message:",
-            job.message
+            job.message,
         ].joined(separator: "\n")
     }
 

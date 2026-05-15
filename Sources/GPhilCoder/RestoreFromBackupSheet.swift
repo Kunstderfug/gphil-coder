@@ -195,6 +195,16 @@ struct RestoreFromBackupSheet: View {
 
                 Spacer()
 
+                if model.canCopyRestoreUnresolvedItemsToRestoreRoot, !model.restorePlanRecords.isEmpty {
+                    Button {
+                        model.copyRestoreUnresolvedItemsToRestoreRoot()
+                    } label: {
+                        Label("Copy to Restore root", systemImage: "tray.and.arrow.down")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Copy unresolved files into a holding folder inside the restore root")
+                }
+
                 if model.canExportRestoreUnresolvedItems, !model.restorePlanRecords.isEmpty {
                     Button {
                         model.exportRestoreUnresolvedItems()
@@ -258,6 +268,8 @@ struct RestoreFromBackupSheet: View {
                         phase: model.restorePlanProgress?.phase
                     ) {
                         model.exportRestoreUnresolvedItems()
+                    } copyToRestoreRoot: {
+                        model.copyRestoreUnresolvedItemsToRestoreRoot()
                     }
                 } else {
                     RestorePlanEmptyState(
@@ -324,6 +336,7 @@ private struct RestoreLiveUnresolvedList: View {
     let restoredCount: Int
     let phase: RestorePlanProgressPhase?
     let export: () -> Void
+    let copyToRestoreRoot: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -332,6 +345,14 @@ private struct RestoreLiveUnresolvedList: View {
                     .font(.callout.weight(.semibold))
 
                 Spacer()
+
+                Button {
+                    copyToRestoreRoot()
+                } label: {
+                    Label("Copy to Restore root", systemImage: "tray.and.arrow.down")
+                }
+                .buttonStyle(.borderless)
+                .help("Copy this unresolved list into a holding folder inside the restore root")
 
                 Button {
                     export()

@@ -22,10 +22,14 @@ final class EncoderViewModel: ObservableObject {
         static let opusRateMode = "opusRateMode"
         static let opusBitrateKbps = "opusBitrateKbps"
         static let flacCompressionLevel = "flacCompressionLevel"
+        static let splitOversizedMultichannel = "splitOversizedMultichannel"
         static let parallelJobs = "parallelJobs"
         static let ffmpegThreads = "ffmpegThreads"
         static let ffmpegSourcePreference = "ffmpegSourcePreference"
         static let trashedSourceRecords = "trashedSourceRecords"
+        static let restoreDeletedFolderPath = "restoreDeletedFolderPath"
+        static let restoreBackupRootPath = "restoreBackupRootPath"
+        static let restoreDestinationRootPath = "restoreDestinationRootPath"
     }
 
     private enum QueueFile {
@@ -68,8 +72,16 @@ final class EncoderViewModel: ObservableObject {
         let files: [RestoreUnresolvedFile]
     }
 
+    private struct RestoreUnresolvedCopyResult: Sendable {
+        var copied = 0
+        var failed = 0
+        var copiedURLs: [URL] = []
+        var failedNames: [String] = []
+    }
+
     @Published private(set) var inputs: [AudioInputItem] = []
     @Published private(set) var jobs: [EncodeJob] = []
+    @Published var jobStateFilter: JobState?
     @Published private(set) var isEncoding = false
     @Published private(set) var ffmpegURL: URL?
     @Published private(set) var bundledFFmpegURL: URL?
@@ -81,13 +93,23 @@ final class EncoderViewModel: ObservableObject {
     }
     @Published private(set) var pendingTrashSourceRecords: [PendingTrashSourceRecord] = []
     @Published var restoreDeletedFolder: URL? {
-        didSet { invalidateBackupRestorePlanIfChanged(from: oldValue, to: restoreDeletedFolder) }
+        didSet {
+            persistOptionalDirectory(restoreDeletedFolder, forKey: DefaultsKey.restoreDeletedFolderPath)
+            invalidateBackupRestorePlanIfChanged(from: oldValue, to: restoreDeletedFolder)
+        }
     }
     @Published var restoreBackupRoot: URL? {
-        didSet { invalidateBackupRestorePlanIfChanged(from: oldValue, to: restoreBackupRoot) }
+        didSet {
+            persistOptionalDirectory(restoreBackupRoot, forKey: DefaultsKey.restoreBackupRootPath)
+            invalidateBackupRestorePlanIfChanged(from: oldValue, to: restoreBackupRoot)
+        }
     }
     @Published var restoreDestinationRoot: URL? {
         didSet {
+            persistOptionalDirectory(
+                restoreDestinationRoot,
+                forKey: DefaultsKey.restoreDestinationRootPath
+            )
             invalidateBackupRestorePlanIfChanged(from: oldValue, to: restoreDestinationRoot)
         }
     }
@@ -199,6 +221,15 @@ final class EncoderViewModel: ObservableObject {
         }
     }
 
+    @Published var splitOversizedMultichannel = true {
+        didSet {
+            UserDefaults.standard.set(
+                splitOversizedMultichannel,
+                forKey: DefaultsKey.splitOversizedMultichannel
+            )
+        }
+    }
+
     @Published var parallelJobs = max(1, min(4, ProcessInfo.processInfo.activeProcessorCount)) {
         didSet { UserDefaults.standard.set(parallelJobs, forKey: DefaultsKey.parallelJobs) }
     }
@@ -232,6 +263,14 @@ final class EncoderViewModel: ObservableObject {
             && (outputMode == .sourceFolders || exportFolder != nil)
     }
 
+    var canSaveQueue: Bool {
+        !queueItemsForActions.isEmpty && !isEncoding
+    }
+
+    var canTrashQueueSources: Bool {
+        !queueItemsForActions.isEmpty && !isEncoding
+    }
+
     var completedCount: Int {
         jobs.filter { $0.state == .succeeded }.count
     }
@@ -250,6 +289,25 @@ final class EncoderViewModel: ObservableObject {
 
     var queuedCount: Int {
         jobs.filter { $0.state == .queued }.count
+    }
+
+    var visibleJobs: [EncodeJob] {
+        guard let jobStateFilter else { return jobs }
+        return jobs.filter { $0.state == jobStateFilter }
+    }
+
+    var visibleJobCount: Int {
+        visibleJobs.count
+    }
+
+    var jobStateFilterTitle: String? {
+        jobStateFilter?.filterTitle
+    }
+
+    var queueItemsForActions: [AudioInputItem] {
+        guard !jobs.isEmpty, jobStateFilter != nil else { return activeInputs }
+        let visibleItemIDs = Set(visibleJobs.map(\.item.id))
+        return activeInputs.filter { visibleItemIDs.contains($0.id) }
     }
 
     var totalInputSize: Int64 {
@@ -337,6 +395,10 @@ final class EncoderViewModel: ObservableObject {
         !isEncoding && !trashedSourceRecords.isEmpty
     }
 
+    var canClearTrashedSourceRecords: Bool {
+        !isEncoding && !trashedSourceRecords.isEmpty
+    }
+
     var canBuildBackupRestorePlan: Bool {
         restoreDeletedFolder != nil && restoreBackupRoot != nil && restoreDestinationRoot != nil
             && !isRestorePlanning && !isRestoringFromPlan
@@ -348,6 +410,11 @@ final class EncoderViewModel: ObservableObject {
 
     var canExportRestoreUnresolvedItems: Bool {
         !restoreUnresolvedExportItems.isEmpty
+    }
+
+    var canCopyRestoreUnresolvedItemsToRestoreRoot: Bool {
+        restoreDestinationRoot != nil && !restoreUnresolvedExportItems.isEmpty
+            && !isRestorePlanning && !isRestoringFromPlan
     }
 
     var restorePlanAlreadyRestoredCount: Int {
@@ -544,7 +611,25 @@ final class EncoderViewModel: ObservableObject {
             selectedInputExtensions.subtract(format.fileExtensions)
         }
         jobs.removeAll()
+        jobStateFilter = nil
         statusMessage = activeFilterStatusMessage
+    }
+
+    func toggleJobStateFilter(_ state: JobState) {
+        guard !jobs.isEmpty else { return }
+        jobStateFilter = jobStateFilter == state ? nil : state
+        if let jobStateFilter {
+            statusMessage =
+                "Showing \(visibleJobCount) \(jobStateFilter.filterTitle.lowercased()) job\(visibleJobCount == 1 ? "" : "s"). Queue actions use this filtered set."
+        } else {
+            statusMessage = "Showing all encoding jobs."
+        }
+    }
+
+    func clearJobStateFilter() {
+        guard jobStateFilter != nil else { return }
+        jobStateFilter = nil
+        statusMessage = "Showing all encoding jobs."
     }
 
     func isInputFormatEnabled(_ format: InputAudioFormat) -> Bool {
@@ -555,6 +640,7 @@ final class EncoderViewModel: ObservableObject {
         guard !isEncoding else { return }
         selectedInputExtensions = AudioFormat.inputExtensions
         jobs.removeAll()
+        jobStateFilter = nil
         statusMessage = activeFilterStatusMessage
     }
 
@@ -562,6 +648,7 @@ final class EncoderViewModel: ObservableObject {
         guard !isEncoding else { return }
         selectedInputExtensions.removeAll()
         jobs.removeAll()
+        jobStateFilter = nil
         statusMessage = activeFilterStatusMessage
     }
 
@@ -585,6 +672,7 @@ final class EncoderViewModel: ObservableObject {
         guard !isEncoding else { return }
         inputs.removeAll { $0.id == item.id }
         jobs.removeAll()
+        jobStateFilter = nil
         statusMessage = inputs.isEmpty ? "Queue cleared." : "Removed \(item.name)."
     }
 
@@ -614,6 +702,7 @@ final class EncoderViewModel: ObservableObject {
             let result = try moveItemToTrashAndRecord(item, pendingRecord: pendingRecord)
             inputs.removeAll { $0.id == item.id }
             jobs.removeAll()
+            jobStateFilter = nil
             if result == .restoreLedgerRecorded {
                 try? removePendingTrashRecords(ids: [pendingRecord.id])
                 statusMessage = "Moved \(item.name) to Trash. Restore record saved."
@@ -628,22 +717,23 @@ final class EncoderViewModel: ObservableObject {
     }
 
     func trashAllInputSources() {
-        let itemsToTrash = activeInputs
+        let itemsToTrash = queueItemsForActions
         guard !isEncoding, !itemsToTrash.isEmpty else { return }
 
         let count = itemsToTrash.count
-        let hiddenCount = inactiveInputCount
+        let hiddenCount = inputs.count - count
         let alert = NSAlert()
-        alert.messageText = "Move active source files to Trash?"
+        alert.messageText =
+            jobStateFilter == nil ? "Move active source files to Trash?" : "Move filtered source files to Trash?"
         var details =
-            "This will move \(count) active source file\(count == 1 ? "" : "s") to the macOS Trash and remove successful items from the queue."
+            "This will move \(count) \(jobStateFilter == nil ? "active" : "filtered") source file\(count == 1 ? "" : "s") to the macOS Trash and remove successful items from the queue."
         if hiddenCount > 0 {
             details +=
-                " \(hiddenCount) hidden queued file\(hiddenCount == 1 ? "" : "s") will stay untouched."
+                " \(hiddenCount) queued file\(hiddenCount == 1 ? "" : "s") outside this action will stay untouched."
         }
         alert.informativeText = details
         alert.alertStyle = .warning
-        alert.addButton(withTitle: "Move Active to Trash")
+        alert.addButton(withTitle: jobStateFilter == nil ? "Move Active to Trash" : "Move Filtered to Trash")
         alert.addButton(withTitle: "Cancel")
 
         guard alert.runModal() == .alertFirstButtonReturn else { return }
@@ -683,9 +773,10 @@ final class EncoderViewModel: ObservableObject {
 
         inputs.removeAll { trashedIDs.contains($0.id) }
         jobs.removeAll()
+        jobStateFilter = nil
 
         var resultDetails = [
-            "Moved \(trashedIDs.count) active source file\(trashedIDs.count == 1 ? "" : "s") to Trash."
+            "Moved \(trashedIDs.count) source file\(trashedIDs.count == 1 ? "" : "s") to Trash."
         ]
         if !emergencyOnly.isEmpty {
             resultDetails.append(
@@ -746,16 +837,17 @@ final class EncoderViewModel: ObservableObject {
             }
         }
 
-        let restoredIDs = Set(restored.map(\.id))
-        trashedSourceRecords.removeAll { restoredIDs.contains($0.id) }
+        let removableIDs = Set((restored + unavailable).map(\.id))
+        trashedSourceRecords.removeAll { removableIDs.contains($0.id) }
         jobs.removeAll()
+        jobStateFilter = nil
 
         var details = [
             "Restored \(restored.count) source file\(restored.count == 1 ? "" : "s")."
         ]
         if !unavailable.isEmpty {
             details.append(
-                "\(unavailable.count) Trash item\(unavailable.count == 1 ? "" : "s") no longer found."
+                "\(unavailable.count) stale restore record\(unavailable.count == 1 ? "" : "s") removed because the Trash item no longer exists."
             )
         }
         if !conflicts.isEmpty {
@@ -769,6 +861,25 @@ final class EncoderViewModel: ObservableObject {
             )
         }
         statusMessage = details.joined(separator: " ")
+    }
+
+    func clearTrashedSourceRecords() {
+        guard canClearTrashedSourceRecords else { return }
+
+        let count = trashedSourceRecords.count
+        let alert = NSAlert()
+        alert.messageText = "Clear restore records?"
+        alert.informativeText =
+            "This only removes GPhilCoder's saved restore list for \(count) trashed source file\(count == 1 ? "" : "s"). It does not delete or restore any files."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Clear Records")
+        alert.addButton(withTitle: "Cancel")
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        trashedSourceRecords.removeAll()
+        statusMessage =
+            "Cleared \(count) saved restore record\(count == 1 ? "" : "s"). No files were changed."
     }
 
     func chooseRestoreDeletedFolder() {
@@ -1003,16 +1114,137 @@ final class EncoderViewModel: ObservableObject {
         }
     }
 
+    func copyRestoreUnresolvedItemsToRestoreRoot() {
+        let items = restoreUnresolvedExportItems
+        guard let restoreRoot = restoreDestinationRoot, !items.isEmpty else {
+            statusMessage = "No unresolved files to copy."
+            return
+        }
+
+        let destinationFolder = restoreRoot.appendingPathComponent(
+            "GPhilCoder Unresolved Files",
+            isDirectory: true
+        )
+
+        let alert = NSAlert()
+        alert.messageText = "Copy unresolved files to the restore root?"
+        alert.informativeText =
+            "GPhilCoder will copy \(items.count) unresolved file\(items.count == 1 ? "" : "s") into \(destinationFolder.path(percentEncoded: false)). Original subfolders are still unknown, so this creates a holding folder and does not overwrite existing files."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Copy")
+        alert.addButton(withTitle: "Cancel")
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        restoreApplyTask?.cancel()
+        isRestoringFromPlan = true
+        statusMessage = "Copying unresolved files to the restore root..."
+
+        restoreApplyTask = Task { [weak self] in
+            let worker = Task.detached(priority: .userInitiated) {
+                Self.copyUnresolvedItems(items, to: destinationFolder)
+            }
+            let result = await withTaskCancellationHandler {
+                await worker.value
+            } onCancel: {
+                worker.cancel()
+            }
+            guard !Task.isCancelled else { return }
+
+            self?.appendRestoredFileURLs(result.copiedURLs)
+            self?.isRestoringFromPlan = false
+            self?.restoreApplyTask = nil
+
+            var details = [
+                "Copied \(result.copied) unresolved file\(result.copied == 1 ? "" : "s") to GPhilCoder Unresolved Files."
+            ]
+            if result.failed > 0 {
+                details.append(
+                    "Failed \(result.failed): \(result.failedNames.prefix(3).joined(separator: ", "))\(result.failedNames.count > 3 ? "..." : "")."
+                )
+            }
+            self?.statusMessage = details.joined(separator: " ")
+        }
+    }
+
+    nonisolated private static func copyUnresolvedItems(
+        _ items: [RestoreUnresolvedFile],
+        to destinationFolder: URL
+    ) -> RestoreUnresolvedCopyResult {
+        var result = RestoreUnresolvedCopyResult()
+        let fileManager = FileManager.default
+
+        do {
+            try fileManager.createDirectory(
+                at: destinationFolder,
+                withIntermediateDirectories: true
+            )
+        } catch {
+            result.failed = items.count
+            result.failedNames = Array(items.prefix(3).map(\.name))
+            return result
+        }
+
+        for item in items {
+            guard !Task.isCancelled else { break }
+
+            let sourceURL = URL(fileURLWithPath: item.deletedPath)
+            let preferredName = item.matchName ?? item.name
+            let destinationURL = availableDestinationURL(
+                in: destinationFolder,
+                preferredName: preferredName
+            )
+
+            do {
+                try fileManager.copyItem(at: sourceURL, to: destinationURL)
+                result.copied += 1
+                result.copiedURLs.append(destinationURL)
+            } catch {
+                result.failed += 1
+                result.failedNames.append(item.name)
+            }
+        }
+
+        return result
+    }
+
+    nonisolated private static func availableDestinationURL(
+        in folder: URL,
+        preferredName: String
+    ) -> URL {
+        let fileManager = FileManager.default
+        let preferredURL = folder.appendingPathComponent(preferredName, isDirectory: false)
+        guard fileManager.fileExists(atPath: preferredURL.path) else { return preferredURL }
+
+        let baseName = (preferredName as NSString).deletingPathExtension
+        let fileExtension = (preferredName as NSString).pathExtension
+
+        for index in 2...10_000 {
+            let candidateName =
+                fileExtension.isEmpty
+                ? "\(baseName) \(index)"
+                : "\(baseName) \(index).\(fileExtension)"
+            let candidateURL = folder.appendingPathComponent(candidateName, isDirectory: false)
+            if !fileManager.fileExists(atPath: candidateURL.path) {
+                return candidateURL
+            }
+        }
+
+        return folder.appendingPathComponent(UUID().uuidString + "-" + preferredName)
+    }
+
     func clearInputs() {
         guard !isEncoding else { return }
         inputs.removeAll()
         jobs.removeAll()
+        jobStateFilter = nil
         statusMessage = "Queue cleared."
     }
 
     func saveQueue() {
         guard !isEncoding else { return }
-        guard !inputs.isEmpty else {
+        let itemsToSave = queueItemsForActions
+        guard !itemsToSave.isEmpty else {
             statusMessage = "Add files before saving a queue."
             return
         }
@@ -1032,7 +1264,7 @@ final class EncoderViewModel: ObservableObject {
             version: QueueDocument.currentVersion,
             savedAt: Date(),
             settings: currentQueueSettings(),
-            items: inputs.map { queueInput(from: $0) }
+            items: itemsToSave.map { queueInput(from: $0) }
         )
 
         do {
@@ -1042,7 +1274,7 @@ final class EncoderViewModel: ObservableObject {
             let data = try encoder.encode(document)
             try data.write(to: url, options: .atomic)
             statusMessage =
-                "Saved queue with \(inputs.count) item\(inputs.count == 1 ? "" : "s") to \(url.lastPathComponent)."
+                "Saved queue with \(itemsToSave.count) item\(itemsToSave.count == 1 ? "" : "s") to \(url.lastPathComponent)."
         } catch {
             statusMessage = "Could not save queue: \(error.localizedDescription)"
         }
@@ -1073,6 +1305,7 @@ final class EncoderViewModel: ObservableObject {
 
             inputs = result.items
             jobs.removeAll()
+            jobStateFilter = nil
             rememberInputDirectory(fromFiles: result.items.map(\.url))
 
             var details = [
@@ -1103,7 +1336,8 @@ final class EncoderViewModel: ObservableObject {
     }
 
     func revealOutput(for job: EncodeJob) {
-        NSWorkspace.shared.activateFileViewerSelecting([job.outputURL])
+        let urls = existingOutputURLs(for: job.outputURL)
+        NSWorkspace.shared.activateFileViewerSelecting(urls.isEmpty ? [job.outputURL] : urls)
     }
 
     func startEncoding() {
@@ -1124,6 +1358,7 @@ final class EncoderViewModel: ObservableObject {
             EncodeJob(item: $0, outputURL: outputURL(for: $0))
         }
         jobs = plannedJobs
+        jobStateFilter = nil
         isEncoding = true
 
         let settings = EncodingSettingsSnapshot(
@@ -1140,6 +1375,7 @@ final class EncoderViewModel: ObservableObject {
             opusRateMode: opusRateMode,
             opusBitrateKbps: opusBitrateKbps,
             flacCompressionLevel: flacCompressionLevel,
+            splitOversizedMultichannel: splitOversizedMultichannel,
             ffmpegThreads: ffmpegThreads,
             overwriteExisting: overwriteExisting,
             parallelJobs: max(1, min(parallelJobs, processorLimit))
@@ -1178,6 +1414,32 @@ final class EncoderViewModel: ObservableObject {
         url.pathExtension.isEmpty ? url.appendingPathExtension("json") : url
     }
 
+    private func existingOutputURLs(for baseOutputURL: URL) -> [URL] {
+        if FileManager.default.fileExists(atPath: baseOutputURL.path) {
+            return [baseOutputURL]
+        }
+
+        let directory = baseOutputURL.deletingLastPathComponent()
+        let baseName = baseOutputURL.deletingPathExtension().lastPathComponent
+        let fileExtension = baseOutputURL.pathExtension.lowercased()
+        guard let contents = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil
+        ) else {
+            return []
+        }
+
+        return contents
+            .filter {
+                $0.deletingPathExtension().lastPathComponent.hasPrefix(baseName + "_ch")
+                    && $0.pathExtension.lowercased() == fileExtension
+            }
+            .sorted {
+                $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent)
+                    == .orderedAscending
+            }
+    }
+
     private func currentQueueSettings() -> QueueSettings {
         QueueSettings(
             outputMode: outputMode.rawValue,
@@ -1196,6 +1458,7 @@ final class EncoderViewModel: ObservableObject {
             opusRateMode: opusRateMode.rawValue,
             opusBitrateKbps: opusBitrateKbps,
             flacCompressionLevel: flacCompressionLevel,
+            splitOversizedMultichannel: splitOversizedMultichannel,
             parallelJobs: max(1, min(parallelJobs, processorLimit)),
             ffmpegThreads: max(0, min(ffmpegThreads, processorLimit))
         )
@@ -1287,6 +1550,9 @@ final class EncoderViewModel: ObservableObject {
             FLACEncodingOptions.compressionLevels.contains(value)
         {
             flacCompressionLevel = value
+        }
+        if let value = settings.splitOversizedMultichannel {
+            splitOversizedMultichannel = value
         }
         if let value = settings.parallelJobs {
             parallelJobs = max(1, min(value, processorLimit))
@@ -1399,6 +1665,12 @@ final class EncoderViewModel: ObservableObject {
             outputMode = .sourceFolders
         }
 
+        restoreDeletedFolder = persistedDirectoryURL(forKey: DefaultsKey.restoreDeletedFolderPath)
+        restoreBackupRoot = persistedDirectoryURL(forKey: DefaultsKey.restoreBackupRootPath)
+        restoreDestinationRoot = persistedDirectoryURL(
+            forKey: DefaultsKey.restoreDestinationRootPath
+        )
+
         if let selectedInputExtensions = defaults.array(forKey: DefaultsKey.selectedInputExtensions)
             as? [String]
         {
@@ -1479,6 +1751,10 @@ final class EncoderViewModel: ObservableObject {
             flacCompressionLevel = value
         }
 
+        if let value = persistedBool(forKey: DefaultsKey.splitOversizedMultichannel) {
+            splitOversizedMultichannel = value
+        }
+
         if let value = persistedInt(forKey: DefaultsKey.parallelJobs) {
             parallelJobs = max(1, min(value, processorLimit))
         }
@@ -1525,6 +1801,17 @@ final class EncoderViewModel: ObservableObject {
         UserDefaults.standard.set(
             url.standardizedFileURL.path(percentEncoded: false),
             forKey: DefaultsKey.lastInputDirectoryPath
+        )
+    }
+
+    private func persistOptionalDirectory(_ url: URL?, forKey key: String) {
+        guard let url else {
+            UserDefaults.standard.removeObject(forKey: key)
+            return
+        }
+        UserDefaults.standard.set(
+            url.standardizedFileURL.path(percentEncoded: false),
+            forKey: key
         )
     }
 
@@ -1668,6 +1955,7 @@ final class EncoderViewModel: ObservableObject {
         let supported = extensions.intersection(AudioFormat.inputExtensions)
         selectedInputExtensions = supported
         jobs.removeAll()
+        jobStateFilter = nil
     }
 
     private func moveItemToTrashAndRecord(
@@ -1742,6 +2030,7 @@ final class EncoderViewModel: ObservableObject {
             $0.url.path.localizedCaseInsensitiveCompare($1.url.path) == .orderedAscending
         }
         jobs.removeAll()
+        jobStateFilter = nil
         rememberInputDirectory(fromFiles: urls)
     }
 
@@ -1780,6 +2069,7 @@ final class EncoderViewModel: ObservableObject {
                 $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
             })
         jobs.removeAll()
+        jobStateFilter = nil
         return summary
     }
 
@@ -1824,6 +2114,7 @@ final class EncoderViewModel: ObservableObject {
                 $0.url.path.localizedCaseInsensitiveCompare($1.url.path) == .orderedAscending
             })
         jobs.removeAll()
+        jobStateFilter = nil
         return summary
     }
 
