@@ -46,7 +46,7 @@ struct ContentView: View {
 
     private var titlebarSpacer: some View {
         Color.clear
-            .frame(height: 30)
+            .frame(height: 10)
             .background(.bar)
     }
 
@@ -55,7 +55,7 @@ struct ContentView: View {
             HeaderAppIcon()
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("GPhilCoder")
+                Text("GPhil Coder")
                     .font(.system(size: 24, weight: .bold, design: .rounded))
                 Text(
                     "Batch audio to MP3, Ogg, Opus, FLAC, and WavPack with parallel FFmpeg workers"
@@ -69,7 +69,7 @@ struct ContentView: View {
             ToolStatusView()
         }
         .padding(.horizontal, 22)
-        .padding(.top, 34)
+        // .padding(.top, 4)
         .padding(.bottom, 14)
         .background(.bar)
     }
