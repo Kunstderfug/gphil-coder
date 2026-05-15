@@ -89,6 +89,14 @@ The script generates short synthetic audio files in common input formats, then v
 
 Ogg/Vorbis bitrate values are total stream bitrates, not per-channel bitrates. Quality mode is VBR, so player bitrate readouts vary with source complexity and may be lower than the quality label suggests.
 
+FLAC is limited to 8 channels. WavPack can store much larger channel counts,
+but common DAWs and players are most reliable with the standard named speaker
+channels; GPhilCoder blocks WavPack exports above 18 channels to avoid creating
+files that fail to import or play in apps such as REAPER or foobar2000. Enable
+oversized multichannel splitting to write channel-order chunks such as
+`source_ch1-10.wv` and `source_ch11-21.wv` for WavPack, or up to 8-channel
+chunks for FLAC.
+
 ## Trash Safety
 
 Before GPhilCoder moves source files to the macOS Trash, it writes an emergency
@@ -109,7 +117,8 @@ pickers. The planner checks the restore root first, so files that are already
 back in place are marked as restored and excluded from the backup search.
 During a long search, use **Stop search** to keep the partial counters and the
 currently unresolved list. The unresolved list can be exported as JSON directly
-from the restore window.
+from the restore window, or copied into `GPhilCoder Unresolved Files` inside the
+restore root as a holding folder when the original subfolder is still unknown.
 Use **Match by: Filename only** when restored files have the same names but
 different byte sizes, such as after metadata changes. Restore scans normalize
 case, Unicode composition, width, and diacritics, and include files inside
