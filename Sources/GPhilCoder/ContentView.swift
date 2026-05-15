@@ -4,6 +4,7 @@ import SwiftUI
 struct ContentView: View {
     @EnvironmentObject private var model: EncoderViewModel
     @State private var showingInputFilterSheet = false
+    @State private var showingRestoreFromBackupSheet = false
 
     var body: some View {
         ZStack {
@@ -35,6 +36,10 @@ struct ContentView: View {
         .accentColor(.teal)
         .sheet(isPresented: $showingInputFilterSheet) {
             InputFilterSheet()
+                .environmentObject(model)
+        }
+        .sheet(isPresented: $showingRestoreFromBackupSheet) {
+            RestoreFromBackupSheet()
                 .environmentObject(model)
         }
     }
@@ -173,6 +178,17 @@ struct ContentView: View {
                 }
                 .disabled(!model.canRestoreTrashedSources)
                 .help("Restore source files moved to Trash by GPhilCoder")
+
+                Button {
+                    showingRestoreFromBackupSheet = true
+                } label: {
+                    Label("Plan restore from backup", systemImage: "externaldrive.badge.icloud")
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                        .frame(maxWidth: .infinity)
+                }
+                .disabled(model.isEncoding)
+                .help("Infer original folders from a structured backup volume")
             }
         }
         .padding(18)

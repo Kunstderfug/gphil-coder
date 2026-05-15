@@ -569,6 +569,34 @@ struct TrashedSourceRecord: Codable, Identifiable {
     }
 }
 
+struct PendingTrashSourceRecord: Codable, Identifiable {
+    let id: UUID
+    let name: String
+    let originalPath: String
+    let sourceRootPath: String?
+    let relativeDirectory: String?
+    let fileSizeBytes: Int64
+    let requestedAt: Date
+
+    init(
+        id: UUID = UUID(),
+        name: String,
+        originalPath: String,
+        sourceRootPath: String?,
+        relativeDirectory: String?,
+        fileSizeBytes: Int64,
+        requestedAt: Date = Date()
+    ) {
+        self.id = id
+        self.name = name
+        self.originalPath = originalPath
+        self.sourceRootPath = sourceRootPath
+        self.relativeDirectory = relativeDirectory
+        self.fileSizeBytes = fileSizeBytes
+        self.requestedAt = requestedAt
+    }
+}
+
 struct AddSummary {
     var added = 0
     var duplicates = 0

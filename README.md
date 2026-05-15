@@ -89,11 +89,33 @@ The script generates short synthetic audio files in common input formats, then v
 
 Ogg/Vorbis bitrate values are total stream bitrates, not per-channel bitrates. Quality mode is VBR, so player bitrate readouts vary with source complexity and may be lower than the quality label suggests.
 
+## Trash Safety
+
+Before GPhilCoder moves source files to the macOS Trash, it writes an emergency
+journal with the original source paths to
+`~/Library/Application Support/GPhilCoder/trash-emergency-journal.json`. Each
+successful Trash move is then upgraded into the regular in-app restore ledger.
+
 ## Plan File Restore From Backup
 
 If source files were copied out of Trash into a temporary folder but their
 original paths are unknown, use the restore planner to infer paths from a
 structured backup tree. It is non-destructive by default.
+
+In the app, use **Plan restore from backup** in the sidebar. Choose the folder
+containing deleted files, the structured backup root, and the local restore
+root, then build the plan and restore matched files through native macOS file
+pickers. The planner checks the restore root first, so files that are already
+back in place are marked as restored and excluded from the backup search.
+During a long search, use **Stop search** to keep the partial counters and the
+currently unresolved list. The unresolved list can be exported as JSON directly
+from the restore window.
+Use **Match by: Filename only** when restored files have the same names but
+different byte sizes, such as after metadata changes. Restore scans normalize
+case, Unicode composition, width, and diacritics, and include files inside
+macOS package folders. Deleted-folder filenames with Trash copy timestamp
+suffixes, such as `Song.flac 16-37-35-880.flac`, are matched as their original
+`Song.flac` names.
 
 ```sh
 ./scripts/plan_restore_from_backup.py \

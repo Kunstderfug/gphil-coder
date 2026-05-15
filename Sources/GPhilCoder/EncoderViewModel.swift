@@ -41,6 +41,33 @@ final class EncoderViewModel: ObservableObject {
         }
     }
 
+    private enum TrashEmergencyJournal {
+        static let directoryName = "GPhilCoder"
+        static let fileName = "trash-emergency-journal.json"
+    }
+
+    private enum TrashMoveRecordResult {
+        case restoreLedgerRecorded
+        case emergencyJournalOnly
+    }
+
+    private struct RestoreUnresolvedExportDocument: Encodable {
+        let version: Int
+        let exportedAt: Date
+        let isPartialSearchSnapshot: Bool
+        let deletedFolderPath: String?
+        let backupRootPath: String?
+        let restoreRootPath: String?
+        let matchMode: String
+        let hashMode: String
+        let progressPhase: String?
+        let progressDetail: String?
+        let deletedCount: Int
+        let restoredCount: Int
+        let unresolvedListCount: Int
+        let files: [RestoreUnresolvedFile]
+    }
+
     @Published private(set) var inputs: [AudioInputItem] = []
     @Published private(set) var jobs: [EncodeJob] = []
     @Published private(set) var isEncoding = false
@@ -52,6 +79,37 @@ final class EncoderViewModel: ObservableObject {
     @Published private(set) var trashedSourceRecords: [TrashedSourceRecord] = [] {
         didSet { persistTrashedSourceRecords() }
     }
+    @Published private(set) var pendingTrashSourceRecords: [PendingTrashSourceRecord] = []
+    @Published var restoreDeletedFolder: URL? {
+        didSet { invalidateBackupRestorePlanIfChanged(from: oldValue, to: restoreDeletedFolder) }
+    }
+    @Published var restoreBackupRoot: URL? {
+        didSet { invalidateBackupRestorePlanIfChanged(from: oldValue, to: restoreBackupRoot) }
+    }
+    @Published var restoreDestinationRoot: URL? {
+        didSet {
+            invalidateBackupRestorePlanIfChanged(from: oldValue, to: restoreDestinationRoot)
+        }
+    }
+    @Published var restoreCopySource: RestoreCopySource = .deleted
+    @Published var restoreMatchMode: RestoreMatchMode = .filenameAndSize {
+        didSet { invalidateBackupRestorePlanIfChanged(from: oldValue, to: restoreMatchMode) }
+    }
+    @Published var restoreHashMode: RestoreHashMode = .auto {
+        didSet { invalidateBackupRestorePlanIfChanged(from: oldValue, to: restoreHashMode) }
+    }
+    @Published var restoreOverwriteExisting = false
+    @Published var restoreIncludeHidden = false {
+        didSet { invalidateBackupRestorePlanIfChanged(from: oldValue, to: restoreIncludeHidden) }
+    }
+    @Published private(set) var restorePlanProgress: RestorePlanProgress?
+    @Published private(set) var restorePlanLiveCounts: RestorePlanStatusCounts?
+    @Published private(set) var restorePlanLiveUnresolvedItems: [RestoreUnresolvedFile] = []
+    @Published private(set) var restorePlanScanSummary: RestorePlanScanSummary?
+    @Published private(set) var restorePlanRecords: [RestorePlanRecord] = []
+    @Published private(set) var isRestorePlanning = false
+    @Published private(set) var isRestoringFromPlan = false
+    @Published private(set) var restorePlanStoppedWithPartialResults = false
 
     @Published private(set) var selectedInputExtensions: Set<String> = AudioFormat.inputExtensions {
         didSet {
@@ -162,6 +220,8 @@ final class EncoderViewModel: ObservableObject {
     }
 
     private var encodeTask: Task<Void, Never>?
+    private var restorePlanTask: Task<Void, Never>?
+    private var restoreApplyTask: Task<Void, Never>?
 
     var processorLimit: Int {
         max(1, ProcessInfo.processInfo.activeProcessorCount)
@@ -277,6 +337,83 @@ final class EncoderViewModel: ObservableObject {
         !isEncoding && !trashedSourceRecords.isEmpty
     }
 
+    var canBuildBackupRestorePlan: Bool {
+        restoreDeletedFolder != nil && restoreBackupRoot != nil && restoreDestinationRoot != nil
+            && !isRestorePlanning && !isRestoringFromPlan
+    }
+
+    var canApplyBackupRestorePlan: Bool {
+        restorePlanRestorableCount > 0 && !isRestorePlanning && !isRestoringFromPlan
+    }
+
+    var canExportRestoreUnresolvedItems: Bool {
+        !restoreUnresolvedExportItems.isEmpty
+    }
+
+    var restorePlanAlreadyRestoredCount: Int {
+        restorePlanLiveCounts?.alreadyRestored
+            ?? restorePlanRecords.filter { $0.status == .alreadyRestored }.count
+    }
+
+    var restorePlanDeletedCount: Int {
+        if let deletedTotal = restorePlanLiveCounts?.deletedTotal, deletedTotal > 0 {
+            return deletedTotal
+        }
+        if let scanSummary = restorePlanScanSummary {
+            return scanSummary.deletedFileCount
+        }
+        return restorePlanRecords.count
+    }
+
+    var restorePlanUnresolvedCount: Int {
+        if let liveCounts = restorePlanLiveCounts, liveCounts.deletedTotal > 0 {
+            return liveCounts.unresolvedFromRestore
+        }
+        if let scanSummary = restorePlanScanSummary {
+            return scanSummary.unresolvedFileCount
+        }
+        return 0
+    }
+
+    var restorePlanMatchedCount: Int {
+        restorePlanLiveCounts?.matched ?? restorePlanRecords.filter { $0.status == .matched }.count
+    }
+
+    var restorePlanConflictCount: Int {
+        restorePlanLiveCounts?.conflict
+            ?? restorePlanRecords.filter { $0.status == .matchedConflict }.count
+    }
+
+    var restorePlanAmbiguousCount: Int {
+        restorePlanLiveCounts?.ambiguous
+            ?? restorePlanRecords.filter { $0.status == .ambiguous }.count
+    }
+
+    var restorePlanMissingCount: Int {
+        restorePlanLiveCounts?.missing ?? restorePlanRecords.filter { $0.status == .missing }.count
+    }
+
+    var restorePlanRestorableCount: Int {
+        restorePlanMatchedCount + (restoreOverwriteExisting ? restorePlanConflictCount : 0)
+    }
+
+    private var restoreUnresolvedExportItems: [RestoreUnresolvedFile] {
+        if !restorePlanLiveUnresolvedItems.isEmpty {
+            return restorePlanLiveUnresolvedItems
+        }
+
+        return restorePlanRecords.compactMap { record in
+            guard record.status == .missing || record.status == .ambiguous else { return nil }
+            return RestoreUnresolvedFile(
+                id: record.deletedURL.standardizedFileURL.path,
+                name: record.displayName,
+                matchName: nil,
+                deletedPath: record.deletedURL.path(percentEncoded: false),
+                size: record.size
+            )
+        }
+    }
+
     var activeFilterStatusMessage: String {
         if inputs.isEmpty {
             return "Input filter set to \(selectedInputReadableList)."
@@ -299,6 +436,12 @@ final class EncoderViewModel: ObservableObject {
         ffmpegURL?.path(percentEncoded: false) ?? "No executable selected"
     }
 
+    private var pendingTrashJournalNotice: String {
+        guard !pendingTrashSourceRecords.isEmpty else { return "" }
+        return
+            " Emergency trash journal contains \(pendingTrashSourceRecords.count) source path\(pendingTrashSourceRecords.count == 1 ? "" : "s")."
+    }
+
     init() {
         loadPersistedSettings()
         refreshFFmpeg()
@@ -315,15 +458,15 @@ final class EncoderViewModel: ObservableObject {
                 ffmpegCapabilities.hasLibVorbis ? "libvorbis available" : "native Vorbis only"
             let source = FFmpegLocator.isBundled(ffmpegURL) ? "bundled FFmpeg" : "system FFmpeg"
             statusMessage =
-                "Using \(source) at \(ffmpegURL.path(percentEncoded: false)) (\(vorbisStatus))."
+                "Using \(source) at \(ffmpegURL.path(percentEncoded: false)) (\(vorbisStatus)).\(pendingTrashJournalNotice)"
         } else {
             ffmpegCapabilities = FFmpegCapabilities()
             switch ffmpegSourcePreference {
             case .bundled:
                 statusMessage =
-                    "Bundled FFmpeg was not found in this app. Select System FFmpeg or rebuild the app with BUNDLED_FFMPEG."
+                    "Bundled FFmpeg was not found in this app. Select System FFmpeg or rebuild the app with BUNDLED_FFMPEG.\(pendingTrashJournalNotice)"
             case .system:
-                statusMessage = FFmpegToolError.notFound.localizedDescription
+                statusMessage = FFmpegToolError.notFound.localizedDescription + pendingTrashJournalNotice
             }
         }
     }
@@ -458,12 +601,28 @@ final class EncoderViewModel: ObservableObject {
 
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
+        let pendingRecord: PendingTrashSourceRecord
         do {
-            try moveItemToTrashAndRecord(item)
+            pendingRecord = try recordPendingTrashIntent(for: item)
+        } catch {
+            statusMessage =
+                "Could not save emergency trash journal. Nothing moved to Trash: \(error.localizedDescription)"
+            return
+        }
+
+        do {
+            let result = try moveItemToTrashAndRecord(item, pendingRecord: pendingRecord)
             inputs.removeAll { $0.id == item.id }
             jobs.removeAll()
-            statusMessage = "Moved \(item.name) to Trash."
+            if result == .restoreLedgerRecorded {
+                try? removePendingTrashRecords(ids: [pendingRecord.id])
+                statusMessage = "Moved \(item.name) to Trash. Restore record saved."
+            } else {
+                statusMessage =
+                    "Moved \(item.name) to Trash. macOS did not return a Trash path, so the original path remains in the emergency journal."
+            }
         } catch {
+            removePendingTrashRecordIfOriginalStillExists(pendingRecord)
             statusMessage = "Could not move \(item.name) to Trash: \(error.localizedDescription)"
         }
     }
@@ -489,14 +648,35 @@ final class EncoderViewModel: ObservableObject {
 
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
+        let pendingRecordsByItemID: [UUID: PendingTrashSourceRecord]
+        do {
+            pendingRecordsByItemID = try recordPendingTrashIntents(for: itemsToTrash)
+        } catch {
+            statusMessage =
+                "Could not save emergency trash journal. Nothing moved to Trash: \(error.localizedDescription)"
+            return
+        }
+
         var trashedIDs = Set<UUID>()
         var failures: [String] = []
+        var emergencyOnly: [String] = []
 
         for item in itemsToTrash {
+            guard let pendingRecord = pendingRecordsByItemID[item.id] else {
+                failures.append(item.name)
+                continue
+            }
+
             do {
-                try moveItemToTrashAndRecord(item)
+                let result = try moveItemToTrashAndRecord(item, pendingRecord: pendingRecord)
                 trashedIDs.insert(item.id)
+                if result == .restoreLedgerRecorded {
+                    try? removePendingTrashRecords(ids: [pendingRecord.id])
+                } else {
+                    emergencyOnly.append(item.name)
+                }
             } catch {
+                removePendingTrashRecordIfOriginalStillExists(pendingRecord)
                 failures.append(item.name)
             }
         }
@@ -504,13 +684,20 @@ final class EncoderViewModel: ObservableObject {
         inputs.removeAll { trashedIDs.contains($0.id) }
         jobs.removeAll()
 
-        if failures.isEmpty {
-            statusMessage =
-                "Moved \(trashedIDs.count) active source file\(trashedIDs.count == 1 ? "" : "s") to Trash."
-        } else {
-            statusMessage =
-                "Moved \(trashedIDs.count) active source file\(trashedIDs.count == 1 ? "" : "s") to Trash. Could not move \(failures.count): \(failures.prefix(3).joined(separator: ", "))\(failures.count > 3 ? "..." : "")."
+        var resultDetails = [
+            "Moved \(trashedIDs.count) active source file\(trashedIDs.count == 1 ? "" : "s") to Trash."
+        ]
+        if !emergencyOnly.isEmpty {
+            resultDetails.append(
+                "\(emergencyOnly.count) path\(emergencyOnly.count == 1 ? "" : "s") kept in the emergency journal because macOS did not return a Trash path."
+            )
         }
+        if !failures.isEmpty {
+            resultDetails.append(
+                "Could not move \(failures.count): \(failures.prefix(3).joined(separator: ", "))\(failures.count > 3 ? "..." : "")."
+            )
+        }
+        statusMessage = resultDetails.joined(separator: " ")
     }
 
     func restoreTrashedSources() {
@@ -582,6 +769,238 @@ final class EncoderViewModel: ObservableObject {
             )
         }
         statusMessage = details.joined(separator: " ")
+    }
+
+    func chooseRestoreDeletedFolder() {
+        if let url = chooseDirectory(
+            title: "Choose Deleted Files Folder",
+            prompt: "Use Deleted Folder",
+            initialURL: restoreDeletedFolder ?? lastInputDirectoryURL()
+        ) {
+            restoreDeletedFolder = url
+        }
+    }
+
+    func chooseRestoreBackupRoot() {
+        if let url = chooseDirectory(
+            title: "Choose Backup Root",
+            prompt: "Use Backup Root",
+            initialURL: restoreBackupRoot
+        ) {
+            restoreBackupRoot = url
+        }
+    }
+
+    func chooseRestoreDestinationRoot() {
+        if let url = chooseDirectory(
+            title: "Choose Restore Root",
+            prompt: "Use Restore Root",
+            initialURL: restoreDestinationRoot
+        ) {
+            restoreDestinationRoot = url
+        }
+    }
+
+    func buildBackupRestorePlan() {
+        guard canBuildBackupRestorePlan,
+            let deletedFolder = restoreDeletedFolder,
+            let backupRoot = restoreBackupRoot,
+            let restoreRoot = restoreDestinationRoot
+        else {
+            statusMessage = "Choose deleted, backup, and restore folders before building a plan."
+            return
+        }
+
+        restorePlanTask?.cancel()
+        restorePlanRecords.removeAll()
+        restorePlanScanSummary = nil
+        restorePlanLiveCounts = RestorePlanStatusCounts()
+        restorePlanLiveUnresolvedItems.removeAll()
+        restorePlanStoppedWithPartialResults = false
+        restorePlanProgress = RestorePlanProgress(
+            phase: .scanningDeleted,
+            completed: 0,
+            total: nil,
+            detail: "Preparing deleted-folder scan."
+        )
+        isRestorePlanning = true
+        statusMessage = "Scanning deleted files and checking the restore root..."
+
+        let options = RestorePlanOptions(
+            deletedFolder: deletedFolder,
+            backupRoot: backupRoot,
+            restoreRoot: restoreRoot,
+            matchMode: restoreMatchMode,
+            hashMode: restoreHashMode,
+            includeHidden: restoreIncludeHidden
+        )
+        let progressHandler: RestorePlanProgressHandler = { [weak self] progress in
+            Task { @MainActor [weak self] in
+                guard self?.isRestorePlanning == true else { return }
+                self?.restorePlanProgress = progress
+                if let statusCounts = progress.statusCounts {
+                    self?.restorePlanLiveCounts = statusCounts
+                }
+                if let unresolvedItems = progress.unresolvedItems {
+                    self?.restorePlanLiveUnresolvedItems = unresolvedItems
+                }
+                self?.statusMessage = "\(progress.title): \(progress.detail)"
+            }
+        }
+
+        restorePlanTask = Task { [weak self] in
+            do {
+                let worker = Task.detached(priority: .userInitiated) {
+                    try RestorePlanner.buildPlan(options: options, progress: progressHandler)
+                }
+                let result = try await withTaskCancellationHandler {
+                    try await worker.value
+                } onCancel: {
+                    worker.cancel()
+                }
+                guard !Task.isCancelled else { return }
+                let records = result.records
+                self?.restorePlanRecords = records
+                self?.restorePlanLiveCounts = nil
+                self?.restorePlanLiveUnresolvedItems.removeAll()
+                self?.restorePlanScanSummary = result.scanSummary
+                self?.restorePlanProgress = nil
+                self?.isRestorePlanning = false
+                self?.restorePlanStoppedWithPartialResults = false
+                self?.restorePlanTask = nil
+                self?.statusMessage =
+                    "Restore plan built: \(records.filter { $0.status == .alreadyRestored }.count) restored, \(records.filter { $0.status == .matched }.count) backup matches, \(records.filter { $0.status == .matchedConflict }.count) target exists, \(records.filter { $0.status == .ambiguous }.count) ambiguous, \(records.filter { $0.status == .missing }.count) missing."
+            } catch {
+                guard !Task.isCancelled else { return }
+                self?.restorePlanRecords.removeAll()
+                self?.restorePlanLiveCounts = nil
+                self?.restorePlanLiveUnresolvedItems.removeAll()
+                self?.restorePlanScanSummary = nil
+                self?.restorePlanProgress = nil
+                self?.isRestorePlanning = false
+                self?.restorePlanStoppedWithPartialResults = false
+                self?.restorePlanTask = nil
+                self?.statusMessage = "Could not build restore plan: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func applyBackupRestorePlan() {
+        guard canApplyBackupRestorePlan else { return }
+
+        let count = restorePlanRestorableCount
+        let alert = NSAlert()
+        alert.messageText = "Restore matched files?"
+        alert.informativeText =
+            "GPhilCoder will copy \(count) matched file\(count == 1 ? "" : "s") to the restore root using \(restoreCopySource.title.lowercased()). Existing restore paths are \(restoreOverwriteExisting ? "overwritten" : "skipped")."
+        alert.alertStyle = restoreOverwriteExisting ? .warning : .informational
+        alert.addButton(withTitle: "Restore")
+        alert.addButton(withTitle: "Cancel")
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        restoreApplyTask?.cancel()
+        restorePlanProgress = nil
+        isRestoringFromPlan = true
+        statusMessage = "Restoring matched files..."
+        let records = restorePlanRecords
+        let copySource = restoreCopySource
+        let overwrite = restoreOverwriteExisting
+
+        restoreApplyTask = Task { [weak self] in
+            let worker = Task.detached(priority: .userInitiated) {
+                RestorePlanner.apply(records: records, copySource: copySource, overwrite: overwrite)
+            }
+            let result = await withTaskCancellationHandler {
+                await worker.value
+            } onCancel: {
+                worker.cancel()
+            }
+            guard !Task.isCancelled else { return }
+
+            self?.appendRestoredFileURLs(result.restoredURLs)
+            self?.isRestoringFromPlan = false
+            self?.restoreApplyTask = nil
+
+            var details = [
+                "Restored \(result.copied) file\(result.copied == 1 ? "" : "s")."
+            ]
+            if result.skipped > 0 {
+                details.append("Skipped \(result.skipped).")
+            }
+            if result.failed > 0 {
+                details.append(
+                    "Failed \(result.failed): \(result.failedNames.prefix(3).joined(separator: ", "))\(result.failedNames.count > 3 ? "..." : "")."
+                )
+            }
+            self?.statusMessage = details.joined(separator: " ")
+        }
+    }
+
+    func cancelBackupRestorePlan() {
+        restorePlanTask?.cancel()
+        restorePlanTask = nil
+        isRestorePlanning = false
+        restorePlanStoppedWithPartialResults = true
+
+        let unresolvedCount = restorePlanLiveUnresolvedItems.count
+        if unresolvedCount > 0 {
+            statusMessage =
+                "Stopped restore search. Kept partial snapshot with \(unresolvedCount) unresolved file\(unresolvedCount == 1 ? "" : "s")."
+        } else if let counts = restorePlanLiveCounts, counts.deletedTotal > 0 {
+            statusMessage = "Stopped restore search. Kept partial counters: \(counts.summary)"
+        } else {
+            statusMessage = "Stopped restore search before an unresolved snapshot was available."
+        }
+    }
+
+    func exportRestoreUnresolvedItems() {
+        let items = restoreUnresolvedExportItems
+        guard !items.isEmpty else {
+            statusMessage = "No unresolved files to export yet."
+            return
+        }
+
+        let panel = NSSavePanel()
+        panel.title = "Export Unresolved Files"
+        panel.prompt = "Export JSON"
+        panel.allowedContentTypes = [.json]
+        panel.canCreateDirectories = true
+        panel.directoryURL = restoreDeletedFolder ?? lastInputDirectoryURL()
+        panel.nameFieldStringValue = defaultRestoreUnresolvedFileName()
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        let document = RestoreUnresolvedExportDocument(
+            version: 1,
+            exportedAt: Date(),
+            isPartialSearchSnapshot: isRestorePlanning || restorePlanStoppedWithPartialResults,
+            deletedFolderPath: restoreDeletedFolder?.path(percentEncoded: false),
+            backupRootPath: restoreBackupRoot?.path(percentEncoded: false),
+            restoreRootPath: restoreDestinationRoot?.path(percentEncoded: false),
+            matchMode: restoreMatchMode.title,
+            hashMode: restoreHashMode.title,
+            progressPhase: restorePlanProgress?.title,
+            progressDetail: restorePlanProgress?.detail,
+            deletedCount: restorePlanDeletedCount,
+            restoredCount: restorePlanAlreadyRestoredCount,
+            unresolvedListCount: items.count,
+            files: items
+        )
+
+        let exportURL = normalizedJSONFileURL(url)
+
+        do {
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(document)
+            try data.write(to: exportURL, options: .atomic)
+            statusMessage =
+                "Exported \(items.count) unresolved file\(items.count == 1 ? "" : "s") to \(exportURL.lastPathComponent)."
+        } catch {
+            statusMessage = "Could not export unresolved files: \(error.localizedDescription)"
+        }
     }
 
     func clearInputs() {
@@ -745,8 +1164,18 @@ final class EncoderViewModel: ObservableObject {
         return "GPhilCoder Queue \(formatter.string(from: Date())).\(QueueFile.fileExtension)"
     }
 
+    private func defaultRestoreUnresolvedFileName() -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH.mm"
+        return "GPhilCoder Unresolved \(formatter.string(from: Date())).json"
+    }
+
     private func normalizedQueueFileURL(_ url: URL) -> URL {
         url.pathExtension.isEmpty ? url.appendingPathExtension(QueueFile.fileExtension) : url
+    }
+
+    private func normalizedJSONFileURL(_ url: URL) -> URL {
+        url.pathExtension.isEmpty ? url.appendingPathExtension("json") : url
     }
 
     private func currentQueueSettings() -> QueueSettings {
@@ -947,6 +1376,7 @@ final class EncoderViewModel: ObservableObject {
         {
             trashedSourceRecords = records
         }
+        loadPendingTrashSourceRecords()
 
         if let rawValue = defaults.string(forKey: DefaultsKey.ffmpegSourcePreference),
             let value = FFmpegSourcePreference(rawValue: rawValue)
@@ -1098,6 +1528,30 @@ final class EncoderViewModel: ObservableObject {
         )
     }
 
+    private func chooseDirectory(title: String, prompt: String, initialURL: URL?) -> URL? {
+        let panel = NSOpenPanel()
+        panel.title = title
+        panel.prompt = prompt
+        panel.allowsMultipleSelection = false
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.directoryURL = initialURL
+
+        guard panel.runModal() == .OK else { return nil }
+        return panel.url
+    }
+
+    private func invalidateBackupRestorePlanIfChanged<T: Equatable>(from oldValue: T, to newValue: T) {
+        guard oldValue != newValue else { return }
+        restorePlanRecords.removeAll()
+        restorePlanLiveCounts = nil
+        restorePlanLiveUnresolvedItems.removeAll()
+        restorePlanStoppedWithPartialResults = false
+        restorePlanScanSummary = nil
+        restorePlanProgress = nil
+    }
+
     private func persistTrashedSourceRecords() {
         if trashedSourceRecords.isEmpty {
             UserDefaults.standard.removeObject(forKey: DefaultsKey.trashedSourceRecords)
@@ -1109,28 +1563,136 @@ final class EncoderViewModel: ObservableObject {
         }
     }
 
+    private func loadPendingTrashSourceRecords() {
+        guard let url = try? trashEmergencyJournalURL() else { return }
+        guard let data = try? Data(contentsOf: url),
+            let records = try? JSONDecoder().decode([PendingTrashSourceRecord].self, from: data)
+        else {
+            return
+        }
+
+        pendingTrashSourceRecords = records
+    }
+
+    private func recordPendingTrashIntent(
+        for item: AudioInputItem
+    ) throws -> PendingTrashSourceRecord {
+        let recordsByID = try recordPendingTrashIntents(for: [item])
+        guard let record = recordsByID[item.id] else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        return record
+    }
+
+    private func recordPendingTrashIntents(
+        for items: [AudioInputItem]
+    ) throws -> [UUID: PendingTrashSourceRecord] {
+        var nextRecords = pendingTrashSourceRecords
+        var recordsByItemID: [UUID: PendingTrashSourceRecord] = [:]
+
+        for item in items {
+            let record = PendingTrashSourceRecord(
+                id: item.id,
+                name: item.name,
+                originalPath: item.url.standardizedFileURL.path(percentEncoded: false),
+                sourceRootPath: item.sourceRoot?.standardizedFileURL.path(percentEncoded: false),
+                relativeDirectory: item.relativeDirectory,
+                fileSizeBytes: item.fileSizeBytes
+            )
+
+            if let index = nextRecords.firstIndex(where: { $0.id == record.id }) {
+                nextRecords[index] = record
+            } else {
+                nextRecords.insert(record, at: 0)
+            }
+            recordsByItemID[item.id] = record
+        }
+
+        try replacePendingTrashSourceRecords(nextRecords)
+        return recordsByItemID
+    }
+
+    private func removePendingTrashRecords(ids: Set<UUID>) throws {
+        guard !ids.isEmpty else { return }
+        var nextRecords = pendingTrashSourceRecords
+        nextRecords.removeAll { ids.contains($0.id) }
+        try replacePendingTrashSourceRecords(nextRecords)
+    }
+
+    private func removePendingTrashRecordIfOriginalStillExists(_ record: PendingTrashSourceRecord) {
+        guard regularFileExists(atPath: record.originalPath) else { return }
+        try? removePendingTrashRecords(ids: [record.id])
+    }
+
+    private func replacePendingTrashSourceRecords(
+        _ records: [PendingTrashSourceRecord]
+    ) throws {
+        try persistPendingTrashSourceRecords(records)
+        pendingTrashSourceRecords = records
+    }
+
+    private func persistPendingTrashSourceRecords(
+        _ records: [PendingTrashSourceRecord]
+    ) throws {
+        let url = try trashEmergencyJournalURL()
+        guard !records.isEmpty else {
+            if FileManager.default.fileExists(atPath: url.path) {
+                try FileManager.default.removeItem(at: url)
+            }
+            return
+        }
+
+        let data = try JSONEncoder().encode(records)
+        try data.write(to: url, options: [.atomic])
+    }
+
+    private func trashEmergencyJournalURL() throws -> URL {
+        let baseURL = try FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        let directoryURL = baseURL.appendingPathComponent(
+            TrashEmergencyJournal.directoryName,
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: directoryURL,
+            withIntermediateDirectories: true
+        )
+        return directoryURL.appendingPathComponent(TrashEmergencyJournal.fileName)
+    }
+
     private func setSelectedInputExtensions(_ extensions: Set<String>) {
         let supported = extensions.intersection(AudioFormat.inputExtensions)
         selectedInputExtensions = supported
         jobs.removeAll()
     }
 
-    private func moveItemToTrashAndRecord(_ item: AudioInputItem) throws {
-        let originalPath = item.url.standardizedFileURL.path(percentEncoded: false)
+    private func moveItemToTrashAndRecord(
+        _ item: AudioInputItem,
+        pendingRecord: PendingTrashSourceRecord
+    ) throws -> TrashMoveRecordResult {
         var resultingItemURL: NSURL?
         try FileManager.default.trashItem(at: item.url, resultingItemURL: &resultingItemURL)
 
-        guard let trashURL = resultingItemURL as URL? else { return }
+        guard let trashURL = resultingItemURL as URL? else {
+            return .emergencyJournalOnly
+        }
 
         let record = TrashedSourceRecord(
+            id: pendingRecord.id,
             name: item.name,
-            originalPath: originalPath,
+            originalPath: pendingRecord.originalPath,
             trashPath: trashURL.standardizedFileURL.path(percentEncoded: false),
-            sourceRootPath: item.sourceRoot?.standardizedFileURL.path(percentEncoded: false),
-            relativeDirectory: item.relativeDirectory,
-            fileSizeBytes: item.fileSizeBytes
+            sourceRootPath: pendingRecord.sourceRootPath,
+            relativeDirectory: pendingRecord.relativeDirectory,
+            fileSizeBytes: pendingRecord.fileSizeBytes,
+            trashedAt: pendingRecord.requestedAt
         )
         trashedSourceRecords.insert(record, at: 0)
+        return .restoreLedgerRecorded
     }
 
     private func appendRestoredInput(from record: TrashedSourceRecord, restoredURL: URL) {
@@ -1159,6 +1721,28 @@ final class EncoderViewModel: ObservableObject {
         inputs.sort {
             $0.url.path.localizedCaseInsensitiveCompare($1.url.path) == .orderedAscending
         }
+    }
+
+    private func appendRestoredFileURLs(_ urls: [URL]) {
+        guard !urls.isEmpty else { return }
+
+        var existing = Set(inputs.map { $0.url.standardizedFileURL.path })
+        let sourceRoot = restoreDestinationRoot
+        var additions: [AudioInputItem] = []
+
+        for url in urls where isSupportedAudio(url) {
+            let key = url.standardizedFileURL.path
+            guard !existing.contains(key) else { continue }
+            additions.append(inputItem(for: url, sourceRoot: sourceRoot))
+            existing.insert(key)
+        }
+
+        inputs.append(contentsOf: additions)
+        inputs.sort {
+            $0.url.path.localizedCaseInsensitiveCompare($1.url.path) == .orderedAscending
+        }
+        jobs.removeAll()
+        rememberInputDirectory(fromFiles: urls)
     }
 
     private func queueAddStatusMessage(for summary: AddSummary) -> String {
