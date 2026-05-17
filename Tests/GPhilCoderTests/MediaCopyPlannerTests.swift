@@ -22,6 +22,24 @@ final class MediaCopyPlannerTests: XCTestCase {
         XCTAssertTrue(MediaFileFilter.all.matches(URL(fileURLWithPath: "/tmp/archive.zip")))
         XCTAssertFalse(MediaFileFilter.audio.matches(URL(fileURLWithPath: "/tmp/clip.mov")))
         XCTAssertFalse(MediaFileFilter.video.matches(URL(fileURLWithPath: "/tmp/song.aiff")))
+        XCTAssertTrue(
+            MediaFileFilter.audio.matches(
+                URL(fileURLWithPath: "/tmp/song.FLAC"),
+                selectedExtensions: ["flac"]
+            )
+        )
+        XCTAssertFalse(
+            MediaFileFilter.audio.matches(
+                URL(fileURLWithPath: "/tmp/dialogue.wav"),
+                selectedExtensions: ["flac"]
+            )
+        )
+        XCTAssertFalse(
+            MediaFileFilter.video.matches(
+                URL(fileURLWithPath: "/tmp/render.mp4"),
+                selectedExtensions: []
+            )
+        )
     }
 
     func testBuildPlanPreservesRelativeFoldersAndDetectsConflicts() throws {
@@ -96,6 +114,33 @@ final class MediaCopyPlannerTests: XCTestCase {
         )
     }
 
+    func testBuildPlanFiltersToSelectedExtensions() throws {
+        let sourceRoot = try makeTemporaryDirectory()
+        let destinationRoot = try makeTemporaryDirectory()
+        try writeFile("Audio/song.flac", in: sourceRoot, contents: "flac")
+        try writeFile("Audio/dialogue.wav", in: sourceRoot, contents: "wav")
+        try writeFile("Video/clip.mov", in: sourceRoot, contents: "mov")
+
+        let flacPlan = try MediaCopyPlanner.buildPlan(
+            sourceRoot: sourceRoot,
+            destinationRoot: destinationRoot,
+            filter: .audio,
+            selectedExtensions: ["flac"]
+        )
+
+        XCTAssertEqual(flacPlan.candidates.map(\.relativePath), ["Audio/song.flac"])
+        XCTAssertEqual(flacPlan.selectedExtensions, Set(["flac"]))
+
+        let emptySelectionPlan = try MediaCopyPlanner.buildPlan(
+            sourceRoot: sourceRoot,
+            destinationRoot: destinationRoot,
+            filter: .audio,
+            selectedExtensions: []
+        )
+
+        XCTAssertTrue(emptySelectionPlan.candidates.isEmpty)
+    }
+
     func testCopyCandidateCreatesDestinationSubfolders() throws {
         let sourceRoot = try makeTemporaryDirectory()
         let destinationRoot = try makeTemporaryDirectory()
@@ -168,6 +213,7 @@ final class MediaCopyPlannerTests: XCTestCase {
             sourceRoot: sourceRoot,
             destinationRoot: destinationRoot,
             filter: .all,
+            selectedExtensions: nil,
             createdAt: Date(timeIntervalSince1970: 1_800_000_000)
         )
         let document = MediaCopyJobDocument(
@@ -188,6 +234,57 @@ final class MediaCopyPlannerTests: XCTestCase {
         XCTAssertEqual(decoded.workflows.first?.sourceRoot, sourceRoot)
         XCTAssertEqual(decoded.workflows.first?.destinationRoot, destinationRoot)
         XCTAssertEqual(decoded.workflows.first?.filter, .all)
+        XCTAssertNil(decoded.workflows.first?.selectedExtensions)
+    }
+
+    func testMediaCopyJobDocumentRoundTripsSelectedExtensions() throws {
+        let workflow = MediaCopyWorkflow(
+            sourceRoot: URL(fileURLWithPath: "/Volumes/Source", isDirectory: true),
+            destinationRoot: URL(fileURLWithPath: "/Volumes/Target", isDirectory: true),
+            filter: .video,
+            selectedExtensions: ["mov", "mp4"],
+            createdAt: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+        let document = MediaCopyJobDocument(
+            savedAt: Date(timeIntervalSince1970: 1_800_000_100),
+            workflows: [workflow]
+        )
+
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let data = try encoder.encode(document)
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let decoded = try decoder.decode(MediaCopyJobDocument.self, from: data)
+
+        XCTAssertEqual(decoded.workflows.first?.filter, .video)
+        XCTAssertEqual(decoded.workflows.first?.selectedExtensions, Set(["mov", "mp4"]))
+    }
+
+    func testMediaCopyJobDocumentDecodesLegacyWorkflowWithoutSelectedExtensions() throws {
+        let data = """
+            {
+              "version": 1,
+              "savedAt": "2026-05-17T00:00:00Z",
+              "workflows": [
+                {
+                  "id": "00000000-0000-0000-0000-000000000001",
+                  "sourceRoot": "/Volumes/Source",
+                  "destinationRoot": "/Volumes/Target",
+                  "filter": "audio",
+                  "createdAt": "2026-05-17T00:00:00Z"
+                }
+              ]
+            }
+            """.data(using: .utf8)!
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let decoded = try decoder.decode(MediaCopyJobDocument.self, from: data)
+
+        XCTAssertEqual(decoded.workflows.first?.filter, .audio)
+        XCTAssertNil(decoded.workflows.first?.selectedExtensions)
     }
 
     func testQueuedWorkflowDestinationPreservesSourceFolderName() {

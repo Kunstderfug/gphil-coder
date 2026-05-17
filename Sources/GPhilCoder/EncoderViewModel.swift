@@ -35,6 +35,8 @@ final class EncoderViewModel: ObservableObject {
         static let mediaCopySourceRootPaths = "mediaCopySourceRootPaths"
         static let mediaCopyDestinationRootPath = "mediaCopyDestinationRootPath"
         static let mediaCopyFilter = "mediaCopyFilter"
+        static let mediaCopyAudioExtensions = "mediaCopyAudioExtensions"
+        static let mediaCopyVideoExtensions = "mediaCopyVideoExtensions"
     }
 
     private enum QueueFile {
@@ -90,6 +92,55 @@ final class EncoderViewModel: ObservableObject {
         var failed = 0
         var copiedURLs: [URL] = []
         var failedNames: [String] = []
+    }
+
+    private struct TrashableFileItem: Identifiable, Sendable {
+        let id: UUID
+        let url: URL
+        let sourceRoot: URL?
+        let relativeDirectory: String?
+        let fileSizeBytes: Int64
+
+        init(
+            id: UUID = UUID(),
+            url: URL,
+            sourceRoot: URL?,
+            relativeDirectory: String?,
+            fileSizeBytes: Int64
+        ) {
+            self.id = id
+            self.url = url
+            self.sourceRoot = sourceRoot
+            self.relativeDirectory = relativeDirectory
+            self.fileSizeBytes = fileSizeBytes
+        }
+
+        init(audioInput item: AudioInputItem) {
+            self.init(
+                id: item.id,
+                url: item.url,
+                sourceRoot: item.sourceRoot,
+                relativeDirectory: item.relativeDirectory,
+                fileSizeBytes: item.fileSizeBytes
+            )
+        }
+
+        var name: String {
+            url.lastPathComponent
+        }
+    }
+
+    private struct MediaTrashResult: Sendable {
+        var total: Int
+        var moved = 0
+        var failed = 0
+        var emergencyOnly = 0
+        var failedNames: [String] = []
+        var cancelled = false
+
+        init(total: Int = 0) {
+            self.total = total
+        }
     }
 
     @Published private(set) var inputs: [AudioInputItem] = []
@@ -167,10 +218,31 @@ final class EncoderViewModel: ObservableObject {
             invalidateMediaCopyPlanIfChanged(from: oldValue, to: mediaCopyFilter)
         }
     }
+    @Published private(set) var mediaCopyAudioExtensions: Set<String> =
+        MediaFileFilter.audio.fileExtensions
+    {
+        didSet {
+            persistMediaCopyExtensions(mediaCopyAudioExtensions, forKey: DefaultsKey.mediaCopyAudioExtensions)
+            if mediaCopyFilter == .audio {
+                invalidateMediaCopyPlanIfChanged(from: oldValue, to: mediaCopyAudioExtensions)
+            }
+        }
+    }
+    @Published private(set) var mediaCopyVideoExtensions: Set<String> =
+        MediaFileFilter.video.fileExtensions
+    {
+        didSet {
+            persistMediaCopyExtensions(mediaCopyVideoExtensions, forKey: DefaultsKey.mediaCopyVideoExtensions)
+            if mediaCopyFilter == .video {
+                invalidateMediaCopyPlanIfChanged(from: oldValue, to: mediaCopyVideoExtensions)
+            }
+        }
+    }
     @Published private(set) var mediaCopyPlan: MediaCopyPlan?
     @Published private(set) var mediaCopyProgress: MediaCopyProgress?
     @Published private(set) var isMediaCopyScanning = false
     @Published private(set) var isMediaCopying = false
+    @Published private(set) var isMediaDeleting = false
     @Published private(set) var mediaCopyQueue: [MediaCopyWorkflow] = []
     @Published private(set) var currentMediaCopyWorkflowID: UUID?
 
@@ -434,11 +506,11 @@ final class EncoderViewModel: ObservableObject {
     }
 
     var canRestoreTrashedSources: Bool {
-        !isEncoding && !trashedSourceRecords.isEmpty
+        !isEncoding && !isMediaCopyBusy && !trashedSourceRecords.isEmpty
     }
 
     var canClearTrashedSourceRecords: Bool {
-        !isEncoding && !trashedSourceRecords.isEmpty
+        !isEncoding && !isMediaCopyBusy && !trashedSourceRecords.isEmpty
     }
 
     var canBuildBackupRestorePlan: Bool {
@@ -460,7 +532,7 @@ final class EncoderViewModel: ObservableObject {
     }
 
     var isMediaCopyBusy: Bool {
-        isMediaCopyScanning || isMediaCopying
+        isMediaCopyScanning || isMediaCopying || isMediaDeleting
     }
 
     var isQuitBlockedByActiveProcess: Bool {
@@ -473,7 +545,7 @@ final class EncoderViewModel: ObservableObject {
         }
 
         if isMediaCopyBusy {
-            return "A file copy is still running. Cancel the copy or wait for it to finish before closing GPhil Coder."
+            return "A file management operation is still running. Cancel it or wait for it to finish before closing GPhil Coder."
         }
 
         return "An active process is still running. Wait for it to finish before closing GPhil Coder."
@@ -484,11 +556,20 @@ final class EncoderViewModel: ObservableObject {
     }
 
     var canPrepareMediaCopy: Bool {
-        primaryMediaCopySourceRoot != nil && mediaCopyDestinationRoot != nil && !isMediaCopyBusy
+        primaryMediaCopySourceRoot != nil && mediaCopyDestinationRoot != nil
+            && mediaCopyHasSelectedExtensionsForCurrentFilter && !isMediaCopyBusy
+    }
+
+    var canDeleteFilteredMediaFiles: Bool {
+        !mediaCopySourceRoots.isEmpty
+            && mediaCopyFilter.supportsExtensionSelection
+            && !currentMediaCopySelectedExtensions.isEmpty
+            && !isMediaCopyBusy
     }
 
     var canAddMediaCopyWorkflowToQueue: Bool {
-        !mediaCopySourceRoots.isEmpty && mediaCopyDestinationRoot != nil && !isMediaCopyBusy
+        !mediaCopySourceRoots.isEmpty && mediaCopyDestinationRoot != nil
+            && mediaCopyHasSelectedExtensionsForCurrentFilter && !isMediaCopyBusy
     }
 
     var canRunMediaCopyQueue: Bool {
@@ -514,6 +595,34 @@ final class EncoderViewModel: ObservableObject {
     var mediaCopyPreviewItems: [MediaCopyCandidate] {
         guard let plan = mediaCopyPlan else { return [] }
         return Array(plan.candidates.prefix(300))
+    }
+
+    var mediaCopyExtensionOptions: [String] {
+        mediaCopyFilter.fileExtensions.sorted()
+    }
+
+    var mediaCopySelectedExtensionSummary: String {
+        mediaCopyFilter.readableExtensionList(selectedExtensions: currentMediaCopySelectedExtensions)
+    }
+
+    var mediaCopyExtensionMenuTitle: String {
+        guard mediaCopyFilter.supportsExtensionSelection else { return "All files" }
+        let selectedExtensions = currentMediaCopySelectedExtensions
+        guard !selectedExtensions.isEmpty else { return "No extensions selected" }
+        guard selectedExtensions != mediaCopyFilter.fileExtensions else {
+            return "All \(mediaCopyFilter.title.lowercased()) extensions"
+        }
+        if selectedExtensions.count == 1, let onlyExtension = selectedExtensions.first {
+            return ".\(onlyExtension)"
+        }
+        return "\(selectedExtensions.count) extensions selected"
+    }
+
+    var mediaCopyDeleteSummary: String {
+        guard mediaCopyFilter.supportsExtensionSelection else {
+            return "Choose Audio or Video before deleting."
+        }
+        return "\(mediaCopyFilter.title.lowercased()) files matching \(mediaCopySelectedExtensionSummary)"
     }
 
     var mediaCopyQueueTotalCount: Int {
@@ -606,6 +715,14 @@ final class EncoderViewModel: ObservableObject {
                 size: record.size
             )
         }
+    }
+
+    private var currentMediaCopySelectedExtensions: Set<String> {
+        selectedExtensions(for: mediaCopyFilter) ?? []
+    }
+
+    private var mediaCopyHasSelectedExtensionsForCurrentFilter: Bool {
+        !mediaCopyFilter.supportsExtensionSelection || !currentMediaCopySelectedExtensions.isEmpty
     }
 
     var activeFilterStatusMessage: String {
@@ -813,6 +930,60 @@ final class EncoderViewModel: ObservableObject {
         format.fileExtensions.isSubset(of: selectedInputExtensions)
     }
 
+    func isMediaCopyExtensionEnabled(_ fileExtension: String) -> Bool {
+        currentMediaCopySelectedExtensions.contains(fileExtension.lowercased())
+    }
+
+    func setMediaCopyExtension(_ fileExtension: String, enabled: Bool) {
+        guard !isMediaCopyBusy else { return }
+        let normalizedExtension = fileExtension.lowercased()
+        guard mediaCopyFilter.fileExtensions.contains(normalizedExtension) else { return }
+
+        switch mediaCopyFilter {
+        case .all:
+            return
+        case .audio:
+            if enabled {
+                mediaCopyAudioExtensions.insert(normalizedExtension)
+            } else {
+                mediaCopyAudioExtensions.remove(normalizedExtension)
+            }
+        case .video:
+            if enabled {
+                mediaCopyVideoExtensions.insert(normalizedExtension)
+            } else {
+                mediaCopyVideoExtensions.remove(normalizedExtension)
+            }
+        }
+        statusMessage = "File Management filter set to \(mediaCopyDeleteSummary)."
+    }
+
+    func selectAllMediaCopyExtensions() {
+        guard !isMediaCopyBusy, mediaCopyFilter.supportsExtensionSelection else { return }
+        switch mediaCopyFilter {
+        case .all:
+            return
+        case .audio:
+            mediaCopyAudioExtensions = MediaFileFilter.audio.fileExtensions
+        case .video:
+            mediaCopyVideoExtensions = MediaFileFilter.video.fileExtensions
+        }
+        statusMessage = "Selected all \(mediaCopyFilter.title.lowercased()) extensions."
+    }
+
+    func deselectAllMediaCopyExtensions() {
+        guard !isMediaCopyBusy, mediaCopyFilter.supportsExtensionSelection else { return }
+        switch mediaCopyFilter {
+        case .all:
+            return
+        case .audio:
+            mediaCopyAudioExtensions.removeAll()
+        case .video:
+            mediaCopyVideoExtensions.removeAll()
+        }
+        statusMessage = "Deselected all \(mediaCopyFilter.title.lowercased()) extensions."
+    }
+
     func selectAllInputFormats() {
         guard !isEncoding else { return }
         selectedInputExtensions = AudioFormat.inputExtensions
@@ -876,7 +1047,10 @@ final class EncoderViewModel: ObservableObject {
         }
 
         do {
-            let result = try moveItemToTrashAndRecord(item, pendingRecord: pendingRecord)
+            let result = try moveItemToTrashAndRecord(
+                TrashableFileItem(audioInput: item),
+                pendingRecord: pendingRecord
+            )
             inputs.removeAll { $0.id == item.id }
             jobs.removeAll()
             jobStateFilter = nil
@@ -935,7 +1109,10 @@ final class EncoderViewModel: ObservableObject {
             }
 
             do {
-                let result = try moveItemToTrashAndRecord(item, pendingRecord: pendingRecord)
+                let result = try moveItemToTrashAndRecord(
+                    TrashableFileItem(audioInput: item),
+                    pendingRecord: pendingRecord
+                )
                 trashedIDs.insert(item.id)
                 if result == .restoreLedgerRecorded {
                     try? removePendingTrashRecords(ids: [pendingRecord.id])
@@ -973,7 +1150,7 @@ final class EncoderViewModel: ObservableObject {
 
         let count = trashedSourceRecords.count
         let alert = NSAlert()
-        alert.messageText = "Restore trashed source files?"
+        alert.messageText = "Restore trashed files?"
         alert.informativeText =
             "GPhilCoder will move \(count) recorded Trash item\(count == 1 ? "" : "s") back to their original folder when the Trash item still exists and the original path is free."
         alert.alertStyle = .informational
@@ -1020,7 +1197,7 @@ final class EncoderViewModel: ObservableObject {
         jobStateFilter = nil
 
         var details = [
-            "Restored \(restored.count) source file\(restored.count == 1 ? "" : "s")."
+            "Restored \(restored.count) file\(restored.count == 1 ? "" : "s")."
         ]
         if !unavailable.isEmpty {
             details.append(
@@ -1047,7 +1224,7 @@ final class EncoderViewModel: ObservableObject {
         let alert = NSAlert()
         alert.messageText = "Clear restore records?"
         alert.informativeText =
-            "This only removes GPhilCoder's saved restore list for \(count) trashed source file\(count == 1 ? "" : "s"). It does not delete or restore any files."
+            "This only removes GPhilCoder's saved restore list for \(count) trashed file\(count == 1 ? "" : "s"). It does not delete or restore any files."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Clear Records")
         alert.addButton(withTitle: "Cancel")
@@ -1123,6 +1300,10 @@ final class EncoderViewModel: ObservableObject {
         runMediaCopyPreflight(copyAfterScan: true)
     }
 
+    func deleteFilteredMediaFiles() {
+        runFilteredMediaTrash()
+    }
+
     func addCurrentMediaCopyWorkflowToQueue() {
         guard let destinationRoot = mediaCopyDestinationRoot,
             canAddMediaCopyWorkflowToQueue
@@ -1142,7 +1323,8 @@ final class EncoderViewModel: ObservableObject {
             MediaCopyWorkflow(
                 sourceRoot: $0,
                 destinationRoot: destinationRoot,
-                filter: mediaCopyFilter
+                filter: mediaCopyFilter,
+                selectedExtensions: selectedExtensions(for: mediaCopyFilter)
             )
         }
         mediaCopyQueue.append(contentsOf: workflows)
@@ -1263,9 +1445,10 @@ final class EncoderViewModel: ObservableObject {
         mediaCopyTask = nil
         isMediaCopyScanning = false
         isMediaCopying = false
+        isMediaDeleting = false
         mediaCopyProgress = nil
         currentMediaCopyWorkflowID = nil
-        statusMessage = "Media copy cancelled."
+        statusMessage = "File management operation cancelled."
     }
 
     func buildBackupRestorePlan() {
@@ -1543,6 +1726,7 @@ final class EncoderViewModel: ObservableObject {
         isMediaCopying = false
 
         let filter = mediaCopyFilter
+        let selectedExtensions = selectedExtensions(for: filter)
         statusMessage =
             "Scanning \(filter.fileTypeName) files in \(sourceRoot.lastPathComponent)..."
 
@@ -1552,7 +1736,8 @@ final class EncoderViewModel: ObservableObject {
                     try MediaCopyPlanner.buildPlan(
                         sourceRoot: sourceRoot,
                         destinationRoot: destinationRoot,
-                        filter: filter
+                        filter: filter,
+                        selectedExtensions: selectedExtensions
                     )
                 }
                 let plan = try await withTaskCancellationHandler {
@@ -1642,6 +1827,139 @@ final class EncoderViewModel: ObservableObject {
         }
     }
 
+    private func runFilteredMediaTrash() {
+        guard canDeleteFilteredMediaFiles else {
+            statusMessage =
+                mediaCopyFilter.supportsExtensionSelection
+                ? "Choose source folders and at least one extension before deleting filtered files."
+                : "Choose Audio or Video before deleting filtered files."
+            return
+        }
+
+        let sourceRoots = mediaCopySourceRoots
+        let filter = mediaCopyFilter
+        let selectedExtensions = currentMediaCopySelectedExtensions
+
+        mediaCopyTask?.cancel()
+        mediaCopyPlan = nil
+        mediaCopyProgress = nil
+        currentMediaCopyWorkflowID = nil
+        isMediaCopyScanning = true
+        isMediaCopying = false
+        isMediaDeleting = true
+        statusMessage =
+            "Scanning \(filter.compactExtensionSummary(selectedExtensions: selectedExtensions)) in \(sourceRoots.count) source folder\(sourceRoots.count == 1 ? "" : "s")..."
+
+        mediaCopyTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let worker = Task.detached(priority: .userInitiated) {
+                    try Self.buildTrashableMediaItems(
+                        sourceRoots: sourceRoots,
+                        filter: filter,
+                        selectedExtensions: selectedExtensions
+                    )
+                }
+                let items = try await withTaskCancellationHandler {
+                    try await worker.value
+                } onCancel: {
+                    worker.cancel()
+                }
+
+                guard !Task.isCancelled else { return }
+
+                isMediaCopyScanning = false
+
+                guard !items.isEmpty else {
+                    isMediaDeleting = false
+                    mediaCopyTask = nil
+                    let completionMessage =
+                        "No \(filter.fileTypeName) files matching \(filter.readableExtensionList(selectedExtensions: selectedExtensions)) were found in the selected source folders."
+                    statusMessage = completionMessage
+                    AppNotifier.notifyIfAppInactive(
+                        title: "Filtered delete finished",
+                        body: completionMessage
+                    )
+                    return
+                }
+
+                guard confirmFilteredMediaTrash(
+                    itemCount: items.count,
+                    totalSize: items.reduce(Int64(0)) { $0 + $1.fileSizeBytes },
+                    sourceRootCount: sourceRoots.count,
+                    filter: filter,
+                    selectedExtensions: selectedExtensions
+                ) else {
+                    isMediaDeleting = false
+                    mediaCopyTask = nil
+                    statusMessage = "Filtered delete cancelled."
+                    return
+                }
+
+                let pendingRecordsByItemID: [UUID: PendingTrashSourceRecord]
+                do {
+                    pendingRecordsByItemID = try recordPendingTrashIntents(for: items)
+                } catch {
+                    isMediaDeleting = false
+                    mediaCopyTask = nil
+                    statusMessage =
+                        "Could not save emergency trash journal. Nothing moved to Trash: \(error.localizedDescription)"
+                    return
+                }
+
+                isMediaDeleting = true
+                let progressStartedAt = Date()
+                mediaCopyProgress = MediaCopyProgress(
+                    completed: 0,
+                    total: items.count,
+                    copied: 0,
+                    skippedExisting: 0,
+                    failed: 0,
+                    copiedBytes: 0,
+                    totalBytes: items.reduce(Int64(0)) { $0 + $1.fileSizeBytes },
+                    startedAt: progressStartedAt,
+                    updatedAt: progressStartedAt,
+                    currentName: nil
+                )
+                statusMessage =
+                    "Moving \(items.count) filtered file\(items.count == 1 ? "" : "s") to Trash..."
+
+                let result = await moveTrashableItemsToTrash(
+                    items,
+                    pendingRecordsByItemID: pendingRecordsByItemID
+                )
+
+                guard !Task.isCancelled else { return }
+
+                isMediaDeleting = false
+                mediaCopyTask = nil
+                let completionMessage = Self.mediaTrashResultStatusMessage(
+                    result,
+                    filter: filter,
+                    selectedExtensions: selectedExtensions
+                )
+                statusMessage = completionMessage
+                AppNotifier.notifyIfAppInactive(
+                    title: "Filtered delete finished",
+                    body: completionMessage
+                )
+            } catch is CancellationError {
+                guard !Task.isCancelled else { return }
+                isMediaCopyScanning = false
+                isMediaDeleting = false
+                mediaCopyTask = nil
+                statusMessage = "Filtered delete cancelled."
+            } catch {
+                guard !Task.isCancelled else { return }
+                mediaCopyProgress = nil
+                isMediaCopyScanning = false
+                isMediaDeleting = false
+                mediaCopyTask = nil
+                statusMessage = "Could not prepare filtered delete: \(error.localizedDescription)"
+            }
+        }
+    }
+
     private func runQueuedMediaCopyWorkflows(_ workflows: [MediaCopyWorkflow]) {
         mediaCopyTask?.cancel()
         mediaCopyPlan = nil
@@ -1666,7 +1984,8 @@ final class EncoderViewModel: ObservableObject {
                         try MediaCopyPlanner.buildPlan(
                             sourceRoot: workflow.sourceRoot,
                             destinationRoot: workflow.destinationRootPreservingSourceFolder,
-                            filter: workflow.filter
+                            filter: workflow.filter,
+                            selectedExtensions: workflow.selectedExtensions
                         )
                     }
                     let plan = try await withTaskCancellationHandler {
@@ -1848,6 +2167,101 @@ final class EncoderViewModel: ObservableObject {
         return result
     }
 
+    private func moveTrashableItemsToTrash(
+        _ items: [TrashableFileItem],
+        pendingRecordsByItemID: [UUID: PendingTrashSourceRecord]
+    ) async -> MediaTrashResult {
+        var result = MediaTrashResult(total: items.count)
+        let progressStartedAt = Date()
+        let totalBytes = items.reduce(Int64(0)) { $0 + $1.fileSizeBytes }
+        var movedBytes: Int64 = 0
+        var movedPaths = Set<String>()
+
+        for (index, item) in items.enumerated() {
+            if Task.isCancelled {
+                result.cancelled = true
+                break
+            }
+
+            mediaCopyProgress = MediaCopyProgress(
+                completed: index,
+                total: items.count,
+                copied: result.moved,
+                skippedExisting: 0,
+                failed: result.failed,
+                copiedBytes: movedBytes,
+                totalBytes: totalBytes,
+                startedAt: progressStartedAt,
+                updatedAt: Date(),
+                currentName: item.name
+            )
+
+            guard let pendingRecord = pendingRecordsByItemID[item.id] else {
+                result.failed += 1
+                result.failedNames.append(item.name)
+                continue
+            }
+
+            do {
+                let moveResult = try moveItemToTrashAndRecord(item, pendingRecord: pendingRecord)
+                result.moved += 1
+                movedBytes += item.fileSizeBytes
+                movedPaths.insert(item.url.standardizedFileURL.path)
+                if moveResult == .restoreLedgerRecorded {
+                    try? removePendingTrashRecords(ids: [pendingRecord.id])
+                } else {
+                    result.emergencyOnly += 1
+                }
+            } catch {
+                removePendingTrashRecordIfOriginalStillExists(pendingRecord)
+                result.failed += 1
+                result.failedNames.append(item.name)
+            }
+
+            mediaCopyProgress = MediaCopyProgress(
+                completed: index + 1,
+                total: items.count,
+                copied: result.moved,
+                skippedExisting: 0,
+                failed: result.failed,
+                copiedBytes: movedBytes,
+                totalBytes: totalBytes,
+                startedAt: progressStartedAt,
+                updatedAt: Date(),
+                currentName: item.name
+            )
+            let speedDetail = mediaCopyProgress?.bytesPerSecond
+                .map { " at \($0.formattedMegabytesPerSecond)" } ?? ""
+            statusMessage =
+                "Moved \(result.moved), failed \(result.failed) of \(items.count) to Trash\(speedDetail)."
+        }
+
+        if !movedPaths.isEmpty {
+            inputs.removeAll { movedPaths.contains($0.url.standardizedFileURL.path) }
+            jobs.removeAll()
+            jobStateFilter = nil
+        }
+
+        return result
+    }
+
+    private func confirmFilteredMediaTrash(
+        itemCount: Int,
+        totalSize: Int64,
+        sourceRootCount: Int,
+        filter: MediaFileFilter,
+        selectedExtensions: Set<String>
+    ) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "Move filtered files to Trash?"
+        alert.informativeText =
+            "GPhilCoder will move \(itemCount) \(filter.fileTypeName) file\(itemCount == 1 ? "" : "s") matching \(filter.readableExtensionList(selectedExtensions: selectedExtensions)) to the macOS Trash from \(sourceRootCount) selected source folder\(sourceRootCount == 1 ? "" : "s"). Other file extensions stay untouched. Restore records will be saved so these files can be moved back when the Trash items are still available. Total size: \(totalSize.formattedFileSize)."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Move to Trash")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
     private func promptMediaCopyConflictResolution(
         for plans: [MediaCopyPlan]
     ) -> MediaCopyConflictResolution? {
@@ -1880,6 +2294,105 @@ final class EncoderViewModel: ObservableObject {
         default:
             return nil
         }
+    }
+
+    nonisolated private static func buildTrashableMediaItems(
+        sourceRoots: [URL],
+        filter: MediaFileFilter,
+        selectedExtensions: Set<String>
+    ) throws -> [TrashableFileItem] {
+        var items: [TrashableFileItem] = []
+        var seenPaths = Set<String>()
+        let fileManager = FileManager.default
+        let keys: [URLResourceKey] = [.isRegularFileKey, .fileSizeKey]
+
+        for sourceRoot in sourceRoots {
+            guard
+                let enumerator = fileManager.enumerator(
+                    at: sourceRoot,
+                    includingPropertiesForKeys: keys,
+                    options: [.skipsPackageDescendants]
+                )
+            else {
+                throw CocoaError(.fileReadNoSuchFile)
+            }
+
+            for case let sourceURL as URL in enumerator {
+                try Task.checkCancellation()
+
+                let values = try? sourceURL.resourceValues(forKeys: Set(keys))
+                guard values?.isRegularFile == true,
+                    filter.matches(sourceURL, selectedExtensions: selectedExtensions)
+                else {
+                    continue
+                }
+
+                let standardizedPath = sourceURL.standardizedFileURL.path
+                guard !seenPaths.contains(standardizedPath) else { continue }
+
+                let relativeComponents = relativePathComponents(
+                    for: sourceURL,
+                    sourceRoot: sourceRoot
+                )
+                let relativeDirectory = relativeComponents?.dropLast().joined(separator: "/")
+                items.append(
+                    TrashableFileItem(
+                        url: sourceURL,
+                        sourceRoot: sourceRoot,
+                        relativeDirectory: relativeDirectory?.isEmpty == true
+                            ? nil
+                            : relativeDirectory,
+                        fileSizeBytes: values?.fileSize.map(Int64.init) ?? 0
+                    )
+                )
+                seenPaths.insert(standardizedPath)
+            }
+        }
+
+        return items.sorted {
+            $0.url.path.localizedCaseInsensitiveCompare($1.url.path) == .orderedAscending
+        }
+    }
+
+    nonisolated private static func relativePathComponents(
+        for url: URL,
+        sourceRoot: URL
+    ) -> [String]? {
+        let rootComponents = sourceRoot.standardizedFileURL.pathComponents
+        let itemComponents = url.standardizedFileURL.pathComponents
+
+        guard itemComponents.count > rootComponents.count,
+            Array(itemComponents.prefix(rootComponents.count)) == rootComponents
+        else {
+            return nil
+        }
+
+        return Array(itemComponents.dropFirst(rootComponents.count))
+    }
+
+    nonisolated private static func mediaTrashResultStatusMessage(
+        _ result: MediaTrashResult,
+        filter: MediaFileFilter,
+        selectedExtensions: Set<String>
+    ) -> String {
+        if result.cancelled {
+            return "Filtered delete cancelled after \(result.moved) moved file\(result.moved == 1 ? "" : "s")."
+        }
+
+        var details = [
+            "Moved \(result.moved) \(filter.fileTypeName) file\(result.moved == 1 ? "" : "s") matching \(filter.readableExtensionList(selectedExtensions: selectedExtensions)) to Trash."
+        ]
+        if result.emergencyOnly > 0 {
+            details.append(
+                "\(result.emergencyOnly) restore path\(result.emergencyOnly == 1 ? "" : "s") kept in the emergency journal because macOS did not return a Trash path."
+            )
+        }
+        if result.failed > 0 {
+            details.append(
+                "Failed \(result.failed): \(result.failedNames.prefix(3).joined(separator: ", "))\(result.failedNames.count > 3 ? "..." : "")."
+            )
+        }
+        return details.joined(separator: " ")
     }
 
     nonisolated private static func copyUnresolvedItems(
@@ -2408,6 +2921,14 @@ final class EncoderViewModel: ObservableObject {
         {
             mediaCopyFilter = value
         }
+        if let extensions = defaults.array(forKey: DefaultsKey.mediaCopyAudioExtensions) as? [String] {
+            mediaCopyAudioExtensions = Set(extensions.map { $0.lowercased() })
+                .intersection(MediaFileFilter.audio.fileExtensions)
+        }
+        if let extensions = defaults.array(forKey: DefaultsKey.mediaCopyVideoExtensions) as? [String] {
+            mediaCopyVideoExtensions = Set(extensions.map { $0.lowercased() })
+                .intersection(MediaFileFilter.video.fileExtensions)
+        }
 
         if let selectedInputExtensions = defaults.array(forKey: DefaultsKey.selectedInputExtensions)
             as? [String]
@@ -2567,6 +3088,21 @@ final class EncoderViewModel: ObservableObject {
         }
     }
 
+    private func selectedExtensions(for filter: MediaFileFilter) -> Set<String>? {
+        switch filter {
+        case .all:
+            nil
+        case .audio:
+            mediaCopyAudioExtensions
+        case .video:
+            mediaCopyVideoExtensions
+        }
+    }
+
+    private func persistMediaCopyExtensions(_ extensions: Set<String>, forKey key: String) {
+        UserDefaults.standard.set(extensions.sorted(), forKey: key)
+    }
+
     private func chooseDirectory(title: String, prompt: String, initialURL: URL?) -> URL? {
         let panel = NSOpenPanel()
         panel.title = title
@@ -2674,7 +3210,7 @@ final class EncoderViewModel: ObservableObject {
     private func recordPendingTrashIntent(
         for item: AudioInputItem
     ) throws -> PendingTrashSourceRecord {
-        let recordsByID = try recordPendingTrashIntents(for: [item])
+        let recordsByID = try recordPendingTrashIntents(for: [TrashableFileItem(audioInput: item)])
         guard let record = recordsByID[item.id] else {
             throw CocoaError(.fileWriteUnknown)
         }
@@ -2683,6 +3219,12 @@ final class EncoderViewModel: ObservableObject {
 
     private func recordPendingTrashIntents(
         for items: [AudioInputItem]
+    ) throws -> [UUID: PendingTrashSourceRecord] {
+        try recordPendingTrashIntents(for: items.map { TrashableFileItem(audioInput: $0) })
+    }
+
+    private func recordPendingTrashIntents(
+        for items: [TrashableFileItem]
     ) throws -> [UUID: PendingTrashSourceRecord] {
         var nextRecords = pendingTrashSourceRecords
         var recordsByItemID: [UUID: PendingTrashSourceRecord] = [:]
@@ -2769,7 +3311,7 @@ final class EncoderViewModel: ObservableObject {
     }
 
     private func moveItemToTrashAndRecord(
-        _ item: AudioInputItem,
+        _ item: TrashableFileItem,
         pendingRecord: PendingTrashSourceRecord
     ) throws -> TrashMoveRecordResult {
         var resultingItemURL: NSURL?

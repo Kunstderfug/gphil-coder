@@ -157,7 +157,48 @@ struct ContentView: View {
                     .disabled(model.isMediaCopyBusy)
                     .arrowCursorOnHover()
 
-                    Text(model.mediaCopyFilter.readableExtensions)
+                    if model.mediaCopyFilter.supportsExtensionSelection {
+                        Menu {
+                            Button {
+                                model.selectAllMediaCopyExtensions()
+                            } label: {
+                                Label("Select all", systemImage: "checklist.checked")
+                            }
+
+                            Button {
+                                model.deselectAllMediaCopyExtensions()
+                            } label: {
+                                Label("Deselect all", systemImage: "checklist.unchecked")
+                            }
+
+                            Divider()
+
+                            ForEach(model.mediaCopyExtensionOptions, id: \.self) { fileExtension in
+                                Toggle(
+                                    ".\(fileExtension)",
+                                    isOn: Binding(
+                                        get: { model.isMediaCopyExtensionEnabled(fileExtension) },
+                                        set: { model.setMediaCopyExtension(fileExtension, enabled: $0) }
+                                    )
+                                )
+                            }
+                        } label: {
+                            HStack(spacing: 8) {
+                                Text(model.mediaCopyExtensionMenuTitle)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                                Spacer()
+                                Image(systemName: "chevron.down")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
+                        .disabled(model.isMediaCopyBusy)
+                        .help("Choose the exact file extensions for this filter")
+                    }
+
+                    Text(model.mediaCopySelectedExtensionSummary)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(3)
@@ -215,13 +256,17 @@ struct ContentView: View {
                         Text("\(progress.completed) of \(progress.total)")
                             .monospacedDigit()
                         Spacer()
-                        Text("\(progress.copied) copied")
+                        Text(model.isMediaDeleting ? "\(progress.copied) moved" : "\(progress.copied) copied")
                     }
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
                     HStack {
-                        Text("\(progress.copiedBytes.formattedFileSize) copied")
+                        Text(
+                            model.isMediaDeleting
+                                ? "\(progress.copiedBytes.formattedFileSize) moved"
+                                : "\(progress.copiedBytes.formattedFileSize) copied"
+                        )
                             .monospacedDigit()
                         Spacer()
                         Text(mediaCopySpeedText(for: progress))
@@ -282,6 +327,37 @@ struct ContentView: View {
                             .frame(maxWidth: .infinity)
                     }
                     .disabled(!model.canAddMediaCopyWorkflowToQueue)
+
+                    Button(role: .destructive) {
+                        model.deleteFilteredMediaFiles()
+                        selectedMediaCopyPreviewMode = .plan
+                    } label: {
+                        Label("Delete filtered files", systemImage: "trash")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .disabled(!model.canDeleteFilteredMediaFiles)
+                    .help("Move only the selected filtered extensions from source folders to the macOS Trash")
+
+                    HStack(spacing: 8) {
+                        Button {
+                            model.restoreTrashedSources()
+                        } label: {
+                            Label("Restore", systemImage: "arrow.uturn.backward.circle")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .disabled(!model.canRestoreTrashedSources)
+                        .help("Restore files moved to Trash by GPhilCoder")
+
+                        Button(role: .destructive) {
+                            model.clearTrashedSourceRecords()
+                        } label: {
+                            Label("Clear records", systemImage: "trash.slash")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .disabled(!model.canClearTrashedSourceRecords)
+                        .help("Forget saved restore records without changing any files")
+                    }
+                    .controlSize(.small)
                 }
             }
 
@@ -369,6 +445,13 @@ struct ContentView: View {
                 {
                     HStack(spacing: 8) {
                         FormatPill(text: plan.filter.title.uppercased())
+                        if plan.filter.supportsExtensionSelection {
+                            FormatPill(
+                                text: plan.filter
+                                    .compactExtensionSummary(selectedExtensions: plan.selectedExtensions)
+                                    .uppercased()
+                            )
+                        }
                         FormatPill(text: "\(plan.candidates.count) FILES")
                         if plan.directoryCount > 0 {
                             FormatPill(text: "\(plan.directoryCount) FOLDERS")
@@ -400,7 +483,15 @@ struct ContentView: View {
             CenteredStatusView(
                 symbol: "magnifyingglass",
                 title: "Scanning folders",
-                detail: "Checking \(model.mediaCopyFilter.fileTypeName) files and destination conflicts."
+                detail: model.isMediaDeleting
+                    ? "Checking \(model.mediaCopyDeleteSummary)."
+                    : "Checking \(model.mediaCopyFilter.fileTypeName) files and destination conflicts."
+            )
+        } else if model.isMediaDeleting {
+            CenteredStatusView(
+                symbol: "trash",
+                title: "Moving files to Trash",
+                detail: mediaCopyProgressDetail
             )
         } else if model.isMediaCopying {
             CenteredStatusView(
@@ -487,7 +578,13 @@ struct ContentView: View {
         }
 
         if model.isMediaCopyScanning {
-            return "Scanning \(model.mediaCopyFilter.fileTypeName) files."
+            return model.isMediaDeleting
+                ? "Scanning filtered files before moving them to Trash."
+                : "Scanning \(model.mediaCopyFilter.fileTypeName) files."
+        }
+
+        if model.isMediaDeleting {
+            return mediaCopyProgressDetail
         }
 
         if model.isMediaCopying {
@@ -512,11 +609,15 @@ struct ContentView: View {
 
     private var mediaCopyProgressDetail: String {
         guard let progress = model.mediaCopyProgress else {
-            return "Preparing copy."
+            return model.isMediaDeleting ? "Preparing filtered delete." : "Preparing copy."
         }
 
         let speedDetail = progress.bytesPerSecond
             .map { ", \($0.formattedMegabytesPerSecond)" } ?? ""
+        if model.isMediaDeleting {
+            return
+                "\(progress.completed) of \(progress.total) processed, \(progress.copied) moved, \(progress.failed) failed\(speedDetail)."
+        }
         return
             "\(progress.completed) of \(progress.total) processed, \(progress.copied) copied, \(progress.skippedExisting) skipped, \(progress.failed) failed\(speedDetail)."
     }
@@ -1704,6 +1805,17 @@ private struct MediaCopyWorkflowRow: View {
                     Text("\(index). \(workflow.filter.title)")
                         .font(.callout.weight(.semibold))
                         .lineLimit(1)
+
+                    if workflow.filter.supportsExtensionSelection {
+                        Text(
+                            workflow.filter
+                                .compactExtensionSummary(
+                                    selectedExtensions: workflow.selectedExtensions
+                                )
+                        )
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    }
 
                     Spacer()
 

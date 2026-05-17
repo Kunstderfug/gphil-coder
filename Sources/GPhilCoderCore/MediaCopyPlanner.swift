@@ -57,14 +57,42 @@ public enum MediaFileFilter: String, CaseIterable, Codable, Identifiable, Sendab
         }
     }
 
-    public var readableExtensions: String {
-        guard self != .all else { return "All files and folders" }
-        return fileExtensions.sorted().map { ".\($0)" }.joined(separator: ", ")
+    public var supportsExtensionSelection: Bool {
+        self != .all
     }
 
-    public func matches(_ url: URL) -> Bool {
+    public func effectiveExtensions(selectedExtensions: Set<String>? = nil) -> Set<String> {
+        guard supportsExtensionSelection else { return [] }
+        guard let selectedExtensions else { return fileExtensions }
+        return Set(selectedExtensions.map { $0.lowercased() }).intersection(fileExtensions)
+    }
+
+    public var readableExtensions: String {
+        readableExtensionList()
+    }
+
+    public func readableExtensionList(selectedExtensions: Set<String>? = nil) -> String {
+        guard self != .all else { return "All files and folders" }
+        let extensions = effectiveExtensions(selectedExtensions: selectedExtensions)
+        guard !extensions.isEmpty else { return "No extensions selected" }
+        return extensions.sorted().map { ".\($0)" }.joined(separator: ", ")
+    }
+
+    public func compactExtensionSummary(selectedExtensions: Set<String>? = nil) -> String {
+        guard supportsExtensionSelection else { return "All files" }
+        let extensions = effectiveExtensions(selectedExtensions: selectedExtensions)
+        guard !extensions.isEmpty else { return "No extensions" }
+        guard extensions != fileExtensions else { return "All \(title.lowercased()) extensions" }
+        if extensions.count == 1, let onlyExtension = extensions.first {
+            return ".\(onlyExtension)"
+        }
+        return "\(extensions.count) extensions"
+    }
+
+    public func matches(_ url: URL, selectedExtensions: Set<String>? = nil) -> Bool {
         guard self != .all else { return true }
-        return fileExtensions.contains(url.pathExtension.lowercased())
+        return effectiveExtensions(selectedExtensions: selectedExtensions)
+            .contains(url.pathExtension.lowercased())
     }
 }
 
@@ -112,6 +140,7 @@ public struct MediaCopyPlan: Sendable {
     public let sourceRoot: URL
     public let destinationRoot: URL
     public let filter: MediaFileFilter
+    public let selectedExtensions: Set<String>?
     public let candidates: [MediaCopyCandidate]
     public let relativeDirectories: [String]
     public let scannedAt: Date
@@ -120,6 +149,7 @@ public struct MediaCopyPlan: Sendable {
         sourceRoot: URL,
         destinationRoot: URL,
         filter: MediaFileFilter,
+        selectedExtensions: Set<String>? = nil,
         candidates: [MediaCopyCandidate],
         relativeDirectories: [String] = [],
         scannedAt: Date
@@ -127,6 +157,7 @@ public struct MediaCopyPlan: Sendable {
         self.sourceRoot = sourceRoot
         self.destinationRoot = destinationRoot
         self.filter = filter
+        self.selectedExtensions = selectedExtensions
         self.candidates = candidates
         self.relativeDirectories = relativeDirectories
         self.scannedAt = scannedAt
@@ -240,6 +271,7 @@ public struct MediaCopyWorkflow: Codable, Hashable, Identifiable, Sendable {
     public var sourceRoot: URL
     public var destinationRoot: URL
     public var filter: MediaFileFilter
+    public var selectedExtensions: Set<String>?
     public var createdAt: Date
 
     public init(
@@ -247,12 +279,14 @@ public struct MediaCopyWorkflow: Codable, Hashable, Identifiable, Sendable {
         sourceRoot: URL,
         destinationRoot: URL,
         filter: MediaFileFilter,
+        selectedExtensions: Set<String>? = nil,
         createdAt: Date = Date()
     ) {
         self.id = id
         self.sourceRoot = sourceRoot
         self.destinationRoot = destinationRoot
         self.filter = filter
+        self.selectedExtensions = selectedExtensions
         self.createdAt = createdAt
     }
 
@@ -290,7 +324,8 @@ public enum MediaCopyPlanner {
     public static func buildPlan(
         sourceRoot: URL,
         destinationRoot: URL,
-        filter: MediaFileFilter
+        filter: MediaFileFilter,
+        selectedExtensions: Set<String>? = nil
     ) throws -> MediaCopyPlan {
         var candidates: [MediaCopyCandidate] = []
         var relativeDirectories: [String] = []
@@ -322,7 +357,11 @@ public enum MediaCopyPlanner {
                 continue
             }
 
-            guard values?.isRegularFile == true, filter.matches(sourceURL) else { continue }
+            guard values?.isRegularFile == true,
+                filter.matches(sourceURL, selectedExtensions: selectedExtensions)
+            else {
+                continue
+            }
 
             guard let relativeComponents = relativePathComponents(
                 for: sourceURL,
@@ -361,6 +400,7 @@ public enum MediaCopyPlanner {
             sourceRoot: sourceRoot,
             destinationRoot: destinationRoot,
             filter: filter,
+            selectedExtensions: selectedExtensions,
             candidates: candidates,
             relativeDirectories: relativeDirectories,
             scannedAt: Date()
