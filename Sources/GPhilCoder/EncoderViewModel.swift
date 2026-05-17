@@ -463,6 +463,26 @@ final class EncoderViewModel: ObservableObject {
         isMediaCopyScanning || isMediaCopying
     }
 
+    var isQuitBlockedByActiveProcess: Bool {
+        isEncoding || isMediaCopyBusy
+    }
+
+    var activeProcessQuitBlockedMessage: String {
+        if isEncoding {
+            return "Encoding is still running. Cancel encoding or wait for it to finish before closing GPhil Coder."
+        }
+
+        if isMediaCopyBusy {
+            return "A file copy is still running. Cancel the copy or wait for it to finish before closing GPhil Coder."
+        }
+
+        return "An active process is still running. Wait for it to finish before closing GPhil Coder."
+    }
+
+    func reportQuitBlockedByActiveProcess() {
+        statusMessage = activeProcessQuitBlockedMessage
+    }
+
     var canPrepareMediaCopy: Bool {
         primaryMediaCopySourceRoot != nil && mediaCopyDestinationRoot != nil && !isMediaCopyBusy
     }
@@ -1571,12 +1591,17 @@ final class EncoderViewModel: ObservableObject {
                 }
 
                 self?.isMediaCopying = true
+                let progressStartedAt = Date()
                 self?.mediaCopyProgress = MediaCopyProgress(
                     completed: 0,
                     total: plan.candidates.count,
                     copied: 0,
                     skippedExisting: 0,
                     failed: 0,
+                    copiedBytes: 0,
+                    totalBytes: plan.totalSizeBytes,
+                    startedAt: progressStartedAt,
+                    updatedAt: progressStartedAt,
                     currentName: nil
                 )
                 self?.statusMessage =
@@ -1751,6 +1776,9 @@ final class EncoderViewModel: ObservableObject {
         conflictResolution: MediaCopyConflictResolution
     ) async -> MediaCopyResult {
         var result = MediaCopyResult(total: plan.candidates.count)
+        let progressStartedAt = Date()
+        let totalBytes = plan.totalSizeBytes
+        var copiedBytes: Int64 = 0
 
         if !plan.relativeDirectories.isEmpty {
             let failedDirectories = await Task.detached(priority: .userInitiated) {
@@ -1773,6 +1801,10 @@ final class EncoderViewModel: ObservableObject {
                 copied: result.copied,
                 skippedExisting: result.skippedExisting,
                 failed: result.failed,
+                copiedBytes: copiedBytes,
+                totalBytes: totalBytes,
+                startedAt: progressStartedAt,
+                updatedAt: Date(),
                 currentName: candidate.name
             )
 
@@ -1786,6 +1818,7 @@ final class EncoderViewModel: ObservableObject {
             switch itemResult {
             case .copied:
                 result.copied += 1
+                copiedBytes += candidate.fileSizeBytes
             case .skippedExisting:
                 result.skippedExisting += 1
             case .failed(let name):
@@ -1793,16 +1826,23 @@ final class EncoderViewModel: ObservableObject {
                 result.failedNames.append(name)
             }
 
+            let progressUpdatedAt = Date()
             mediaCopyProgress = MediaCopyProgress(
                 completed: index + 1,
                 total: plan.candidates.count,
                 copied: result.copied,
                 skippedExisting: result.skippedExisting,
                 failed: result.failed,
+                copiedBytes: copiedBytes,
+                totalBytes: totalBytes,
+                startedAt: progressStartedAt,
+                updatedAt: progressUpdatedAt,
                 currentName: candidate.name
             )
+            let speedDetail = mediaCopyProgress?.bytesPerSecond
+                .map { " at \($0.formattedMegabytesPerSecond)" } ?? ""
             statusMessage =
-                "Copied \(result.copied), skipped \(result.skippedExisting), failed \(result.failed) of \(plan.candidates.count)."
+                "Copied \(result.copied), skipped \(result.skippedExisting), failed \(result.failed) of \(plan.candidates.count)\(speedDetail)."
         }
 
         return result

@@ -159,6 +159,10 @@ public struct MediaCopyProgress: Sendable {
     public let copied: Int
     public let skippedExisting: Int
     public let failed: Int
+    public let copiedBytes: Int64
+    public let totalBytes: Int64
+    public let startedAt: Date
+    public let updatedAt: Date
     public let currentName: String?
 
     public init(
@@ -167,6 +171,10 @@ public struct MediaCopyProgress: Sendable {
         copied: Int,
         skippedExisting: Int,
         failed: Int,
+        copiedBytes: Int64,
+        totalBytes: Int64,
+        startedAt: Date,
+        updatedAt: Date,
         currentName: String?
     ) {
         self.completed = completed
@@ -174,12 +182,22 @@ public struct MediaCopyProgress: Sendable {
         self.copied = copied
         self.skippedExisting = skippedExisting
         self.failed = failed
+        self.copiedBytes = copiedBytes
+        self.totalBytes = totalBytes
+        self.startedAt = startedAt
+        self.updatedAt = updatedAt
         self.currentName = currentName
     }
 
     public var fractionCompleted: Double {
         guard total > 0 else { return 0 }
         return Double(completed) / Double(total)
+    }
+
+    public var bytesPerSecond: Double? {
+        let elapsed = updatedAt.timeIntervalSince(startedAt)
+        guard copiedBytes > 0, elapsed > 0 else { return nil }
+        return Double(copiedBytes) / elapsed
     }
 }
 

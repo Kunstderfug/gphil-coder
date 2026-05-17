@@ -220,6 +220,16 @@ struct ContentView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
+                    HStack {
+                        Text("\(progress.copiedBytes.formattedFileSize) copied")
+                            .monospacedDigit()
+                        Spacer()
+                        Text(mediaCopySpeedText(for: progress))
+                            .monospacedDigit()
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
                     if let currentName = progress.currentName {
                         Text(currentName)
                             .font(.caption)
@@ -505,8 +515,14 @@ struct ContentView: View {
             return "Preparing copy."
         }
 
+        let speedDetail = progress.bytesPerSecond
+            .map { ", \($0.formattedMegabytesPerSecond)" } ?? ""
         return
-            "\(progress.completed) of \(progress.total) processed, \(progress.copied) copied, \(progress.skippedExisting) skipped, \(progress.failed) failed."
+            "\(progress.completed) of \(progress.total) processed, \(progress.copied) copied, \(progress.skippedExisting) skipped, \(progress.failed) failed\(speedDetail)."
+    }
+
+    private func mediaCopySpeedText(for progress: MediaCopyProgress) -> String {
+        progress.bytesPerSecond?.formattedMegabytesPerSecond ?? "Calculating speed"
     }
 
     private var libraryPanel: some View {

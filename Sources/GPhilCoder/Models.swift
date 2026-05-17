@@ -654,3 +654,13 @@ extension Int64 {
         ByteCountFormatter.string(fromByteCount: self, countStyle: .file)
     }
 }
+
+extension Double {
+    var formattedMegabytesPerSecond: String {
+        let megabytesPerSecond = self / 1_000_000
+        if megabytesPerSecond > 0, megabytesPerSecond < 0.1 {
+            return "< 0.1 MB/s"
+        }
+        return String(format: "%.1f MB/s", megabytesPerSecond)
+    }
+}
