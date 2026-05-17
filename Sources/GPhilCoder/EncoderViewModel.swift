@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import GPhilCoderCore
 import UniformTypeIdentifiers
 
 @MainActor
@@ -30,6 +31,9 @@ final class EncoderViewModel: ObservableObject {
         static let restoreDeletedFolderPath = "restoreDeletedFolderPath"
         static let restoreBackupRootPath = "restoreBackupRootPath"
         static let restoreDestinationRootPath = "restoreDestinationRootPath"
+        static let mediaCopySourceRootPath = "mediaCopySourceRootPath"
+        static let mediaCopyDestinationRootPath = "mediaCopyDestinationRootPath"
+        static let mediaCopyFilter = "mediaCopyFilter"
     }
 
     private enum QueueFile {
@@ -42,6 +46,14 @@ final class EncoderViewModel: ObservableObject {
 
         static var legacyContentType: UTType {
             UTType(filenameExtension: legacyFileExtension) ?? .json
+        }
+    }
+
+    private enum MediaCopyJobFile {
+        static let fileExtension = "job"
+
+        static var contentType: UTType {
+            UTType(filenameExtension: fileExtension) ?? .json
         }
     }
 
@@ -88,6 +100,7 @@ final class EncoderViewModel: ObservableObject {
     @Published private(set) var systemFFmpegURL: URL?
     @Published private(set) var ffmpegCapabilities = FFmpegCapabilities()
     @Published private(set) var statusMessage = "Add audio files or folders to begin."
+    @Published private(set) var notificationPermission: NotificationPermissionState = .unknown
     @Published private(set) var trashedSourceRecords: [TrashedSourceRecord] = [] {
         didSet { persistTrashedSourceRecords() }
     }
@@ -132,6 +145,33 @@ final class EncoderViewModel: ObservableObject {
     @Published private(set) var isRestorePlanning = false
     @Published private(set) var isRestoringFromPlan = false
     @Published private(set) var restorePlanStoppedWithPartialResults = false
+    @Published var mediaCopySourceRoot: URL? {
+        didSet {
+            persistOptionalDirectory(mediaCopySourceRoot, forKey: DefaultsKey.mediaCopySourceRootPath)
+            invalidateMediaCopyPlanIfChanged(from: oldValue, to: mediaCopySourceRoot)
+        }
+    }
+    @Published var mediaCopyDestinationRoot: URL? {
+        didSet {
+            persistOptionalDirectory(
+                mediaCopyDestinationRoot,
+                forKey: DefaultsKey.mediaCopyDestinationRootPath
+            )
+            invalidateMediaCopyPlanIfChanged(from: oldValue, to: mediaCopyDestinationRoot)
+        }
+    }
+    @Published var mediaCopyFilter: MediaFileFilter = .audio {
+        didSet {
+            UserDefaults.standard.set(mediaCopyFilter.rawValue, forKey: DefaultsKey.mediaCopyFilter)
+            invalidateMediaCopyPlanIfChanged(from: oldValue, to: mediaCopyFilter)
+        }
+    }
+    @Published private(set) var mediaCopyPlan: MediaCopyPlan?
+    @Published private(set) var mediaCopyProgress: MediaCopyProgress?
+    @Published private(set) var isMediaCopyScanning = false
+    @Published private(set) var isMediaCopying = false
+    @Published private(set) var mediaCopyQueue: [MediaCopyWorkflow] = []
+    @Published private(set) var currentMediaCopyWorkflowID: UUID?
 
     @Published private(set) var selectedInputExtensions: Set<String> = AudioFormat.inputExtensions {
         didSet {
@@ -253,6 +293,7 @@ final class EncoderViewModel: ObservableObject {
     private var encodeTask: Task<Void, Never>?
     private var restorePlanTask: Task<Void, Never>?
     private var restoreApplyTask: Task<Void, Never>?
+    private var mediaCopyTask: Task<Void, Never>?
 
     var processorLimit: Int {
         max(1, ProcessInfo.processInfo.activeProcessorCount)
@@ -417,6 +458,47 @@ final class EncoderViewModel: ObservableObject {
             && !isRestorePlanning && !isRestoringFromPlan
     }
 
+    var isMediaCopyBusy: Bool {
+        isMediaCopyScanning || isMediaCopying
+    }
+
+    var canPrepareMediaCopy: Bool {
+        mediaCopySourceRoot != nil && mediaCopyDestinationRoot != nil && !isMediaCopyBusy
+    }
+
+    var canAddMediaCopyWorkflowToQueue: Bool {
+        mediaCopySourceRoot != nil && mediaCopyDestinationRoot != nil && !isMediaCopyBusy
+    }
+
+    var canRunMediaCopyQueue: Bool {
+        !mediaCopyQueue.isEmpty && !isMediaCopyBusy
+    }
+
+    var canSaveMediaCopyJob: Bool {
+        !mediaCopyQueue.isEmpty && !isMediaCopyBusy
+    }
+
+    var mediaCopyMatchedCount: Int {
+        mediaCopyPlan?.candidates.count ?? 0
+    }
+
+    var mediaCopyConflictCount: Int {
+        mediaCopyPlan?.conflictCount ?? 0
+    }
+
+    var mediaCopyTotalSize: Int64 {
+        mediaCopyPlan?.totalSizeBytes ?? 0
+    }
+
+    var mediaCopyPreviewItems: [MediaCopyCandidate] {
+        guard let plan = mediaCopyPlan else { return [] }
+        return Array(plan.candidates.prefix(300))
+    }
+
+    var mediaCopyQueueTotalCount: Int {
+        mediaCopyQueue.count
+    }
+
     var restorePlanAlreadyRestoredCount: Int {
         restorePlanLiveCounts?.alreadyRestored
             ?? restorePlanRecords.filter { $0.status == .alreadyRestored }.count
@@ -512,6 +594,56 @@ final class EncoderViewModel: ObservableObject {
     init() {
         loadPersistedSettings()
         refreshFFmpeg()
+        refreshNotificationPermission()
+    }
+
+    func refreshNotificationPermission() {
+        AppNotifier.refreshAuthorization { [weak self] state in
+            self?.notificationPermission = state
+        }
+    }
+
+    func requestNotificationPermission() {
+        AppNotifier.requestAuthorization { [weak self] state, errorMessage in
+            self?.notificationPermission = state
+            if let errorMessage {
+                self?.statusMessage =
+                    "Could not request notification permission: \(errorMessage)."
+                AppNotifier.openNotificationSettings()
+                return
+            }
+
+            switch state {
+            case .enabled:
+                self?.statusMessage =
+                    "Notifications enabled. Completion alerts appear when GPhilCoder is in the background."
+            case .denied:
+                AppNotifier.openNotificationSettings()
+                self?.statusMessage =
+                    "Notifications are denied. Opened macOS Notification settings so you can enable GPhilCoder there."
+            case .notDetermined, .unknown:
+                self?.statusMessage =
+                    "Notification permission was not granted. Check macOS notification settings."
+            }
+        }
+    }
+
+    func sendTestNotification() {
+        AppNotifier.sendTestNotification { [weak self] errorMessage in
+            if let errorMessage {
+                self?.statusMessage = "Could not send test notification: \(errorMessage)"
+            } else {
+                self?.statusMessage = "Sent a test notification."
+            }
+            self?.refreshNotificationPermission()
+        }
+    }
+
+    func openNotificationSettings() {
+        AppNotifier.openNotificationSettings()
+        statusMessage =
+            "Opened macOS Notification settings. If GPhilCoder is not selected automatically, choose it there and enable notifications."
+        refreshNotificationPermission()
     }
 
     func refreshFFmpeg() {
@@ -912,6 +1044,182 @@ final class EncoderViewModel: ObservableObject {
         }
     }
 
+    func chooseMediaCopySourceRoot() {
+        guard !isMediaCopyBusy else { return }
+        if let url = chooseDirectory(
+            title: "Choose Source Folder",
+            prompt: "Use Source",
+            initialURL: mediaCopySourceRoot ?? lastInputDirectoryURL()
+        ) {
+            mediaCopySourceRoot = url
+            rememberInputDirectory(url)
+            statusMessage = "Media copy source set to \(url.path(percentEncoded: false))."
+        }
+    }
+
+    func chooseMediaCopyDestinationRoot() {
+        guard !isMediaCopyBusy else { return }
+        if let url = chooseDirectory(
+            title: "Choose Destination Folder",
+            prompt: "Use Destination",
+            initialURL: mediaCopyDestinationRoot ?? mediaCopySourceRoot ?? lastInputDirectoryURL()
+        ) {
+            mediaCopyDestinationRoot = url
+            statusMessage = "Media copy destination set to \(url.path(percentEncoded: false))."
+        }
+    }
+
+    func scanMediaCopyFiles() {
+        runMediaCopyPreflight(copyAfterScan: false)
+    }
+
+    func copyFilteredMediaFiles() {
+        runMediaCopyPreflight(copyAfterScan: true)
+    }
+
+    func addCurrentMediaCopyWorkflowToQueue() {
+        guard let sourceRoot = mediaCopySourceRoot,
+            let destinationRoot = mediaCopyDestinationRoot,
+            canAddMediaCopyWorkflowToQueue
+        else {
+            statusMessage = "Choose source and destination folders before adding to the queue."
+            return
+        }
+
+        guard validateMediaCopyFolders(sourceRoot: sourceRoot, destinationRoot: destinationRoot)
+        else {
+            return
+        }
+
+        mediaCopyQueue.append(
+            MediaCopyWorkflow(
+                sourceRoot: sourceRoot,
+                destinationRoot: destinationRoot,
+                filter: mediaCopyFilter
+            )
+        )
+        mediaCopyPlan = nil
+        mediaCopyProgress = nil
+        statusMessage =
+            "Added \(sourceRoot.lastPathComponent) -> \(destinationRoot.lastPathComponent) to the file copy queue."
+    }
+
+    func removeMediaCopyWorkflowFromQueue(_ workflow: MediaCopyWorkflow) {
+        guard !isMediaCopyBusy else { return }
+        mediaCopyQueue.removeAll { $0.id == workflow.id }
+        statusMessage =
+            mediaCopyQueue.isEmpty
+            ? "File copy queue cleared."
+            : "Removed queued workflow. \(mediaCopyQueue.count) remaining."
+    }
+
+    func clearMediaCopyQueue() {
+        guard !isMediaCopyBusy else { return }
+        mediaCopyQueue.removeAll()
+        currentMediaCopyWorkflowID = nil
+        statusMessage = "File copy queue cleared."
+    }
+
+    func saveMediaCopyJob() {
+        guard canSaveMediaCopyJob else {
+            statusMessage = "Add workflows to the file copy queue before saving a job."
+            return
+        }
+
+        let panel = NSSavePanel()
+        panel.title = "Save File Copy Job"
+        panel.prompt = "Save Job"
+        panel.allowedContentTypes = [MediaCopyJobFile.contentType]
+        panel.canCreateDirectories = true
+        panel.directoryURL = mediaCopyDestinationRoot ?? mediaCopySourceRoot ?? lastInputDirectoryURL()
+        panel.nameFieldStringValue = defaultMediaCopyJobFileName()
+
+        guard panel.runModal() == .OK, let selectedURL = panel.url else { return }
+
+        let url = normalizedMediaCopyJobFileURL(selectedURL)
+        let document = MediaCopyJobDocument(workflows: mediaCopyQueue)
+
+        do {
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(document)
+            try data.write(to: url, options: .atomic)
+            statusMessage =
+                "Saved file copy job with \(mediaCopyQueue.count) workflow\(mediaCopyQueue.count == 1 ? "" : "s") to \(url.lastPathComponent)."
+        } catch {
+            statusMessage = "Could not save file copy job: \(error.localizedDescription)"
+        }
+    }
+
+    func loadMediaCopyJob() {
+        guard !isMediaCopyBusy else { return }
+
+        let panel = NSOpenPanel()
+        panel.title = "Load File Copy Job"
+        panel.prompt = "Load Job"
+        panel.allowsMultipleSelection = false
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.canCreateDirectories = false
+        panel.allowedContentTypes = [MediaCopyJobFile.contentType, .json]
+        panel.directoryURL = mediaCopyDestinationRoot ?? mediaCopySourceRoot ?? lastInputDirectoryURL()
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        do {
+            let data = try Data(contentsOf: url)
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            let document = try decoder.decode(MediaCopyJobDocument.self, from: data)
+            let workflows = document.workflows.filter {
+                directoryURLIfExists(atPath: $0.sourceRoot.path) != nil
+                    && directoryURLIfExists(atPath: $0.destinationRoot.path) != nil
+            }
+            mediaCopyQueue = workflows
+            mediaCopyPlan = nil
+            mediaCopyProgress = nil
+            currentMediaCopyWorkflowID = nil
+
+            var details = [
+                "Loaded \(workflows.count) file copy workflow\(workflows.count == 1 ? "" : "s")."
+            ]
+            let skipped = document.workflows.count - workflows.count
+            if skipped > 0 {
+                details.append("Skipped \(skipped) workflow\(skipped == 1 ? "" : "s") with missing folders.")
+            }
+            statusMessage = details.joined(separator: " ")
+        } catch {
+            statusMessage = "Could not load file copy job: \(error.localizedDescription)"
+        }
+    }
+
+    func runMediaCopyQueue() {
+        guard canRunMediaCopyQueue else { return }
+
+        for workflow in mediaCopyQueue {
+            guard validateMediaCopyFolders(
+                sourceRoot: workflow.sourceRoot,
+                destinationRoot: workflow.destinationRootPreservingSourceFolder
+            ) else {
+                return
+            }
+        }
+
+        runQueuedMediaCopyWorkflows(mediaCopyQueue)
+    }
+
+    func cancelMediaCopy() {
+        guard isMediaCopyBusy else { return }
+        mediaCopyTask?.cancel()
+        mediaCopyTask = nil
+        isMediaCopyScanning = false
+        isMediaCopying = false
+        mediaCopyProgress = nil
+        currentMediaCopyWorkflowID = nil
+        statusMessage = "Media copy cancelled."
+    }
+
     func buildBackupRestorePlan() {
         guard canBuildBackupRestorePlan,
             let deletedFolder = restoreDeletedFolder,
@@ -1167,6 +1475,345 @@ final class EncoderViewModel: ObservableObject {
         }
     }
 
+    private func runMediaCopyPreflight(copyAfterScan: Bool) {
+        guard let sourceRoot = mediaCopySourceRoot,
+            let destinationRoot = mediaCopyDestinationRoot
+        else {
+            statusMessage = "Choose source and destination folders before copying media files."
+            return
+        }
+
+        guard validateMediaCopyFolders(sourceRoot: sourceRoot, destinationRoot: destinationRoot)
+        else {
+            return
+        }
+
+        mediaCopyTask?.cancel()
+        mediaCopyPlan = nil
+        mediaCopyProgress = nil
+        isMediaCopyScanning = true
+        isMediaCopying = false
+
+        let filter = mediaCopyFilter
+        statusMessage =
+            "Scanning \(filter.fileTypeName) files in \(sourceRoot.lastPathComponent)..."
+
+        mediaCopyTask = Task { [weak self] in
+            do {
+                let worker = Task.detached(priority: .userInitiated) {
+                    try MediaCopyPlanner.buildPlan(
+                        sourceRoot: sourceRoot,
+                        destinationRoot: destinationRoot,
+                        filter: filter
+                    )
+                }
+                let plan = try await withTaskCancellationHandler {
+                    try await worker.value
+                } onCancel: {
+                    worker.cancel()
+                }
+
+                guard !Task.isCancelled else { return }
+
+                self?.mediaCopyPlan = plan
+                self?.isMediaCopyScanning = false
+
+                guard copyAfterScan else {
+                    self?.statusMessage = Self.mediaCopyScanStatusMessage(for: plan)
+                    self?.mediaCopyTask = nil
+                    return
+                }
+
+                guard plan.hasCopyableContent else {
+                    let completionMessage =
+                        "No \(filter.fileTypeName) files found in \(sourceRoot.lastPathComponent)."
+                    self?.statusMessage = completionMessage
+                    AppNotifier.notifyIfAppInactive(
+                        title: "File copy finished",
+                        body: completionMessage
+                    )
+                    self?.mediaCopyTask = nil
+                    return
+                }
+
+                guard let resolution = self?.promptMediaCopyConflictResolution(for: [plan]) else {
+                    self?.statusMessage = "Media copy cancelled."
+                    self?.mediaCopyTask = nil
+                    return
+                }
+
+                self?.isMediaCopying = true
+                self?.mediaCopyProgress = MediaCopyProgress(
+                    completed: 0,
+                    total: plan.candidates.count,
+                    copied: 0,
+                    skippedExisting: 0,
+                    failed: 0,
+                    currentName: nil
+                )
+                self?.statusMessage =
+                    "Copying \(plan.candidates.count) \(filter.fileTypeName) file\(plan.candidates.count == 1 ? "" : "s")..."
+
+                let result = await self?.copyMediaCopyPlan(plan, conflictResolution: resolution)
+                    ?? MediaCopyResult(total: plan.candidates.count, cancelled: true)
+
+                guard !Task.isCancelled else { return }
+
+                self?.isMediaCopying = false
+                self?.mediaCopyTask = nil
+                let completionMessage = Self.mediaCopyResultStatusMessage(
+                    result,
+                    filter: filter,
+                    destinationRoot: destinationRoot
+                )
+                self?.statusMessage = completionMessage
+                AppNotifier.notifyIfAppInactive(
+                    title: "File copy finished",
+                    body: completionMessage
+                )
+            } catch is CancellationError {
+                guard !Task.isCancelled else { return }
+                self?.isMediaCopyScanning = false
+                self?.isMediaCopying = false
+                self?.mediaCopyTask = nil
+                self?.statusMessage = "Media copy cancelled."
+            } catch {
+                guard !Task.isCancelled else { return }
+                self?.mediaCopyPlan = nil
+                self?.mediaCopyProgress = nil
+                self?.isMediaCopyScanning = false
+                self?.isMediaCopying = false
+                self?.mediaCopyTask = nil
+                self?.statusMessage = "Could not prepare media copy: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func runQueuedMediaCopyWorkflows(_ workflows: [MediaCopyWorkflow]) {
+        mediaCopyTask?.cancel()
+        mediaCopyPlan = nil
+        mediaCopyProgress = nil
+        currentMediaCopyWorkflowID = nil
+        isMediaCopyScanning = true
+        isMediaCopying = false
+        statusMessage =
+            "Scanning \(workflows.count) queued file copy workflow\(workflows.count == 1 ? "" : "s")..."
+
+        mediaCopyTask = Task { [weak self] in
+            do {
+                var workflowPlans: [(workflow: MediaCopyWorkflow, plan: MediaCopyPlan)] = []
+
+                for (index, workflow) in workflows.enumerated() {
+                    guard !Task.isCancelled else { return }
+                    self?.currentMediaCopyWorkflowID = workflow.id
+                    self?.statusMessage =
+                        "Scanning queued workflow \(index + 1) of \(workflows.count)..."
+
+                    let worker = Task.detached(priority: .userInitiated) {
+                        try MediaCopyPlanner.buildPlan(
+                            sourceRoot: workflow.sourceRoot,
+                            destinationRoot: workflow.destinationRootPreservingSourceFolder,
+                            filter: workflow.filter
+                        )
+                    }
+                    let plan = try await withTaskCancellationHandler {
+                        try await worker.value
+                    } onCancel: {
+                        worker.cancel()
+                    }
+                    workflowPlans.append((workflow, plan))
+                }
+
+                guard !Task.isCancelled else { return }
+
+                self?.isMediaCopyScanning = false
+
+                let nonEmptyWorkflowPlans = workflowPlans.filter(\.plan.hasCopyableContent)
+                guard !nonEmptyWorkflowPlans.isEmpty else {
+                    let completionMessage = "No files found in the queued file copy workflows."
+                    self?.currentMediaCopyWorkflowID = nil
+                    self?.mediaCopyTask = nil
+                    self?.statusMessage = completionMessage
+                    AppNotifier.notifyIfAppInactive(
+                        title: "File copy queue finished",
+                        body: completionMessage
+                    )
+                    return
+                }
+
+                let nonEmptyPlans = nonEmptyWorkflowPlans.map(\.plan)
+                guard let resolution = self?.promptMediaCopyConflictResolution(for: nonEmptyPlans) else {
+                    self?.currentMediaCopyWorkflowID = nil
+                    self?.mediaCopyTask = nil
+                    self?.statusMessage = "File copy queue cancelled."
+                    return
+                }
+
+                self?.isMediaCopying = true
+                self?.statusMessage =
+                    "Copying \(nonEmptyWorkflowPlans.count) queued workflow\(nonEmptyWorkflowPlans.count == 1 ? "" : "s")..."
+
+                var aggregateResult = MediaCopyResult(
+                    total: nonEmptyPlans.reduce(0) { $0 + $1.candidates.count }
+                )
+
+                for workflowPlan in nonEmptyWorkflowPlans {
+                    guard !Task.isCancelled else {
+                        aggregateResult.cancelled = true
+                        break
+                    }
+
+                    self?.currentMediaCopyWorkflowID = workflowPlan.workflow.id
+                    self?.mediaCopyPlan = workflowPlan.plan
+                    let result = await self?.copyMediaCopyPlan(
+                        workflowPlan.plan,
+                        conflictResolution: resolution
+                    ) ?? MediaCopyResult(
+                        total: workflowPlan.plan.candidates.count,
+                        cancelled: true
+                    )
+
+                    aggregateResult.copied += result.copied
+                    aggregateResult.skippedExisting += result.skippedExisting
+                    aggregateResult.failed += result.failed
+                    aggregateResult.failedNames.append(contentsOf: result.failedNames)
+                    aggregateResult.createdDirectories += result.createdDirectories
+                    aggregateResult.failedDirectories += result.failedDirectories
+                    aggregateResult.failedDirectoryNames.append(
+                        contentsOf: result.failedDirectoryNames
+                    )
+                    aggregateResult.cancelled = aggregateResult.cancelled || result.cancelled
+                }
+
+                guard !Task.isCancelled else { return }
+
+                self?.isMediaCopying = false
+                self?.currentMediaCopyWorkflowID = nil
+                self?.mediaCopyTask = nil
+                let completionMessage = Self.mediaCopyQueueResultStatusMessage(
+                    aggregateResult,
+                    workflowCount: nonEmptyWorkflowPlans.count
+                )
+                self?.statusMessage = completionMessage
+                AppNotifier.notifyIfAppInactive(
+                    title: "File copy queue finished",
+                    body: completionMessage
+                )
+            } catch is CancellationError {
+                guard !Task.isCancelled else { return }
+                self?.isMediaCopyScanning = false
+                self?.isMediaCopying = false
+                self?.currentMediaCopyWorkflowID = nil
+                self?.mediaCopyTask = nil
+                self?.statusMessage = "File copy queue cancelled."
+            } catch {
+                guard !Task.isCancelled else { return }
+                self?.mediaCopyProgress = nil
+                self?.isMediaCopyScanning = false
+                self?.isMediaCopying = false
+                self?.currentMediaCopyWorkflowID = nil
+                self?.mediaCopyTask = nil
+                self?.statusMessage = "Could not run file copy queue: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func copyMediaCopyPlan(
+        _ plan: MediaCopyPlan,
+        conflictResolution: MediaCopyConflictResolution
+    ) async -> MediaCopyResult {
+        var result = MediaCopyResult(total: plan.candidates.count)
+
+        if !plan.relativeDirectories.isEmpty {
+            let failedDirectories = await Task.detached(priority: .userInitiated) {
+                MediaCopyPlanner.createDirectories(for: plan)
+            }.value
+            result.failedDirectories = failedDirectories.count
+            result.failedDirectoryNames = failedDirectories
+            result.createdDirectories = plan.relativeDirectories.count - failedDirectories.count
+        }
+
+        for (index, candidate) in plan.candidates.enumerated() {
+            if Task.isCancelled {
+                result.cancelled = true
+                break
+            }
+
+            mediaCopyProgress = MediaCopyProgress(
+                completed: index,
+                total: plan.candidates.count,
+                copied: result.copied,
+                skippedExisting: result.skippedExisting,
+                failed: result.failed,
+                currentName: candidate.name
+            )
+
+            let itemResult = await Task.detached(priority: .userInitiated) {
+                MediaCopyPlanner.copyCandidate(
+                    candidate,
+                    conflictResolution: conflictResolution
+                )
+            }.value
+
+            switch itemResult {
+            case .copied:
+                result.copied += 1
+            case .skippedExisting:
+                result.skippedExisting += 1
+            case .failed(let name):
+                result.failed += 1
+                result.failedNames.append(name)
+            }
+
+            mediaCopyProgress = MediaCopyProgress(
+                completed: index + 1,
+                total: plan.candidates.count,
+                copied: result.copied,
+                skippedExisting: result.skippedExisting,
+                failed: result.failed,
+                currentName: candidate.name
+            )
+            statusMessage =
+                "Copied \(result.copied), skipped \(result.skippedExisting), failed \(result.failed) of \(plan.candidates.count)."
+        }
+
+        return result
+    }
+
+    private func promptMediaCopyConflictResolution(
+        for plans: [MediaCopyPlan]
+    ) -> MediaCopyConflictResolution? {
+        let conflictCount = plans.reduce(0) { $0 + $1.conflictCount }
+        guard conflictCount > 0 else { return .skipExisting }
+        let candidateCount = plans.reduce(0) { $0 + $1.candidates.count }
+        let destinationDescription =
+            plans.count == 1
+            ? plans[0].destinationRoot.path(percentEncoded: false)
+            : "\(plans.count) queued destinations"
+        let fileTypeName =
+            Set(plans.map(\.filter)).count == 1
+            ? plans[0].filter.fileTypeName
+            : "queued"
+
+        let alert = NSAlert()
+        alert.messageText = "Existing files found in the destination"
+        alert.informativeText =
+            "\(conflictCount) of \(candidateCount) matching \(fileTypeName) file\(conflictCount == 1 ? "" : "s") already exist under \(destinationDescription). Choose whether to skip those files or replace them. Other destination files are not changed."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Skip Existing")
+        alert.addButton(withTitle: "Replace Existing")
+        alert.addButton(withTitle: "Cancel")
+
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            return .skipExisting
+        case .alertSecondButtonReturn:
+            return .replaceExisting
+        default:
+            return nil
+        }
+    }
+
     nonisolated private static func copyUnresolvedItems(
         _ items: [RestoreUnresolvedFile],
         to destinationFolder: URL
@@ -1400,6 +2047,12 @@ final class EncoderViewModel: ObservableObject {
         return "GPhilCoder Queue \(formatter.string(from: Date())).\(QueueFile.fileExtension)"
     }
 
+    private func defaultMediaCopyJobFileName() -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH.mm"
+        return "GPhilCoder File Copy \(formatter.string(from: Date())).\(MediaCopyJobFile.fileExtension)"
+    }
+
     private func defaultRestoreUnresolvedFileName() -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH.mm"
@@ -1408,6 +2061,10 @@ final class EncoderViewModel: ObservableObject {
 
     private func normalizedQueueFileURL(_ url: URL) -> URL {
         url.pathExtension.isEmpty ? url.appendingPathExtension(QueueFile.fileExtension) : url
+    }
+
+    private func normalizedMediaCopyJobFileURL(_ url: URL) -> URL {
+        url.pathExtension.isEmpty ? url.appendingPathExtension(MediaCopyJobFile.fileExtension) : url
     }
 
     private func normalizedJSONFileURL(_ url: URL) -> URL {
@@ -1670,6 +2327,15 @@ final class EncoderViewModel: ObservableObject {
         restoreDestinationRoot = persistedDirectoryURL(
             forKey: DefaultsKey.restoreDestinationRootPath
         )
+        mediaCopySourceRoot = persistedDirectoryURL(forKey: DefaultsKey.mediaCopySourceRootPath)
+        mediaCopyDestinationRoot = persistedDirectoryURL(
+            forKey: DefaultsKey.mediaCopyDestinationRootPath
+        )
+        if let rawValue = defaults.string(forKey: DefaultsKey.mediaCopyFilter),
+            let value = MediaFileFilter(rawValue: rawValue)
+        {
+            mediaCopyFilter = value
+        }
 
         if let selectedInputExtensions = defaults.array(forKey: DefaultsKey.selectedInputExtensions)
             as? [String]
@@ -1829,6 +2495,44 @@ final class EncoderViewModel: ObservableObject {
         return panel.url
     }
 
+    private func validateMediaCopyFolders(sourceRoot: URL, destinationRoot: URL) -> Bool {
+        let sourceComponents = sourceRoot.standardizedFileURL.resolvingSymlinksInPath().pathComponents
+        let destinationComponents =
+            destinationRoot.standardizedFileURL.resolvingSymlinksInPath().pathComponents
+
+        if sourceComponents == destinationComponents {
+            showMediaCopyFolderAlert(
+                message: "Choose different folders",
+                detail:
+                    "The source and destination folders are the same. Choose a destination folder on the target volume."
+            )
+            return false
+        }
+
+        if destinationComponents.count > sourceComponents.count
+            && Array(destinationComponents.prefix(sourceComponents.count)) == sourceComponents
+        {
+            showMediaCopyFolderAlert(
+                message: "Destination is inside the source",
+                detail:
+                    "Choose a destination outside the source tree so copied files are not scanned again while the operation is running."
+            )
+            return false
+        }
+
+        return true
+    }
+
+    private func showMediaCopyFolderAlert(message: String, detail: String) {
+        let alert = NSAlert()
+        alert.messageText = message
+        alert.informativeText = detail
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+        statusMessage = detail
+    }
+
     private func invalidateBackupRestorePlanIfChanged<T: Equatable>(from oldValue: T, to newValue: T) {
         guard oldValue != newValue else { return }
         restorePlanRecords.removeAll()
@@ -1837,6 +2541,12 @@ final class EncoderViewModel: ObservableObject {
         restorePlanStoppedWithPartialResults = false
         restorePlanScanSummary = nil
         restorePlanProgress = nil
+    }
+
+    private func invalidateMediaCopyPlanIfChanged<T: Equatable>(from oldValue: T, to newValue: T) {
+        guard oldValue != newValue, !isMediaCopyBusy else { return }
+        mediaCopyPlan = nil
+        mediaCopyProgress = nil
     }
 
     private func persistTrashedSourceRecords() {
@@ -2153,6 +2863,93 @@ final class EncoderViewModel: ObservableObject {
         selectedInputExtensions.contains(url.pathExtension.lowercased())
     }
 
+    nonisolated private static func mediaCopyScanStatusMessage(for plan: MediaCopyPlan) -> String {
+        guard plan.hasCopyableContent else {
+            return "No \(plan.filter.fileTypeName) files found in \(plan.sourceRoot.lastPathComponent)."
+        }
+
+        var details = [
+            "Found \(plan.candidates.count) \(plan.filter.fileTypeName) file\(plan.candidates.count == 1 ? "" : "s")",
+            "totaling \(plan.totalSizeBytes.formattedFileSize)"
+        ]
+        if plan.directoryCount > 0 {
+            details.append(
+                "\(plan.directoryCount) folder\(plan.directoryCount == 1 ? "" : "s")"
+            )
+        }
+        if plan.conflictCount > 0 {
+            details.append(
+                "\(plan.conflictCount) existing destination file\(plan.conflictCount == 1 ? "" : "s")"
+            )
+        }
+        return details.joined(separator: ", ") + "."
+    }
+
+    nonisolated private static func mediaCopyResultStatusMessage(
+        _ result: MediaCopyResult,
+        filter: MediaFileFilter,
+        destinationRoot: URL
+    ) -> String {
+        if result.cancelled {
+            return "Media copy cancelled after \(result.copied) copied file\(result.copied == 1 ? "" : "s")."
+        }
+
+        var details = [
+            "Copied \(result.copied) \(filter.fileTypeName) file\(result.copied == 1 ? "" : "s") to \(destinationRoot.lastPathComponent)."
+        ]
+        if result.createdDirectories > 0 {
+            details.append(
+                "Created \(result.createdDirectories) folder\(result.createdDirectories == 1 ? "" : "s")."
+            )
+        }
+        if result.skippedExisting > 0 {
+            details.append("Skipped \(result.skippedExisting) existing file\(result.skippedExisting == 1 ? "" : "s").")
+        }
+        if result.failed > 0 {
+            details.append(
+                "Failed \(result.failed): \(result.failedNames.prefix(3).joined(separator: ", "))\(result.failedNames.count > 3 ? "..." : "")."
+            )
+        }
+        if result.failedDirectories > 0 {
+            details.append(
+                "Failed \(result.failedDirectories) folder\(result.failedDirectories == 1 ? "" : "s"): \(result.failedDirectoryNames.prefix(3).joined(separator: ", "))\(result.failedDirectoryNames.count > 3 ? "..." : "")."
+            )
+        }
+        return details.joined(separator: " ")
+    }
+
+    nonisolated private static func mediaCopyQueueResultStatusMessage(
+        _ result: MediaCopyResult,
+        workflowCount: Int
+    ) -> String {
+        if result.cancelled {
+            return "File copy queue cancelled after \(result.copied) copied file\(result.copied == 1 ? "" : "s")."
+        }
+
+        var details = [
+            "Finished \(workflowCount) file copy workflow\(workflowCount == 1 ? "" : "s"): \(result.copied) copied."
+        ]
+        if result.createdDirectories > 0 {
+            details.append(
+                "\(result.createdDirectories) folder\(result.createdDirectories == 1 ? "" : "s") created."
+            )
+        }
+        if result.skippedExisting > 0 {
+            details.append("\(result.skippedExisting) existing file\(result.skippedExisting == 1 ? "" : "s") skipped.")
+        }
+        if result.failed > 0 {
+            details.append(
+                "\(result.failed) failed: \(result.failedNames.prefix(3).joined(separator: ", "))\(result.failedNames.count > 3 ? "..." : "")."
+            )
+        }
+        if result.failedDirectories > 0 {
+            details.append(
+                "\(result.failedDirectories) folder failure\(result.failedDirectories == 1 ? "" : "s")."
+            )
+        }
+        return details.joined(separator: " ")
+    }
+
     private func outputURL(for item: AudioInputItem) -> URL {
         let outputDirectory: URL
 
@@ -2213,16 +3010,31 @@ final class EncoderViewModel: ObservableObject {
         isEncoding = false
         encodeTask = nil
 
-        if failedCount > 0 {
-            statusMessage = "Finished with \(failedCount) failure\(failedCount == 1 ? "" : "s")."
+        let completionTitle: String
+        let completionMessage: String
+        if Task.isCancelled {
+            completionTitle = "Encoding stopped"
+            completionMessage =
+                "Encoding cancelled. \(completedCount) completed, \(failedCount) failed, \(skippedCount) skipped."
+        } else if failedCount > 0 {
+            completionTitle = "Encoding finished with failures"
+            completionMessage =
+                "Finished with \(failedCount) failure\(failedCount == 1 ? "" : "s")."
         } else if skippedCount > 0 {
-            statusMessage = "Finished. \(skippedCount) file\(skippedCount == 1 ? "" : "s") skipped."
+            completionTitle = "Encoding finished"
+            completionMessage =
+                "Finished. \(skippedCount) file\(skippedCount == 1 ? "" : "s") skipped."
         } else if completedCount > 0 {
-            statusMessage =
+            completionTitle = "Encoding finished"
+            completionMessage =
                 "Finished \(completedCount) \(settings.outputFormat.title) export\(completedCount == 1 ? "" : "s")."
         } else {
-            statusMessage = "No files were encoded."
+            completionTitle = "Encoding finished"
+            completionMessage = "No files were encoded."
         }
+
+        statusMessage = completionMessage
+        AppNotifier.notifyIfAppInactive(title: completionTitle, body: completionMessage)
     }
 
     private func markJobRunning(at index: Int) -> EncodeJob {

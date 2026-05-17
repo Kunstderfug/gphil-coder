@@ -12,7 +12,8 @@ MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 SOURCE_ICON="$ROOT_DIR/Sources/assets/appicon.png"
 ICONSET_DIR="$ROOT_DIR/.build/AppIcon.iconset"
-BUNDLED_FFMPEG="${BUNDLED_FFMPEG:-}"
+DEFAULT_BUNDLED_FFMPEG="$ROOT_DIR/vendor/ffmpeg-lgpl/prefix/bin/ffmpeg"
+BUNDLED_FFMPEG="${BUNDLED_FFMPEG:-$DEFAULT_BUNDLED_FFMPEG}"
 ALLOW_NON_LGPL_FFMPEG="${ALLOW_NON_LGPL_FFMPEG:-0}"
 
 validate_lgpl_ffmpeg() {
@@ -52,6 +53,9 @@ cp "$BUILD_DIR/$APP_NAME" "$MACOS_DIR/$APP_NAME"
 if [[ -n "$BUNDLED_FFMPEG" ]]; then
   if [[ ! -x "$BUNDLED_FFMPEG" ]]; then
     echo "BUNDLED_FFMPEG must point to an executable ffmpeg binary: $BUNDLED_FFMPEG" >&2
+    if [[ "$BUNDLED_FFMPEG" == "$DEFAULT_BUNDLED_FFMPEG" ]]; then
+      echo "Run ./scripts/build_lgpl_ffmpeg.sh first, or pass BUNDLED_FFMPEG=/path/to/ffmpeg." >&2
+    fi
     exit 1
   fi
 
@@ -115,5 +119,11 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+
+if command -v codesign >/dev/null 2>&1; then
+  codesign --force --deep --sign - "$APP_DIR"
+else
+  echo "warning: codesign not found; app bundle was not signed." >&2
+fi
 
 echo "Built $APP_DIR"

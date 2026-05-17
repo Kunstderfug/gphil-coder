@@ -54,7 +54,19 @@ swift run GPhilCoder
 
 The app icon source is `Sources/assets/appicon.png`. The build script regenerates the bundled `.icns` from that file, and `swift run` uses the same PNG for the in-app header.
 
-To bundle a specific FFmpeg binary into the app:
+By default, the build script bundles the LGPL FFmpeg binary at:
+
+```text
+vendor/ffmpeg-lgpl/prefix/bin/ffmpeg
+```
+
+If that binary is missing, build it once with:
+
+```sh
+./scripts/build_lgpl_ffmpeg.sh
+```
+
+To bundle a different FFmpeg binary into the app:
 
 ```sh
 BUNDLED_FFMPEG=/path/to/ffmpeg ./scripts/build_app.sh
@@ -68,7 +80,7 @@ To build a local LGPL-compatible, audio-only FFmpeg candidate with libvorbis:
 
 ```sh
 ./scripts/build_lgpl_ffmpeg.sh
-BUNDLED_FFMPEG=vendor/ffmpeg-lgpl/prefix/bin/ffmpeg ./scripts/build_app.sh
+./scripts/build_app.sh
 ```
 
 The helper script builds static libogg, libvorbis, libopus, libmp3lame, and a trimmed audio-only FFmpeg into `vendor/ffmpeg-lgpl/`, then validates that the resulting FFmpeg has no GPL/nonfree/version3 configure flags and no Homebrew runtime library links.

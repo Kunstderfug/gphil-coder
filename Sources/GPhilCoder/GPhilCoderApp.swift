@@ -9,6 +9,10 @@ struct GPhilCoderApp: App {
             ContentView()
                 .environmentObject(encoder)
                 .frame(minWidth: 1120, minHeight: 680)
+                .onAppear {
+                    AppNotifier.configure()
+                    encoder.refreshNotificationPermission()
+                }
         }
         .windowStyle(.hiddenTitleBar)
         .commands {

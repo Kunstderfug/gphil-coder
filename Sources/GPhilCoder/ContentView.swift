@@ -1,8 +1,21 @@
 import AppKit
+import GPhilCoderCore
 import SwiftUI
+
+private enum WorkflowTab: Hashable {
+    case audioEncoding
+    case fileManagement
+}
+
+private enum MediaCopyPreviewMode: Hashable {
+    case plan
+    case queue
+}
 
 struct ContentView: View {
     @EnvironmentObject private var model: EncoderViewModel
+    @State private var selectedWorkflowTab: WorkflowTab = .audioEncoding
+    @State private var selectedMediaCopyPreviewMode: MediaCopyPreviewMode = .plan
     @State private var showingInputFilterSheet = false
     @State private var showingRestoreFromBackupSheet = false
 
@@ -15,20 +28,20 @@ struct ContentView: View {
                 titlebarSpacer
                 topBar
                 Divider()
-                HStack(spacing: 0) {
-                    libraryPanel
-                        .frame(width: 268)
+                TabView(selection: $selectedWorkflowTab) {
+                    audioEncodingWorkflow
+                        .tabItem {
+                            Label("Audio Encoding", systemImage: "waveform")
+                        }
+                        .tag(WorkflowTab.audioEncoding)
 
-                    Divider()
-
-                    queuePanel
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                    Divider()
-
-                    settingsPanel
-                        .frame(width: 320)
+                    fileManagementWorkflow
+                        .tabItem {
+                            Label("File Management", systemImage: "folder")
+                        }
+                        .tag(WorkflowTab.fileManagement)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 Divider()
                 footer
             }
@@ -58,7 +71,7 @@ struct ContentView: View {
                 Text("GPhil Coder")
                     .font(.system(size: 24, weight: .bold, design: .rounded))
                 Text(
-                    "Batch audio to MP3, Ogg, Opus, FLAC, and WavPack with parallel FFmpeg workers"
+                    "Batch audio encoding and filtered media copy workflows"
                 )
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -72,6 +85,427 @@ struct ContentView: View {
         // .padding(.top, 4)
         .padding(.bottom, 14)
         .background(.bar)
+    }
+
+    private var audioEncodingWorkflow: some View {
+        HStack(spacing: 0) {
+            libraryPanel
+                .frame(width: 268)
+
+            Divider()
+
+            queuePanel
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            Divider()
+
+            settingsPanel
+                .frame(width: 320)
+        }
+    }
+
+    private var fileManagementWorkflow: some View {
+        HStack(spacing: 0) {
+            mediaCopySetupPanel
+                .frame(width: 340)
+
+            Divider()
+
+            mediaCopyResultsPanel
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private var mediaCopySetupPanel: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            GroupBox("Source") {
+                FolderPickerControl(
+                    url: model.mediaCopySourceRoot,
+                    placeholder: "No source folder selected",
+                    systemImage: "folder.badge.plus",
+                    buttonTitle: "Choose source",
+                    disabled: model.isMediaCopyBusy
+                ) {
+                    model.chooseMediaCopySourceRoot()
+                }
+                .padding(.vertical, 4)
+            }
+
+            GroupBox("Destination") {
+                FolderPickerControl(
+                    url: model.mediaCopyDestinationRoot,
+                    placeholder: "No destination folder selected",
+                    systemImage: "externaldrive",
+                    buttonTitle: "Choose destination",
+                    disabled: model.isMediaCopyBusy
+                ) {
+                    model.chooseMediaCopyDestinationRoot()
+                }
+                .padding(.vertical, 4)
+            }
+
+            GroupBox("Filter") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Picker("Media type", selection: $model.mediaCopyFilter) {
+                        ForEach(MediaFileFilter.allCases) { filter in
+                            Label(filter.title, systemImage: filter.symbolName)
+                                .tag(filter)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .disabled(model.isMediaCopyBusy)
+                    .arrowCursorOnHover()
+
+                    Text(model.mediaCopyFilter.readableExtensions)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.vertical, 4)
+            }
+
+            GroupBox("Plan") {
+                VStack(alignment: .leading, spacing: 9) {
+                    StatLine(
+                        title: "Matched",
+                        value: "\(model.mediaCopyMatchedCount)",
+                        symbol: model.mediaCopyFilter.symbolName,
+                        color: .teal
+                    )
+                    StatLine(
+                        title: "Existing",
+                        value: "\(model.mediaCopyConflictCount)",
+                        symbol: "exclamationmark.triangle",
+                        color: model.mediaCopyConflictCount > 0 ? .orange : .secondary
+                    )
+                    StatLine(
+                        title: "Total size",
+                        value: model.mediaCopyTotalSize.formattedFileSize,
+                        symbol: "externaldrive",
+                        color: .indigo
+                    )
+
+                    if let plan = model.mediaCopyPlan, plan.directoryCount > 0 {
+                        StatLine(
+                            title: "Folders",
+                            value: "\(plan.directoryCount)",
+                            symbol: "folder",
+                            color: .teal
+                        )
+                    }
+
+                    if let plan = model.mediaCopyPlan, plan.conflictCount > 0 {
+                        Text(
+                            "\(plan.copyableWithoutOverwriteCount) file\(plan.copyableWithoutOverwriteCount == 1 ? "" : "s") can be copied without replacing existing destination files."
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+
+            if let progress = model.mediaCopyProgress {
+                VStack(alignment: .leading, spacing: 8) {
+                    ProgressView(value: progress.fractionCompleted)
+                    HStack {
+                        Text("\(progress.completed) of \(progress.total)")
+                            .monospacedDigit()
+                        Spacer()
+                        Text("\(progress.copied) copied")
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                    if let currentName = progress.currentName {
+                        Text(currentName)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+            }
+
+            Spacer()
+
+            if model.isMediaCopyBusy {
+                Button {
+                    model.cancelMediaCopy()
+                } label: {
+                    Label("Cancel", systemImage: "stop.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+                .controlSize(.large)
+            } else {
+                VStack(spacing: 10) {
+                    Button {
+                        model.scanMediaCopyFiles()
+                        selectedMediaCopyPreviewMode = .plan
+                    } label: {
+                        Label("Scan", systemImage: "magnifyingglass")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .disabled(!model.canPrepareMediaCopy)
+
+                    Button {
+                        model.copyFilteredMediaFiles()
+                        selectedMediaCopyPreviewMode = .plan
+                    } label: {
+                        Label("Copy now", systemImage: "doc.on.doc")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .disabled(!model.canPrepareMediaCopy)
+
+                    Button {
+                        model.addCurrentMediaCopyWorkflowToQueue()
+                        selectedMediaCopyPreviewMode = .queue
+                    } label: {
+                        Label("Add to queue", systemImage: "text.badge.plus")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .disabled(!model.canAddMediaCopyWorkflowToQueue)
+                }
+            }
+
+            GroupBox("Queue") {
+                VStack(alignment: .leading, spacing: 10) {
+                    StatLine(
+                        title: "Workflows",
+                        value: "\(model.mediaCopyQueueTotalCount)",
+                        symbol: "list.bullet.rectangle",
+                        color: .indigo
+                    )
+
+                    HStack(spacing: 8) {
+                        Button {
+                            model.loadMediaCopyJob()
+                            selectedMediaCopyPreviewMode = .queue
+                        } label: {
+                            Label("Load", systemImage: "square.and.arrow.up")
+                                .frame(maxWidth: .infinity)
+                        }
+
+                        Button {
+                            model.saveMediaCopyJob()
+                        } label: {
+                            Label("Save", systemImage: "square.and.arrow.down")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .disabled(!model.canSaveMediaCopyJob)
+                    }
+                    .controlSize(.small)
+
+                    HStack(spacing: 8) {
+                        Button(role: .destructive) {
+                            model.clearMediaCopyQueue()
+                        } label: {
+                            Label("Clear", systemImage: "trash")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .disabled(model.mediaCopyQueueTotalCount == 0 || model.isMediaCopyBusy)
+
+                        Button {
+                            model.runMediaCopyQueue()
+                            selectedMediaCopyPreviewMode = .queue
+                        } label: {
+                            Label("Run", systemImage: "play.fill")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!model.canRunMediaCopyQueue)
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+        }
+        .padding(18)
+        .background(Color(nsColor: .controlBackgroundColor))
+    }
+
+    private var mediaCopyResultsPanel: some View {
+        VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("File Copy Plan")
+                        .font(.title3.weight(.semibold))
+                    Text(mediaCopySubtitle)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Picker("", selection: $selectedMediaCopyPreviewMode) {
+                    Text("Plan").tag(MediaCopyPreviewMode.plan)
+                    Text("Queue").tag(MediaCopyPreviewMode.queue)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 160)
+                .labelsHidden()
+                .disabled(model.isMediaCopyBusy)
+                .arrowCursorOnHover()
+
+                if selectedMediaCopyPreviewMode == .plan,
+                    let plan = model.mediaCopyPlan,
+                    plan.hasCopyableContent
+                {
+                    HStack(spacing: 8) {
+                        FormatPill(text: plan.filter.title.uppercased())
+                        FormatPill(text: "\(plan.candidates.count) FILES")
+                        if plan.directoryCount > 0 {
+                            FormatPill(text: "\(plan.directoryCount) FOLDERS")
+                        }
+                    }
+                } else if selectedMediaCopyPreviewMode == .queue,
+                    model.mediaCopyQueueTotalCount > 0
+                {
+                    HStack(spacing: 8) {
+                        FormatPill(text: "\(model.mediaCopyQueueTotalCount) WORKFLOWS")
+                    }
+                }
+            }
+            .padding(.horizontal, 22)
+            .padding(.vertical, 16)
+
+            Divider()
+
+            mediaCopyResultsContent
+        }
+        .background(Color(nsColor: .textBackgroundColor))
+    }
+
+    @ViewBuilder
+    private var mediaCopyResultsContent: some View {
+        if selectedMediaCopyPreviewMode == .queue {
+            mediaCopyQueueContent
+        } else if model.isMediaCopyScanning {
+            CenteredStatusView(
+                symbol: "magnifyingglass",
+                title: "Scanning folders",
+                detail: "Checking \(model.mediaCopyFilter.fileTypeName) files and destination conflicts."
+            )
+        } else if model.isMediaCopying {
+            CenteredStatusView(
+                symbol: "doc.on.doc",
+                title: "Copying files",
+                detail: mediaCopyProgressDetail
+            )
+        } else if model.mediaCopyPlan == nil {
+            CenteredStatusView(
+                symbol: "folder",
+                title: "No copy plan",
+                detail: "Select source and destination folders, then scan, copy, or add to queue."
+            )
+        } else if let plan = model.mediaCopyPlan, !plan.hasCopyableContent {
+            CenteredStatusView(
+                symbol: plan.filter.symbolName,
+                title: "No \(plan.filter.fileTypeName) files found",
+                detail: plan.sourceRoot.path(percentEncoded: false)
+            )
+        } else if let plan = model.mediaCopyPlan {
+            ScrollView {
+                LazyVStack(spacing: 8) {
+                    ForEach(model.mediaCopyPreviewItems) { candidate in
+                        MediaCopyCandidateRow(candidate: candidate, filter: plan.filter)
+                    }
+
+                    if plan.candidates.count > model.mediaCopyPreviewItems.count {
+                        Text(
+                            "\(plan.candidates.count - model.mediaCopyPreviewItems.count) more file\(plan.candidates.count - model.mediaCopyPreviewItems.count == 1 ? "" : "s") hidden from preview."
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.vertical, 12)
+                    }
+                }
+                .padding(18)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var mediaCopyQueueContent: some View {
+        if model.mediaCopyQueue.isEmpty {
+            CenteredStatusView(
+                symbol: "list.bullet.rectangle",
+                title: "No queued workflows",
+                detail: "Choose a source, destination, and copy mode, then add it to the queue."
+            )
+        } else {
+            ScrollView {
+                LazyVStack(spacing: 8) {
+                    ForEach(Array(model.mediaCopyQueue.enumerated()), id: \.element.id) {
+                        index,
+                        workflow in
+                        MediaCopyWorkflowRow(
+                            index: index + 1,
+                            workflow: workflow,
+                            isRunning: model.currentMediaCopyWorkflowID == workflow.id,
+                            canModify: !model.isMediaCopyBusy
+                        ) {
+                            model.removeMediaCopyWorkflowFromQueue(workflow)
+                        }
+                    }
+                }
+                .padding(18)
+            }
+        }
+    }
+
+    private var mediaCopySubtitle: String {
+        if selectedMediaCopyPreviewMode == .queue {
+            if model.isMediaCopyScanning {
+                return "Scanning queued file copy workflows."
+            }
+
+            if model.isMediaCopying {
+                return mediaCopyProgressDetail
+            }
+
+            let count = model.mediaCopyQueueTotalCount
+            return count == 0
+                ? "No queued file copy workflows."
+                : "\(count) queued file copy workflow\(count == 1 ? "" : "s")."
+        }
+
+        if model.isMediaCopyScanning {
+            return "Scanning \(model.mediaCopyFilter.fileTypeName) files."
+        }
+
+        if model.isMediaCopying {
+            return mediaCopyProgressDetail
+        }
+
+        guard let plan = model.mediaCopyPlan else {
+            return "No source and destination scan has been run."
+        }
+
+        if !plan.hasCopyableContent {
+            return "No matching \(plan.filter.fileTypeName) files found."
+        }
+
+        if plan.conflictCount > 0 {
+            return
+                "\(plan.candidates.count) matched, \(plan.conflictCount) already exist in the destination."
+        }
+
+        return "\(plan.candidates.count) matched, no destination conflicts."
+    }
+
+    private var mediaCopyProgressDetail: String {
+        guard let progress = model.mediaCopyProgress else {
+            return "Preparing copy."
+        }
+
+        return
+            "\(progress.completed) of \(progress.total) processed, \(progress.copied) copied, \(progress.skippedExisting) skipped, \(progress.failed) failed."
     }
 
     private var libraryPanel: some View {
@@ -748,6 +1182,12 @@ private struct ToolStatusView: View {
             }
             .buttonStyle(.borderless)
             .help("Refresh FFmpeg detection")
+
+            Divider()
+                .frame(height: 28)
+
+            NotificationStatusControl()
+                .environmentObject(model)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -759,6 +1199,70 @@ private struct ToolStatusView: View {
             return source.title
         }
         return "\(source.title) missing"
+    }
+}
+
+private struct NotificationStatusControl: View {
+    @EnvironmentObject private var model: EncoderViewModel
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Image(systemName: model.notificationPermission.symbolName)
+                .foregroundStyle(statusColor)
+
+            Text(notificationTitle)
+                .font(.caption.weight(.semibold))
+                .lineLimit(1)
+
+            if model.notificationPermission == .enabled {
+                Button {
+                    model.sendTestNotification()
+                } label: {
+                    Text("Test")
+                }
+                .controlSize(.small)
+            } else {
+                Button {
+                    if model.notificationPermission == .denied {
+                        model.openNotificationSettings()
+                    } else {
+                        model.requestNotificationPermission()
+                    }
+                } label: {
+                    Text(actionTitle)
+                }
+                .controlSize(.small)
+            }
+        }
+        .help(model.notificationPermission.detail)
+    }
+
+    private var notificationTitle: String {
+        switch model.notificationPermission {
+        case .enabled:
+            "Alerts on"
+        case .denied:
+            "Alerts denied"
+        case .notDetermined:
+            "Enable alerts"
+        case .unknown:
+            "Alerts"
+        }
+    }
+
+    private var actionTitle: String {
+        model.notificationPermission == .denied ? "Settings" : "Enable"
+    }
+
+    private var statusColor: Color {
+        switch model.notificationPermission {
+        case .enabled:
+            .green
+        case .denied:
+            .orange
+        case .notDetermined, .unknown:
+            .secondary
+        }
     }
 }
 
@@ -1017,6 +1521,201 @@ private struct EmptyJobFilterView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private struct FolderPickerControl: View {
+    let url: URL?
+    let placeholder: String
+    let systemImage: String
+    let buttonTitle: String
+    let disabled: Bool
+    let action: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 9) {
+                Image(systemName: systemImage)
+                    .foregroundStyle(.teal)
+                    .frame(width: 18)
+
+                Text(url?.path(percentEncoded: false) ?? placeholder)
+                    .font(.callout)
+                    .foregroundStyle(url == nil ? .secondary : .primary)
+                    .lineLimit(3)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+            }
+
+            Button {
+                action()
+            } label: {
+                Label(buttonTitle, systemImage: "folder")
+            }
+            .disabled(disabled)
+        }
+    }
+}
+
+private struct CenteredStatusView: View {
+    let symbol: String
+    let title: String
+    let detail: String
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Image(systemName: symbol)
+                .font(.system(size: 56, weight: .light))
+                .foregroundStyle(.teal)
+            VStack(spacing: 5) {
+                Text(title)
+                    .font(.title3.weight(.semibold))
+                Text(detail)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(3)
+                    .truncationMode(.middle)
+            }
+            .frame(maxWidth: 620)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(24)
+    }
+}
+
+private struct MediaCopyCandidateRow: View {
+    let candidate: MediaCopyCandidate
+    let filter: MediaFileFilter
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: filter.symbolName)
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(candidate.hasDestinationConflict ? .orange : .teal)
+                .frame(width: 34, height: 34)
+                .background(
+                    (candidate.hasDestinationConflict ? Color.orange : Color.teal).opacity(0.12),
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                )
+
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 8) {
+                    Text(candidate.relativePath)
+                        .font(.callout.weight(.semibold))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+
+                    if candidate.hasDestinationConflict {
+                        Text("EXISTS")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.orange)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(
+                                .orange.opacity(0.14),
+                                in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            )
+                    }
+
+                    Spacer()
+
+                    Text(candidate.fileSizeBytes.formattedFileSize)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Text(candidate.destinationURL.path(percentEncoded: false))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .padding(12)
+        .background(
+            Color(nsColor: .controlBackgroundColor),
+            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(
+                    candidate.hasDestinationConflict
+                        ? Color.orange.opacity(0.45)
+                        : Color(nsColor: .separatorColor).opacity(0.35)
+                )
+        }
+    }
+}
+
+private struct MediaCopyWorkflowRow: View {
+    let index: Int
+    let workflow: MediaCopyWorkflow
+    let isRunning: Bool
+    let canModify: Bool
+    let remove: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Group {
+                if isRunning {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Image(systemName: workflow.filter.symbolName)
+                        .font(.system(size: 17, weight: .semibold))
+                }
+            }
+            .foregroundStyle(isRunning ? .teal : .indigo)
+            .frame(width: 34, height: 34)
+            .background(
+                (isRunning ? Color.teal : Color.indigo).opacity(0.12),
+                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+            )
+
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 8) {
+                    Text("\(index). \(workflow.filter.title)")
+                        .font(.callout.weight(.semibold))
+                        .lineLimit(1)
+
+                    Spacer()
+
+                    Text(workflow.createdAt, style: .date)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Text("\(workflow.sourceRoot.path(percentEncoded: false)) -> \(workflow.destinationRootPreservingSourceFolder.path(percentEncoded: false))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+            }
+
+            Button {
+                remove()
+            } label: {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+            .disabled(!canModify)
+            .help("Remove from queue")
+        }
+        .padding(12)
+        .background(
+            Color(nsColor: .controlBackgroundColor),
+            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(
+                    isRunning
+                        ? Color.teal.opacity(0.5)
+                        : Color(nsColor: .separatorColor).opacity(0.35)
+                )
+        }
     }
 }
 
