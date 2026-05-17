@@ -32,6 +32,7 @@ final class EncoderViewModel: ObservableObject {
         static let restoreBackupRootPath = "restoreBackupRootPath"
         static let restoreDestinationRootPath = "restoreDestinationRootPath"
         static let mediaCopySourceRootPath = "mediaCopySourceRootPath"
+        static let mediaCopySourceRootPaths = "mediaCopySourceRootPaths"
         static let mediaCopyDestinationRootPath = "mediaCopyDestinationRootPath"
         static let mediaCopyFilter = "mediaCopyFilter"
     }
@@ -145,10 +146,10 @@ final class EncoderViewModel: ObservableObject {
     @Published private(set) var isRestorePlanning = false
     @Published private(set) var isRestoringFromPlan = false
     @Published private(set) var restorePlanStoppedWithPartialResults = false
-    @Published var mediaCopySourceRoot: URL? {
+    @Published var mediaCopySourceRoots: [URL] = [] {
         didSet {
-            persistOptionalDirectory(mediaCopySourceRoot, forKey: DefaultsKey.mediaCopySourceRootPath)
-            invalidateMediaCopyPlanIfChanged(from: oldValue, to: mediaCopySourceRoot)
+            persistMediaCopySourceRoots()
+            invalidateMediaCopyPlanIfChanged(from: oldValue, to: mediaCopySourceRoots)
         }
     }
     @Published var mediaCopyDestinationRoot: URL? {
@@ -463,11 +464,11 @@ final class EncoderViewModel: ObservableObject {
     }
 
     var canPrepareMediaCopy: Bool {
-        mediaCopySourceRoot != nil && mediaCopyDestinationRoot != nil && !isMediaCopyBusy
+        primaryMediaCopySourceRoot != nil && mediaCopyDestinationRoot != nil && !isMediaCopyBusy
     }
 
     var canAddMediaCopyWorkflowToQueue: Bool {
-        mediaCopySourceRoot != nil && mediaCopyDestinationRoot != nil && !isMediaCopyBusy
+        !mediaCopySourceRoots.isEmpty && mediaCopyDestinationRoot != nil && !isMediaCopyBusy
     }
 
     var canRunMediaCopyQueue: Bool {
@@ -497,6 +498,30 @@ final class EncoderViewModel: ObservableObject {
 
     var mediaCopyQueueTotalCount: Int {
         mediaCopyQueue.count
+    }
+
+    var primaryMediaCopySourceRoot: URL? {
+        mediaCopySourceRoots.first
+    }
+
+    var mediaCopySourceSummary: String {
+        switch mediaCopySourceRoots.count {
+        case 0:
+            return "No source folder selected"
+        case 1:
+            return mediaCopySourceRoots[0].path(percentEncoded: false)
+        default:
+            return "\(mediaCopySourceRoots.count) source folders selected"
+        }
+    }
+
+    var mediaCopySourceDetail: String? {
+        guard mediaCopySourceRoots.count > 1 else { return nil }
+        return mediaCopySourceRoots
+            .prefix(3)
+            .map { $0.lastPathComponent }
+            .joined(separator: ", ")
+            + (mediaCopySourceRoots.count > 3 ? "..." : "")
     }
 
     var restorePlanAlreadyRestoredCount: Int {
@@ -1046,14 +1071,15 @@ final class EncoderViewModel: ObservableObject {
 
     func chooseMediaCopySourceRoot() {
         guard !isMediaCopyBusy else { return }
-        if let url = chooseDirectory(
-            title: "Choose Source Folder",
-            prompt: "Use Source",
-            initialURL: mediaCopySourceRoot ?? lastInputDirectoryURL()
+        if let urls = chooseDirectories(
+            title: "Choose Source Folders",
+            prompt: "Use Sources",
+            initialURL: primaryMediaCopySourceRoot ?? lastInputDirectoryURL()
         ) {
-            mediaCopySourceRoot = url
-            rememberInputDirectory(url)
-            statusMessage = "Media copy source set to \(url.path(percentEncoded: false))."
+            mediaCopySourceRoots = urls
+            rememberInputDirectory(urls.first)
+            statusMessage =
+                "Media copy source set to \(urls.count) folder\(urls.count == 1 ? "" : "s")."
         }
     }
 
@@ -1062,7 +1088,7 @@ final class EncoderViewModel: ObservableObject {
         if let url = chooseDirectory(
             title: "Choose Destination Folder",
             prompt: "Use Destination",
-            initialURL: mediaCopyDestinationRoot ?? mediaCopySourceRoot ?? lastInputDirectoryURL()
+            initialURL: mediaCopyDestinationRoot ?? primaryMediaCopySourceRoot ?? lastInputDirectoryURL()
         ) {
             mediaCopyDestinationRoot = url
             statusMessage = "Media copy destination set to \(url.path(percentEncoded: false))."
@@ -1078,30 +1104,32 @@ final class EncoderViewModel: ObservableObject {
     }
 
     func addCurrentMediaCopyWorkflowToQueue() {
-        guard let sourceRoot = mediaCopySourceRoot,
-            let destinationRoot = mediaCopyDestinationRoot,
+        guard let destinationRoot = mediaCopyDestinationRoot,
             canAddMediaCopyWorkflowToQueue
         else {
             statusMessage = "Choose source and destination folders before adding to the queue."
             return
         }
 
-        guard validateMediaCopyFolders(sourceRoot: sourceRoot, destinationRoot: destinationRoot)
-        else {
-            return
+        for sourceRoot in mediaCopySourceRoots {
+            guard validateMediaCopyFolders(sourceRoot: sourceRoot, destinationRoot: destinationRoot)
+            else {
+                return
+            }
         }
 
-        mediaCopyQueue.append(
+        let workflows = mediaCopySourceRoots.map {
             MediaCopyWorkflow(
-                sourceRoot: sourceRoot,
+                sourceRoot: $0,
                 destinationRoot: destinationRoot,
                 filter: mediaCopyFilter
             )
-        )
+        }
+        mediaCopyQueue.append(contentsOf: workflows)
         mediaCopyPlan = nil
         mediaCopyProgress = nil
         statusMessage =
-            "Added \(sourceRoot.lastPathComponent) -> \(destinationRoot.lastPathComponent) to the file copy queue."
+            "Added \(workflows.count) workflow\(workflows.count == 1 ? "" : "s") to the file copy queue."
     }
 
     func removeMediaCopyWorkflowFromQueue(_ workflow: MediaCopyWorkflow) {
@@ -1131,7 +1159,7 @@ final class EncoderViewModel: ObservableObject {
         panel.prompt = "Save Job"
         panel.allowedContentTypes = [MediaCopyJobFile.contentType]
         panel.canCreateDirectories = true
-        panel.directoryURL = mediaCopyDestinationRoot ?? mediaCopySourceRoot ?? lastInputDirectoryURL()
+        panel.directoryURL = mediaCopyDestinationRoot ?? primaryMediaCopySourceRoot ?? lastInputDirectoryURL()
         panel.nameFieldStringValue = defaultMediaCopyJobFileName()
 
         guard panel.runModal() == .OK, let selectedURL = panel.url else { return }
@@ -1163,7 +1191,7 @@ final class EncoderViewModel: ObservableObject {
         panel.canChooseDirectories = false
         panel.canCreateDirectories = false
         panel.allowedContentTypes = [MediaCopyJobFile.contentType, .json]
-        panel.directoryURL = mediaCopyDestinationRoot ?? mediaCopySourceRoot ?? lastInputDirectoryURL()
+        panel.directoryURL = mediaCopyDestinationRoot ?? primaryMediaCopySourceRoot ?? lastInputDirectoryURL()
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
@@ -1476,7 +1504,7 @@ final class EncoderViewModel: ObservableObject {
     }
 
     private func runMediaCopyPreflight(copyAfterScan: Bool) {
-        guard let sourceRoot = mediaCopySourceRoot,
+        guard let sourceRoot = primaryMediaCopySourceRoot,
             let destinationRoot = mediaCopyDestinationRoot
         else {
             statusMessage = "Choose source and destination folders before copying media files."
@@ -2327,7 +2355,11 @@ final class EncoderViewModel: ObservableObject {
         restoreDestinationRoot = persistedDirectoryURL(
             forKey: DefaultsKey.restoreDestinationRootPath
         )
-        mediaCopySourceRoot = persistedDirectoryURL(forKey: DefaultsKey.mediaCopySourceRootPath)
+        if let paths = defaults.array(forKey: DefaultsKey.mediaCopySourceRootPaths) as? [String] {
+            mediaCopySourceRoots = paths.compactMap { directoryURLIfExists(atPath: $0) }
+        } else if let sourceRoot = persistedDirectoryURL(forKey: DefaultsKey.mediaCopySourceRootPath) {
+            mediaCopySourceRoots = [sourceRoot]
+        }
         mediaCopyDestinationRoot = persistedDirectoryURL(
             forKey: DefaultsKey.mediaCopyDestinationRootPath
         )
@@ -2481,6 +2513,20 @@ final class EncoderViewModel: ObservableObject {
         )
     }
 
+    private func persistMediaCopySourceRoots() {
+        let paths = mediaCopySourceRoots.map {
+            $0.standardizedFileURL.path(percentEncoded: false)
+        }
+
+        if paths.isEmpty {
+            UserDefaults.standard.removeObject(forKey: DefaultsKey.mediaCopySourceRootPaths)
+            UserDefaults.standard.removeObject(forKey: DefaultsKey.mediaCopySourceRootPath)
+        } else {
+            UserDefaults.standard.set(paths, forKey: DefaultsKey.mediaCopySourceRootPaths)
+            UserDefaults.standard.set(paths[0], forKey: DefaultsKey.mediaCopySourceRootPath)
+        }
+    }
+
     private func chooseDirectory(title: String, prompt: String, initialURL: URL?) -> URL? {
         let panel = NSOpenPanel()
         panel.title = title
@@ -2493,6 +2539,20 @@ final class EncoderViewModel: ObservableObject {
 
         guard panel.runModal() == .OK else { return nil }
         return panel.url
+    }
+
+    private func chooseDirectories(title: String, prompt: String, initialURL: URL?) -> [URL]? {
+        let panel = NSOpenPanel()
+        panel.title = title
+        panel.prompt = prompt
+        panel.allowsMultipleSelection = true
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.directoryURL = initialURL
+
+        guard panel.runModal() == .OK else { return nil }
+        return panel.urls
     }
 
     private func validateMediaCopyFolders(sourceRoot: URL, destinationRoot: URL) -> Bool {

@@ -120,10 +120,10 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 16) {
             GroupBox("Source") {
                 FolderPickerControl(
-                    url: model.mediaCopySourceRoot,
-                    placeholder: "No source folder selected",
+                    title: model.mediaCopySourceSummary,
+                    detail: model.mediaCopySourceDetail,
                     systemImage: "folder.badge.plus",
-                    buttonTitle: "Choose source",
+                    buttonTitle: "Choose sources",
                     disabled: model.isMediaCopyBusy
                 ) {
                     model.chooseMediaCopySourceRoot()
@@ -133,8 +133,9 @@ struct ContentView: View {
 
             GroupBox("Destination") {
                 FolderPickerControl(
-                    url: model.mediaCopyDestinationRoot,
-                    placeholder: "No destination folder selected",
+                    title: model.mediaCopyDestinationRoot?.path(percentEncoded: false)
+                        ?? "No destination folder selected",
+                    detail: nil,
                     systemImage: "externaldrive",
                     buttonTitle: "Choose destination",
                     disabled: model.isMediaCopyBusy
@@ -1525,8 +1526,8 @@ private struct EmptyJobFilterView: View {
 }
 
 private struct FolderPickerControl: View {
-    let url: URL?
-    let placeholder: String
+    let title: String
+    let detail: String?
     let systemImage: String
     let buttonTitle: String
     let disabled: Bool
@@ -1539,12 +1540,22 @@ private struct FolderPickerControl: View {
                     .foregroundStyle(.teal)
                     .frame(width: 18)
 
-                Text(url?.path(percentEncoded: false) ?? placeholder)
-                    .font(.callout)
-                    .foregroundStyle(url == nil ? .secondary : .primary)
-                    .lineLimit(3)
-                    .truncationMode(.middle)
-                    .textSelection(.enabled)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .font(.callout)
+                        .foregroundStyle(title.hasPrefix("No ") ? .secondary : .primary)
+                        .lineLimit(3)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+
+                    if let detail {
+                        Text(detail)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                            .truncationMode(.middle)
+                    }
+                }
             }
 
             Button {
