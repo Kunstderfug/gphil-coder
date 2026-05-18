@@ -1,5 +1,35 @@
 import Foundation
 
+enum FileManagementMode: String, CaseIterable, Identifiable, Sendable {
+    case copy
+    case delete
+    case rename
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .copy:
+            "Copy"
+        case .delete:
+            "Delete"
+        case .rename:
+            "Rename"
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .copy:
+            "doc.on.doc"
+        case .delete:
+            "trash"
+        case .rename:
+            "pencil"
+        }
+    }
+}
+
 enum AudioFormat {
     static let inputExtensions: Set<String> = Set(InputAudioFormat.allCases.flatMap(\.fileExtensions))
     static let readableInputList = readableList(for: inputExtensions)

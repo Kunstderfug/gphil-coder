@@ -134,6 +134,76 @@ public struct MediaCopyCandidate: Identifiable, Hashable, Sendable {
     public var name: String {
         sourceURL.lastPathComponent
     }
+
+    public var relativeDirectory: String? {
+        let directory = (relativePath as NSString).deletingLastPathComponent
+        return directory.isEmpty ? nil : directory
+    }
+}
+
+public struct MediaDeleteCandidate: Identifiable, Hashable, Sendable {
+    public let id: String
+    public let sourceURL: URL
+    public let sourceRoot: URL
+    public let relativePath: String
+    public let fileSizeBytes: Int64
+
+    public init(
+        id: String,
+        sourceURL: URL,
+        sourceRoot: URL,
+        relativePath: String,
+        fileSizeBytes: Int64
+    ) {
+        self.id = id
+        self.sourceURL = sourceURL
+        self.sourceRoot = sourceRoot
+        self.relativePath = relativePath
+        self.fileSizeBytes = fileSizeBytes
+    }
+
+    public var name: String {
+        sourceURL.lastPathComponent
+    }
+
+    public var relativeDirectory: String? {
+        let directory = (relativePath as NSString).deletingLastPathComponent
+        return directory.isEmpty ? nil : directory
+    }
+}
+
+public struct MediaFileInventoryRecord: Identifiable, Hashable, Sendable {
+    public let id: String
+    public let sourceURL: URL
+    public let sourceRoot: URL
+    public let relativePath: String
+    public let fileSizeBytes: Int64
+    public let modifiedDate: Date?
+
+    public init(
+        id: String,
+        sourceURL: URL,
+        sourceRoot: URL,
+        relativePath: String,
+        fileSizeBytes: Int64,
+        modifiedDate: Date?
+    ) {
+        self.id = id
+        self.sourceURL = sourceURL
+        self.sourceRoot = sourceRoot
+        self.relativePath = relativePath
+        self.fileSizeBytes = fileSizeBytes
+        self.modifiedDate = modifiedDate
+    }
+
+    public var name: String {
+        sourceURL.lastPathComponent
+    }
+
+    public var relativeDirectory: String? {
+        let directory = (relativePath as NSString).deletingLastPathComponent
+        return directory.isEmpty ? nil : directory
+    }
 }
 
 public struct MediaCopyPlan: Sendable {
@@ -181,6 +251,36 @@ public struct MediaCopyPlan: Sendable {
 
     public var directoryCount: Int {
         relativeDirectories.count
+    }
+}
+
+public struct MediaDeletePlan: Sendable {
+    public let sourceRoots: [URL]
+    public let filter: MediaFileFilter
+    public let selectedExtensions: Set<String>
+    public let candidates: [MediaDeleteCandidate]
+    public let scannedAt: Date
+
+    public init(
+        sourceRoots: [URL],
+        filter: MediaFileFilter,
+        selectedExtensions: Set<String>,
+        candidates: [MediaDeleteCandidate],
+        scannedAt: Date
+    ) {
+        self.sourceRoots = sourceRoots
+        self.filter = filter
+        self.selectedExtensions = selectedExtensions
+        self.candidates = candidates
+        self.scannedAt = scannedAt
+    }
+
+    public var hasDeletableContent: Bool {
+        !candidates.isEmpty
+    }
+
+    public var totalSizeBytes: Int64 {
+        candidates.reduce(0) { $0 + $1.fileSizeBytes }
     }
 }
 
@@ -321,6 +421,105 @@ public struct MediaCopyJobDocument: Codable, Sendable {
 }
 
 public enum MediaCopyPlanner {
+    public static func scanFileInventory(
+        sourceRoots: [URL]
+    ) throws -> [MediaFileInventoryRecord] {
+        var records: [MediaFileInventoryRecord] = []
+        var seenPaths = Set<String>()
+        let fileManager = FileManager.default
+        let keys: [URLResourceKey] = [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey]
+
+        for sourceRoot in sourceRoots {
+            guard
+                let enumerator = fileManager.enumerator(
+                    at: sourceRoot,
+                    includingPropertiesForKeys: keys,
+                    options: [.skipsPackageDescendants]
+                )
+            else {
+                throw CocoaError(.fileReadNoSuchFile)
+            }
+
+            for case let sourceURL as URL in enumerator {
+                try Task.checkCancellation()
+
+                let values = try? sourceURL.resourceValues(forKeys: Set(keys))
+                guard values?.isRegularFile == true else { continue }
+
+                let standardizedPath = sourceURL.standardizedFileURL.path
+                guard !seenPaths.contains(standardizedPath) else { continue }
+                guard let relativeComponents = relativePathComponents(
+                    for: sourceURL,
+                    sourceRoot: sourceRoot
+                ) else {
+                    continue
+                }
+
+                records.append(
+                    MediaFileInventoryRecord(
+                        id: standardizedPath,
+                        sourceURL: sourceURL,
+                        sourceRoot: sourceRoot,
+                        relativePath: relativeComponents.joined(separator: "/"),
+                        fileSizeBytes: values?.fileSize.map(Int64.init) ?? 0,
+                        modifiedDate: values?.contentModificationDate
+                    )
+                )
+                seenPaths.insert(standardizedPath)
+            }
+        }
+
+        return records.sorted {
+            $0.sourceURL.path.localizedCaseInsensitiveCompare($1.sourceURL.path)
+                == .orderedAscending
+        }
+    }
+
+    public static func buildDeletePlan(
+        sourceRoots: [URL],
+        filter: MediaFileFilter,
+        selectedExtensions: Set<String>
+    ) throws -> MediaDeletePlan {
+        let inventory = try scanFileInventory(sourceRoots: sourceRoots)
+        return buildDeletePlan(
+            sourceRoots: sourceRoots,
+            filter: filter,
+            selectedExtensions: selectedExtensions,
+            inventory: inventory
+        )
+    }
+
+    public static func buildDeletePlan(
+        sourceRoots: [URL],
+        filter: MediaFileFilter,
+        selectedExtensions: Set<String>,
+        inventory: [MediaFileInventoryRecord]
+    ) -> MediaDeletePlan {
+        let sourceRootKeys = Set(sourceRoots.map { $0.standardizedFileURL.path })
+        let candidates = inventory
+            .filter {
+                sourceRootKeys.contains($0.sourceRoot.standardizedFileURL.path)
+                    && filter.matches($0.sourceURL, selectedExtensions: selectedExtensions)
+            }
+            .map {
+                MediaDeleteCandidate(
+                    id: $0.id,
+                    sourceURL: $0.sourceURL,
+                    sourceRoot: $0.sourceRoot,
+                    relativePath: $0.relativePath,
+                    fileSizeBytes: $0.fileSizeBytes
+                )
+            }
+
+        return MediaDeletePlan(
+            sourceRoots: sourceRoots,
+            filter: filter,
+            selectedExtensions: selectedExtensions,
+            candidates: candidates,
+            scannedAt: Date()
+        )
+    }
+
     public static func buildPlan(
         sourceRoot: URL,
         destinationRoot: URL,
