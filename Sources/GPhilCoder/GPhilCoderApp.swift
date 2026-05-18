@@ -11,6 +11,10 @@ private enum MainWindowConfiguration {
     }
 }
 
+enum AppWindowID {
+    static let renameSettings = "rename-settings"
+}
+
 @main
 struct GPhilCoderApp: App {
     @NSApplicationDelegateAdaptor(AppLifecycleDelegate.self) private var appDelegate
@@ -49,6 +53,13 @@ struct GPhilCoderApp: App {
                 .keyboardShortcut("o", modifiers: [.command, .shift])
             }
         }
+
+        Window("Rename Settings", id: AppWindowID.renameSettings) {
+            MediaRenameSettingsWindow()
+                .environmentObject(encoder)
+        }
+        .defaultSize(width: 430, height: 420)
+        .windowResizability(.contentSize)
     }
 }
 

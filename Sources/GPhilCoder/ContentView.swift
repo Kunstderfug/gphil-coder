@@ -13,6 +13,7 @@ private enum MediaCopyPreviewMode: Hashable {
 }
 
 struct ContentView: View {
+    @Environment(\.openWindow) private var openWindow
     @EnvironmentObject private var model: EncoderViewModel
     @State private var selectedWorkflowTab: WorkflowTab = .audioEncoding
     @State private var selectedMediaCopyPreviewMode: MediaCopyPreviewMode = .plan
@@ -224,7 +225,7 @@ struct ContentView: View {
             }
 
             if model.fileManagementMode == .rename {
-                mediaRenameSettingsGroup
+                mediaRenameSummaryGroup
             }
 
             GroupBox("Plan") {
@@ -520,111 +521,32 @@ struct ContentView: View {
         .background(Color(nsColor: .controlBackgroundColor))
     }
 
-    private var mediaRenameSettingsGroup: some View {
+    private var mediaRenameSummaryGroup: some View {
         GroupBox("Rename") {
             VStack(alignment: .leading, spacing: 10) {
-                Picker("Action", selection: $model.mediaRenameOperation) {
-                    ForEach(MediaRenameOperation.allCases) { operation in
-                        Text(operation.title)
-                            .tag(operation)
-                    }
+                StatLine(
+                    title: "Action",
+                    value: model.mediaRenameOperation.title,
+                    symbol: "textformat",
+                    color: .teal
+                )
+                StatLine(
+                    title: "Sort",
+                    value: model.mediaRenameSort.title,
+                    symbol: "arrow.up.arrow.down",
+                    color: .indigo
+                )
+
+                Button {
+                    openWindow(id: AppWindowID.renameSettings)
+                } label: {
+                    Label("Open settings", systemImage: "slider.horizontal.3")
+                        .frame(maxWidth: .infinity)
                 }
-                .pickerStyle(.menu)
                 .disabled(model.isMediaCopyBusy)
-                .arrowCursorOnHover()
-
-                mediaRenameOperationControls
-
-                Picker("Sort", selection: $model.mediaRenameSort) {
-                    ForEach(MediaRenameSort.allCases) { sort in
-                        Text(sort.title)
-                            .tag(sort)
-                    }
-                }
-                .pickerStyle(.menu)
-                .disabled(model.isMediaCopyBusy)
-                .arrowCursorOnHover()
-
-                if model.mediaRenameOperation == .pattern || model.mediaRenameOperation == .addText {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Stepper(value: $model.mediaRenameStartIndex, in: 0...999_999) {
-                            HStack {
-                                Text("Start")
-                                Spacer()
-                                Text("\(model.mediaRenameStartIndex)")
-                                    .monospacedDigit()
-                            }
-                        }
-
-                        Stepper(value: $model.mediaRenameIndexStep, in: 1...999) {
-                            HStack {
-                                Text("Step")
-                                Spacer()
-                                Text("\(model.mediaRenameIndexStep)")
-                                    .monospacedDigit()
-                            }
-                        }
-
-                        Stepper(value: $model.mediaRenameIndexPadding, in: 1...8) {
-                            HStack {
-                                Text("Digits")
-                                Spacer()
-                                Text("\(model.mediaRenameIndexPadding)")
-                                    .monospacedDigit()
-                            }
-                        }
-                    }
-                    .disabled(model.isMediaCopyBusy)
-                }
+                .help("Open rename settings in a separate window")
             }
             .padding(.vertical, 4)
-        }
-    }
-
-    @ViewBuilder
-    private var mediaRenameOperationControls: some View {
-        switch model.mediaRenameOperation {
-        case .pattern:
-            TextField("Pattern", text: $model.mediaRenamePattern)
-                .textFieldStyle(.roundedBorder)
-                .disabled(model.isMediaCopyBusy)
-                .help("Use {name}, {index}, and {parent}")
-        case .replaceText:
-            VStack(alignment: .leading, spacing: 8) {
-                TextField("Find", text: $model.mediaRenameFindText)
-                    .textFieldStyle(.roundedBorder)
-                TextField("Replace", text: $model.mediaRenameReplacementText)
-                    .textFieldStyle(.roundedBorder)
-                Toggle("Case sensitive", isOn: $model.mediaRenameIsCaseSensitive)
-            }
-            .disabled(model.isMediaCopyBusy)
-        case .addText:
-            VStack(alignment: .leading, spacing: 8) {
-                TextField("Text", text: $model.mediaRenameAddedText)
-                    .textFieldStyle(.roundedBorder)
-                    .help("Use {name}, {index}, and {parent}")
-                Picker("Position", selection: $model.mediaRenameTextPlacement) {
-                    ForEach(MediaRenameTextPlacement.allCases) { placement in
-                        Text(placement.title)
-                            .tag(placement)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .arrowCursorOnHover()
-            }
-            .disabled(model.isMediaCopyBusy)
-        case .changeCase:
-            Picker("Case", selection: $model.mediaRenameCaseStyle) {
-                ForEach(MediaRenameCaseStyle.allCases) { style in
-                    Text(style.title)
-                        .tag(style)
-                }
-            }
-            .pickerStyle(.segmented)
-            .disabled(model.isMediaCopyBusy)
-            .arrowCursorOnHover()
-        case .cleanUp:
-            EmptyView()
         }
     }
 
@@ -2639,7 +2561,7 @@ private struct SettingValue: View {
     }
 }
 
-private struct FormatPill: View {
+struct FormatPill: View {
     let text: String
 
     var body: some View {
@@ -2697,7 +2619,7 @@ private struct HeaderAppIcon: View {
 }
 
 extension View {
-    fileprivate func arrowCursorOnHover() -> some View {
+    func arrowCursorOnHover() -> some View {
         modifier(ArrowCursorModifier())
     }
 }
