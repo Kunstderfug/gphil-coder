@@ -31,13 +31,18 @@ final class EncoderViewModel: ObservableObject {
         static let restoreDeletedFolderPath = "restoreDeletedFolderPath"
         static let restoreBackupRootPath = "restoreBackupRootPath"
         static let restoreDestinationRootPath = "restoreDestinationRootPath"
+        static let fileManagementMode = "fileManagementMode"
         static let mediaCopySourceRootPath = "mediaCopySourceRootPath"
         static let mediaCopySourceRootPaths = "mediaCopySourceRootPaths"
         static let mediaCopyDestinationRootPath = "mediaCopyDestinationRootPath"
         static let mediaCopyFilter = "mediaCopyFilter"
         static let mediaCopyAudioExtensions = "mediaCopyAudioExtensions"
         static let mediaCopyVideoExtensions = "mediaCopyVideoExtensions"
+        static let mediaRenameSettings = "mediaRenameSettings"
+        static let mediaRenameHistory = "mediaRenameHistory"
     }
+
+    private static let mediaRenameHistoryLimit = 20
 
     private enum QueueFile {
         static let fileExtension = "gphilcoderqueue"
@@ -125,6 +130,15 @@ final class EncoderViewModel: ObservableObject {
             )
         }
 
+        init(deleteCandidate candidate: MediaDeleteCandidate) {
+            self.init(
+                url: candidate.sourceURL,
+                sourceRoot: candidate.sourceRoot,
+                relativeDirectory: candidate.relativeDirectory,
+                fileSizeBytes: candidate.fileSizeBytes
+            )
+        }
+
         var name: String {
             url.lastPathComponent
         }
@@ -140,6 +154,134 @@ final class EncoderViewModel: ObservableObject {
 
         init(total: Int = 0) {
             self.total = total
+        }
+    }
+
+    private struct MediaRenameHistoryDocument: Codable, Sendable {
+        static let currentVersion = 1
+
+        var version = Self.currentVersion
+        var undoStack: [MediaRenameHistoryTransaction]
+        var redoStack: [MediaRenameHistoryTransaction]
+    }
+
+    private struct MediaRenameHistoryItem: Codable, Equatable, Identifiable, Sendable {
+        let id: UUID
+        let originalPath: String
+        let renamedPath: String
+        let originalName: String
+        let renamedName: String
+        let fileSizeBytes: Int64
+
+        init(
+            id: UUID = UUID(),
+            originalPath: String,
+            renamedPath: String,
+            originalName: String,
+            renamedName: String,
+            fileSizeBytes: Int64
+        ) {
+            self.id = id
+            self.originalPath = originalPath
+            self.renamedPath = renamedPath
+            self.originalName = originalName
+            self.renamedName = renamedName
+            self.fileSizeBytes = fileSizeBytes
+        }
+    }
+
+    private struct MediaRenameHistoryTransaction: Codable, Equatable, Identifiable, Sendable {
+        let id: UUID
+        let actionTitle: String
+        let createdAt: Date
+        let items: [MediaRenameHistoryItem]
+
+        init(
+            id: UUID = UUID(),
+            actionTitle: String,
+            createdAt: Date = Date(),
+            items: [MediaRenameHistoryItem]
+        ) {
+            self.id = id
+            self.actionTitle = actionTitle
+            self.createdAt = createdAt
+            self.items = items
+        }
+
+        func replacingItems(_ nextItems: [MediaRenameHistoryItem]) -> MediaRenameHistoryTransaction {
+            MediaRenameHistoryTransaction(
+                id: UUID(),
+                actionTitle: actionTitle,
+                createdAt: createdAt,
+                items: nextItems
+            )
+        }
+    }
+
+    private struct MediaRenameResult: Sendable {
+        var total: Int
+        var renamed = 0
+        var failed = 0
+        var failedNames: [String] = []
+        var historyItems: [MediaRenameHistoryItem] = []
+        var cancelled = false
+
+        init(total: Int = 0) {
+            self.total = total
+        }
+    }
+
+    private struct MediaRenameHistoryResult: Sendable {
+        var total: Int
+        var moved = 0
+        var failed = 0
+        var failedNames: [String] = []
+        var movedItems: [MediaRenameHistoryItem] = []
+        var cancelled = false
+
+        init(total: Int = 0) {
+            self.total = total
+        }
+    }
+
+    private enum MediaRenameHistoryDirection: Equatable, Sendable {
+        case undo
+        case redo
+
+        var title: String {
+            switch self {
+            case .undo:
+                "Undo rename"
+            case .redo:
+                "Redo rename"
+            }
+        }
+
+        var progressTitle: String {
+            switch self {
+            case .undo:
+                "Undoing rename"
+            case .redo:
+                "Redoing rename"
+            }
+        }
+
+        var progressVerb: String {
+            switch self {
+            case .undo:
+                "reverted"
+            case .redo:
+                "redone"
+            }
+        }
+
+        var notificationTitle: String {
+            switch self {
+            case .undo:
+                "Rename undo finished"
+            case .redo:
+                "Rename redo finished"
+            }
         }
     }
 
@@ -197,6 +339,18 @@ final class EncoderViewModel: ObservableObject {
     @Published private(set) var isRestorePlanning = false
     @Published private(set) var isRestoringFromPlan = false
     @Published private(set) var restorePlanStoppedWithPartialResults = false
+    @Published var fileManagementMode: FileManagementMode = .copy {
+        didSet {
+            guard oldValue != fileManagementMode else { return }
+            UserDefaults.standard.set(fileManagementMode.rawValue, forKey: DefaultsKey.fileManagementMode)
+            if fileManagementMode == .delete, mediaCopyFilter == .all {
+                mediaCopyFilter = .audio
+                return
+            }
+            guard !isLoadingPersistedSettings else { return }
+            refreshActiveFileManagementPreviewIfNeeded()
+        }
+    }
     @Published var mediaCopySourceRoots: [URL] = [] {
         didSet {
             persistMediaCopySourceRoots()
@@ -239,12 +393,60 @@ final class EncoderViewModel: ObservableObject {
         }
     }
     @Published private(set) var mediaCopyPlan: MediaCopyPlan?
+    @Published private(set) var mediaDeletePlan: MediaDeletePlan?
+    @Published private(set) var mediaRenamePlan: MediaRenamePlan?
+    @Published private(set) var isMediaRenamePreviewStale = false
     @Published private(set) var mediaCopyProgress: MediaCopyProgress?
     @Published private(set) var isMediaCopyScanning = false
     @Published private(set) var isMediaCopying = false
     @Published private(set) var isMediaDeleting = false
+    @Published private(set) var isMediaRenaming = false
+    @Published private(set) var mediaRenameProgressVerb = "renamed"
     @Published private(set) var mediaCopyQueue: [MediaCopyWorkflow] = []
     @Published private(set) var currentMediaCopyWorkflowID: UUID?
+    @Published private var mediaRenameUndoStack: [MediaRenameHistoryTransaction] = [] {
+        didSet { persistMediaRenameHistory() }
+    }
+    @Published private var mediaRenameRedoStack: [MediaRenameHistoryTransaction] = [] {
+        didSet { persistMediaRenameHistory() }
+    }
+
+    @Published var mediaRenameOperation: MediaRenameOperation = .pattern {
+        didSet { handleMediaRenameSettingChanged(from: oldValue, to: mediaRenameOperation) }
+    }
+    @Published var mediaRenamePattern = "{name}" {
+        didSet { handleMediaRenameSettingChanged(from: oldValue, to: mediaRenamePattern) }
+    }
+    @Published var mediaRenameFindText = "" {
+        didSet { handleMediaRenameSettingChanged(from: oldValue, to: mediaRenameFindText) }
+    }
+    @Published var mediaRenameReplacementText = "" {
+        didSet { handleMediaRenameSettingChanged(from: oldValue, to: mediaRenameReplacementText) }
+    }
+    @Published var mediaRenameIsCaseSensitive = false {
+        didSet { handleMediaRenameSettingChanged(from: oldValue, to: mediaRenameIsCaseSensitive) }
+    }
+    @Published var mediaRenameAddedText = "" {
+        didSet { handleMediaRenameSettingChanged(from: oldValue, to: mediaRenameAddedText) }
+    }
+    @Published var mediaRenameTextPlacement: MediaRenameTextPlacement = .suffix {
+        didSet { handleMediaRenameSettingChanged(from: oldValue, to: mediaRenameTextPlacement) }
+    }
+    @Published var mediaRenameCaseStyle: MediaRenameCaseStyle = .titleCase {
+        didSet { handleMediaRenameSettingChanged(from: oldValue, to: mediaRenameCaseStyle) }
+    }
+    @Published var mediaRenameSort: MediaRenameSort = .name {
+        didSet { handleMediaRenameSettingChanged(from: oldValue, to: mediaRenameSort) }
+    }
+    @Published var mediaRenameStartIndex = 1 {
+        didSet { handleMediaRenameSettingChanged(from: oldValue, to: mediaRenameStartIndex) }
+    }
+    @Published var mediaRenameIndexStep = 1 {
+        didSet { handleMediaRenameSettingChanged(from: oldValue, to: mediaRenameIndexStep) }
+    }
+    @Published var mediaRenameIndexPadding = 2 {
+        didSet { handleMediaRenameSettingChanged(from: oldValue, to: mediaRenameIndexPadding) }
+    }
 
     @Published private(set) var selectedInputExtensions: Set<String> = AudioFormat.inputExtensions {
         didSet {
@@ -367,6 +569,9 @@ final class EncoderViewModel: ObservableObject {
     private var restorePlanTask: Task<Void, Never>?
     private var restoreApplyTask: Task<Void, Never>?
     private var mediaCopyTask: Task<Void, Never>?
+    private var isLoadingPersistedSettings = false
+    private var mediaFileInventory: [MediaFileInventoryRecord] = []
+    private var mediaFileInventorySourceRootPaths: [String] = []
 
     var processorLimit: Int {
         max(1, ProcessInfo.processInfo.activeProcessorCount)
@@ -532,7 +737,7 @@ final class EncoderViewModel: ObservableObject {
     }
 
     var isMediaCopyBusy: Bool {
-        isMediaCopyScanning || isMediaCopying || isMediaDeleting
+        isMediaCopyScanning || isMediaCopying || isMediaDeleting || isMediaRenaming
     }
 
     var isQuitBlockedByActiveProcess: Bool {
@@ -556,20 +761,140 @@ final class EncoderViewModel: ObservableObject {
     }
 
     var canPrepareMediaCopy: Bool {
-        primaryMediaCopySourceRoot != nil && mediaCopyDestinationRoot != nil
+        fileManagementMode == .copy
+            && primaryMediaCopySourceRoot != nil && mediaCopyDestinationRoot != nil
             && mediaCopyHasSelectedExtensionsForCurrentFilter && !isMediaCopyBusy
     }
 
-    var canDeleteFilteredMediaFiles: Bool {
-        !mediaCopySourceRoots.isEmpty
+    var canRefreshMediaDeletePreview: Bool {
+        fileManagementMode == .delete
+            && !mediaCopySourceRoots.isEmpty
             && mediaCopyFilter.supportsExtensionSelection
             && !currentMediaCopySelectedExtensions.isEmpty
             && !isMediaCopyBusy
     }
 
+    var canDeleteFilteredMediaFiles: Bool {
+        fileManagementMode == .delete
+            && mediaDeletePlan?.hasDeletableContent == true
+            && !isMediaCopyBusy
+    }
+
+    var canRefreshMediaRenamePreview: Bool {
+        fileManagementMode == .rename
+            && !mediaCopySourceRoots.isEmpty
+            && mediaCopyHasSelectedExtensionsForCurrentFilter
+            && !isMediaCopyBusy
+    }
+
+    var canRenameFilteredMediaFiles: Bool {
+        fileManagementMode == .rename
+            && (mediaRenamePlan?.readyCount ?? 0) > 0
+            && mediaRenamePlan?.blockedCount == 0
+            && !isMediaRenamePreviewStale
+            && !isMediaCopyBusy
+    }
+
+    var canUndoMediaRename: Bool {
+        fileManagementMode == .rename && !mediaRenameUndoStack.isEmpty && !isMediaCopyBusy
+    }
+
+    var canRedoMediaRename: Bool {
+        fileManagementMode == .rename && !mediaRenameRedoStack.isEmpty && !isMediaCopyBusy
+    }
+
+    var mediaRenameUndoButtonTitle: String {
+        guard let transaction = mediaRenameUndoStack.last else { return "Undo" }
+        return "Undo (\(transaction.items.count))"
+    }
+
+    var mediaRenameRedoButtonTitle: String {
+        guard let transaction = mediaRenameRedoStack.last else { return "Redo" }
+        return "Redo (\(transaction.items.count))"
+    }
+
+    var mediaRenameUndoHelp: String {
+        guard let transaction = mediaRenameUndoStack.last else {
+            return "No rename action to undo"
+        }
+        return "Move \(transaction.items.count) file\(transaction.items.count == 1 ? "" : "s") back to their previous name"
+    }
+
+    var mediaRenameRedoHelp: String {
+        guard let transaction = mediaRenameRedoStack.last else {
+            return "No rename action to redo"
+        }
+        return "Reapply \(transaction.items.count) previously undone rename\(transaction.items.count == 1 ? "" : "s")"
+    }
+
     var canAddMediaCopyWorkflowToQueue: Bool {
-        !mediaCopySourceRoots.isEmpty && mediaCopyDestinationRoot != nil
+        fileManagementMode == .copy
+            && !mediaCopySourceRoots.isEmpty && mediaCopyDestinationRoot != nil
             && mediaCopyHasSelectedExtensionsForCurrentFilter && !isMediaCopyBusy
+    }
+
+    var availableMediaFileFilters: [MediaFileFilter] {
+        switch fileManagementMode {
+        case .copy, .rename:
+            MediaFileFilter.allCases
+        case .delete:
+            MediaFileFilter.allCases.filter(\.supportsExtensionSelection)
+        }
+    }
+
+    var activeMediaMatchedCount: Int {
+        switch fileManagementMode {
+        case .copy:
+            mediaCopyPlan?.candidates.count ?? 0
+        case .delete:
+            mediaDeletePlan?.candidates.count ?? 0
+        case .rename:
+            mediaRenamePlan?.items.count ?? 0
+        }
+    }
+
+    var activeMediaTotalSize: Int64 {
+        switch fileManagementMode {
+        case .copy:
+            mediaCopyPlan?.totalSizeBytes ?? 0
+        case .delete:
+            mediaDeletePlan?.totalSizeBytes ?? 0
+        case .rename:
+            mediaRenamePlan?.totalSizeBytes ?? 0
+        }
+    }
+
+    var activeMediaPreviewSymbolName: String {
+        switch fileManagementMode {
+        case .copy:
+            mediaCopyFilter.symbolName
+        case .delete:
+            "trash"
+        case .rename:
+            "pencil"
+        }
+    }
+
+    var activeMediaPlanTitle: String {
+        switch fileManagementMode {
+        case .copy:
+            "File Copy Plan"
+        case .delete:
+            "Filtered Delete Plan"
+        case .rename:
+            "Rename Preview"
+        }
+    }
+
+    var activeMediaActionName: String {
+        switch fileManagementMode {
+        case .copy:
+            "copy"
+        case .delete:
+            "delete"
+        case .rename:
+            "rename"
+        }
     }
 
     var canRunMediaCopyQueue: Bool {
@@ -595,6 +920,28 @@ final class EncoderViewModel: ObservableObject {
     var mediaCopyPreviewItems: [MediaCopyCandidate] {
         guard let plan = mediaCopyPlan else { return [] }
         return Array(plan.candidates.prefix(300))
+    }
+
+    var mediaDeletePreviewItems: [MediaDeleteCandidate] {
+        guard let plan = mediaDeletePlan else { return [] }
+        return Array(plan.candidates.prefix(300))
+    }
+
+    var mediaRenamePreviewItems: [MediaRenameItem] {
+        guard let plan = mediaRenamePlan else { return [] }
+        return Array(plan.items.prefix(300))
+    }
+
+    var mediaRenameReadyCount: Int {
+        mediaRenamePlan?.readyCount ?? 0
+    }
+
+    var mediaRenameBlockedCount: Int {
+        mediaRenamePlan?.blockedCount ?? 0
+    }
+
+    var mediaRenameUnchangedCount: Int {
+        mediaRenamePlan?.unchangedCount ?? 0
     }
 
     var mediaCopyExtensionOptions: [String] {
@@ -725,6 +1072,32 @@ final class EncoderViewModel: ObservableObject {
         !mediaCopyFilter.supportsExtensionSelection || !currentMediaCopySelectedExtensions.isEmpty
     }
 
+    private var currentMediaCopySourceRootPaths: [String] {
+        mediaCopySourceRoots.map { $0.standardizedFileURL.path }
+    }
+
+    private var mediaFileInventoryMatchesCurrentSources: Bool {
+        !mediaCopySourceRoots.isEmpty
+            && mediaFileInventorySourceRootPaths == currentMediaCopySourceRootPaths
+    }
+
+    private func currentMediaRenameSettings() -> MediaRenameSettings {
+        MediaRenameSettings(
+            operation: mediaRenameOperation,
+            pattern: mediaRenamePattern,
+            findText: mediaRenameFindText,
+            replacementText: mediaRenameReplacementText,
+            isCaseSensitive: mediaRenameIsCaseSensitive,
+            addedText: mediaRenameAddedText,
+            textPlacement: mediaRenameTextPlacement,
+            caseStyle: mediaRenameCaseStyle,
+            sort: mediaRenameSort,
+            startIndex: mediaRenameStartIndex,
+            indexStep: mediaRenameIndexStep,
+            indexPadding: mediaRenameIndexPadding
+        )
+    }
+
     var activeFilterStatusMessage: String {
         if inputs.isEmpty {
             return "Input filter set to \(selectedInputReadableList)."
@@ -757,6 +1130,7 @@ final class EncoderViewModel: ObservableObject {
         loadPersistedSettings()
         refreshFFmpeg()
         refreshNotificationPermission()
+        refreshActiveFileManagementPreviewIfNeeded()
     }
 
     func refreshNotificationPermission() {
@@ -955,7 +1329,9 @@ final class EncoderViewModel: ObservableObject {
                 mediaCopyVideoExtensions.remove(normalizedExtension)
             }
         }
-        statusMessage = "File Management filter set to \(mediaCopyDeleteSummary)."
+        if fileManagementMode == .copy {
+            statusMessage = "File Management filter set to \(mediaCopyDeleteSummary)."
+        }
     }
 
     func selectAllMediaCopyExtensions() {
@@ -968,7 +1344,9 @@ final class EncoderViewModel: ObservableObject {
         case .video:
             mediaCopyVideoExtensions = MediaFileFilter.video.fileExtensions
         }
-        statusMessage = "Selected all \(mediaCopyFilter.title.lowercased()) extensions."
+        if fileManagementMode == .copy {
+            statusMessage = "Selected all \(mediaCopyFilter.title.lowercased()) extensions."
+        }
     }
 
     func deselectAllMediaCopyExtensions() {
@@ -981,7 +1359,9 @@ final class EncoderViewModel: ObservableObject {
         case .video:
             mediaCopyVideoExtensions.removeAll()
         }
-        statusMessage = "Deselected all \(mediaCopyFilter.title.lowercased()) extensions."
+        if fileManagementMode == .copy {
+            statusMessage = "Deselected all \(mediaCopyFilter.title.lowercased()) extensions."
+        }
     }
 
     func selectAllInputFormats() {
@@ -1275,8 +1655,10 @@ final class EncoderViewModel: ObservableObject {
         ) {
             mediaCopySourceRoots = urls
             rememberInputDirectory(urls.first)
-            statusMessage =
-                "Media copy source set to \(urls.count) folder\(urls.count == 1 ? "" : "s")."
+            if fileManagementMode == .copy {
+                statusMessage =
+                    "Media copy source set to \(urls.count) folder\(urls.count == 1 ? "" : "s")."
+            }
         }
     }
 
@@ -1302,6 +1684,18 @@ final class EncoderViewModel: ObservableObject {
 
     func deleteFilteredMediaFiles() {
         runFilteredMediaTrash()
+    }
+
+    func renameFilteredMediaFiles() {
+        runFilteredMediaRename()
+    }
+
+    func undoLastMediaRename() {
+        runMediaRenameHistoryAction(.undo)
+    }
+
+    func redoLastMediaRename() {
+        runMediaRenameHistoryAction(.redo)
     }
 
     func addCurrentMediaCopyWorkflowToQueue() {
@@ -1446,6 +1840,8 @@ final class EncoderViewModel: ObservableObject {
         isMediaCopyScanning = false
         isMediaCopying = false
         isMediaDeleting = false
+        isMediaRenaming = false
+        mediaRenameProgressVerb = "renamed"
         mediaCopyProgress = nil
         currentMediaCopyWorkflowID = nil
         statusMessage = "File management operation cancelled."
@@ -1706,6 +2102,187 @@ final class EncoderViewModel: ObservableObject {
         }
     }
 
+    func refreshMediaDeletePreview() {
+        scanMediaFileInventoryThenRefresh(.delete)
+    }
+
+    func refreshMediaRenamePreview() {
+        scanMediaFileInventoryThenRefresh(.rename)
+    }
+
+    private func refreshActiveFileManagementPreviewIfNeeded() {
+        refreshMediaDeletePreviewIfNeeded()
+        refreshMediaRenamePreviewIfNeeded()
+    }
+
+    private func refreshMediaDeletePreviewIfNeeded() {
+        guard fileManagementMode == .delete else { return }
+
+        guard mediaCopyFilter.supportsExtensionSelection else {
+            mediaDeletePlan = nil
+            return
+        }
+
+        guard !mediaCopySourceRoots.isEmpty, !currentMediaCopySelectedExtensions.isEmpty else {
+            mediaDeletePlan = nil
+            return
+        }
+
+        if mediaFileInventoryMatchesCurrentSources {
+            rebuildMediaDeletePreviewFromInventory()
+        } else {
+            scanMediaFileInventoryThenRefresh(.delete)
+        }
+    }
+
+    private func refreshMediaRenamePreviewIfNeeded() {
+        guard fileManagementMode == .rename else { return }
+
+        guard !mediaCopySourceRoots.isEmpty, mediaCopyHasSelectedExtensionsForCurrentFilter else {
+            mediaRenamePlan = nil
+            isMediaRenamePreviewStale = false
+            return
+        }
+
+        if mediaFileInventoryMatchesCurrentSources {
+            rebuildMediaRenamePreviewFromInventory()
+        } else {
+            scanMediaFileInventoryThenRefresh(.rename)
+        }
+    }
+
+    private func scanMediaFileInventoryThenRefresh(_ targetMode: FileManagementMode) {
+        guard targetMode == .delete || targetMode == .rename else { return }
+        guard !mediaCopySourceRoots.isEmpty, !isMediaCopyBusy else { return }
+        if targetMode == .delete {
+            guard mediaCopyFilter.supportsExtensionSelection,
+                !currentMediaCopySelectedExtensions.isEmpty
+            else {
+                mediaDeletePlan = nil
+                return
+            }
+        } else {
+            guard mediaCopyHasSelectedExtensionsForCurrentFilter else {
+                mediaRenamePlan = nil
+                isMediaRenamePreviewStale = false
+                return
+            }
+        }
+
+        let sourceRoots = mediaCopySourceRoots
+
+        mediaCopyTask?.cancel()
+        mediaCopyPlan = nil
+        mediaCopyProgress = nil
+        currentMediaCopyWorkflowID = nil
+        isMediaCopyScanning = true
+        isMediaCopying = false
+        isMediaDeleting = false
+        isMediaRenaming = false
+        statusMessage =
+            "Scanning \(sourceRoots.count) source folder\(sourceRoots.count == 1 ? "" : "s") into memory..."
+
+        mediaCopyTask = Task { [weak self] in
+            do {
+                let worker = Task.detached(priority: .userInitiated) {
+                    try MediaCopyPlanner.scanFileInventory(sourceRoots: sourceRoots)
+                }
+                let inventory = try await withTaskCancellationHandler {
+                    try await worker.value
+                } onCancel: {
+                    worker.cancel()
+                }
+
+                guard !Task.isCancelled else { return }
+
+                guard let self else { return }
+
+                self.mediaFileInventory = inventory
+                self.mediaFileInventorySourceRootPaths = sourceRoots.map {
+                    $0.standardizedFileURL.path
+                }
+                self.isMediaCopyScanning = false
+                self.mediaCopyTask = nil
+
+                guard self.fileManagementMode == targetMode else {
+                    self.refreshActiveFileManagementPreviewIfNeeded()
+                    return
+                }
+
+                switch targetMode {
+                case .delete:
+                    self.rebuildMediaDeletePreviewFromInventory()
+                case .rename:
+                    self.rebuildMediaRenamePreviewFromInventory()
+                case .copy:
+                    break
+                }
+            } catch is CancellationError {
+                guard !Task.isCancelled else { return }
+                self?.isMediaCopyScanning = false
+                self?.mediaCopyTask = nil
+                self?.statusMessage = "File inventory scan cancelled."
+            } catch {
+                guard !Task.isCancelled else { return }
+                self?.mediaFileInventory = []
+                self?.mediaFileInventorySourceRootPaths = []
+                if targetMode == .delete {
+                    self?.mediaDeletePlan = nil
+                } else {
+                    self?.mediaRenamePlan = nil
+                    self?.isMediaRenamePreviewStale = false
+                }
+                self?.mediaCopyProgress = nil
+                self?.isMediaCopyScanning = false
+                self?.mediaCopyTask = nil
+                self?.statusMessage =
+                    "Could not scan source folders: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func rebuildMediaDeletePreviewFromInventory() {
+        guard mediaFileInventoryMatchesCurrentSources else {
+            scanMediaFileInventoryThenRefresh(.delete)
+            return
+        }
+
+        let plan = MediaCopyPlanner.buildDeletePlan(
+            sourceRoots: mediaCopySourceRoots,
+            filter: mediaCopyFilter,
+            selectedExtensions: currentMediaCopySelectedExtensions,
+            inventory: mediaFileInventory
+        )
+        mediaCopyPlan = nil
+        mediaDeletePlan = plan
+        mediaRenamePlan = nil
+        isMediaRenamePreviewStale = false
+        mediaCopyProgress = nil
+        statusMessage = Self.mediaDeleteScanStatusMessage(for: plan)
+    }
+
+    private func rebuildMediaRenamePreviewFromInventory() {
+        guard mediaFileInventoryMatchesCurrentSources else {
+            scanMediaFileInventoryThenRefresh(.rename)
+            return
+        }
+
+        let filter = mediaCopyFilter
+        let plan = MediaCopyPlanner.buildRenamePlan(
+            sourceRoots: mediaCopySourceRoots,
+            filter: filter,
+            selectedExtensions: selectedExtensions(for: filter),
+            settings: currentMediaRenameSettings(),
+            inventory: mediaFileInventory
+        )
+        mediaCopyPlan = nil
+        mediaDeletePlan = nil
+        mediaRenamePlan = plan
+        isMediaRenamePreviewStale = false
+        mediaCopyProgress = nil
+        statusMessage = Self.mediaRenameScanStatusMessage(for: plan)
+    }
+
     private func runMediaCopyPreflight(copyAfterScan: Bool) {
         guard let sourceRoot = primaryMediaCopySourceRoot,
             let destinationRoot = mediaCopyDestinationRoot
@@ -1721,9 +2298,14 @@ final class EncoderViewModel: ObservableObject {
 
         mediaCopyTask?.cancel()
         mediaCopyPlan = nil
+        mediaDeletePlan = nil
+        mediaRenamePlan = nil
+        isMediaRenamePreviewStale = false
         mediaCopyProgress = nil
         isMediaCopyScanning = true
         isMediaCopying = false
+        isMediaDeleting = false
+        isMediaRenaming = false
 
         let filter = mediaCopyFilter
         let selectedExtensions = selectedExtensions(for: filter)
@@ -1828,135 +2410,232 @@ final class EncoderViewModel: ObservableObject {
     }
 
     private func runFilteredMediaTrash() {
-        guard canDeleteFilteredMediaFiles else {
-            statusMessage =
-                mediaCopyFilter.supportsExtensionSelection
-                ? "Choose source folders and at least one extension before deleting filtered files."
-                : "Choose Audio or Video before deleting filtered files."
+        guard fileManagementMode == .delete else { return }
+
+        guard let plan = mediaDeletePlan, plan.hasDeletableContent else {
+            statusMessage = "No filtered delete preview is ready yet."
+            refreshMediaDeletePreviewIfNeeded()
             return
         }
 
-        let sourceRoots = mediaCopySourceRoots
-        let filter = mediaCopyFilter
-        let selectedExtensions = currentMediaCopySelectedExtensions
+        let items = plan.candidates.map { TrashableFileItem(deleteCandidate: $0) }
+        guard confirmFilteredMediaTrash(
+            itemCount: items.count,
+            totalSize: plan.totalSizeBytes,
+            sourceRootCount: plan.sourceRoots.count,
+            filter: plan.filter,
+            selectedExtensions: plan.selectedExtensions
+        ) else {
+            statusMessage = "Filtered delete cancelled."
+            return
+        }
+
+        let pendingRecordsByItemID: [UUID: PendingTrashSourceRecord]
+        do {
+            pendingRecordsByItemID = try recordPendingTrashIntents(for: items)
+        } catch {
+            statusMessage =
+                "Could not save emergency trash journal. Nothing moved to Trash: \(error.localizedDescription)"
+            return
+        }
 
         mediaCopyTask?.cancel()
-        mediaCopyPlan = nil
         mediaCopyProgress = nil
-        currentMediaCopyWorkflowID = nil
-        isMediaCopyScanning = true
+        isMediaCopyScanning = false
         isMediaCopying = false
         isMediaDeleting = true
+        let progressStartedAt = Date()
+        mediaCopyProgress = MediaCopyProgress(
+            completed: 0,
+            total: items.count,
+            copied: 0,
+            skippedExisting: 0,
+            failed: 0,
+            copiedBytes: 0,
+            totalBytes: plan.totalSizeBytes,
+            startedAt: progressStartedAt,
+            updatedAt: progressStartedAt,
+            currentName: nil
+        )
         statusMessage =
-            "Scanning \(filter.compactExtensionSummary(selectedExtensions: selectedExtensions)) in \(sourceRoots.count) source folder\(sourceRoots.count == 1 ? "" : "s")..."
+            "Moving \(items.count) filtered file\(items.count == 1 ? "" : "s") to Trash..."
 
         mediaCopyTask = Task { [weak self] in
             guard let self else { return }
-            do {
-                let worker = Task.detached(priority: .userInitiated) {
-                    try Self.buildTrashableMediaItems(
-                        sourceRoots: sourceRoots,
-                        filter: filter,
-                        selectedExtensions: selectedExtensions
+            let result = await moveTrashableItemsToTrash(
+                items,
+                pendingRecordsByItemID: pendingRecordsByItemID
+            )
+
+            guard !Task.isCancelled else { return }
+
+            isMediaDeleting = false
+            mediaCopyTask = nil
+            let completionMessage = Self.mediaTrashResultStatusMessage(
+                result,
+                filter: plan.filter,
+                selectedExtensions: plan.selectedExtensions
+            )
+            statusMessage = completionMessage
+            AppNotifier.notifyIfAppInactive(
+                title: "Filtered delete finished",
+                body: completionMessage
+            )
+        }
+    }
+
+    private func runFilteredMediaRename() {
+        guard fileManagementMode == .rename else { return }
+
+        guard let plan = mediaRenamePlan else {
+            statusMessage = "No rename preview is ready yet."
+            refreshMediaRenamePreviewIfNeeded()
+            return
+        }
+
+        guard !isMediaRenamePreviewStale else {
+            statusMessage = "Refresh the rename preview before applying these settings."
+            return
+        }
+
+        guard plan.blockedCount == 0 else {
+            statusMessage =
+                "Resolve \(plan.blockedCount) rename conflict\(plan.blockedCount == 1 ? "" : "s") before applying."
+            return
+        }
+
+        let items = plan.readyItems
+        guard !items.isEmpty else {
+            statusMessage = "No files need renaming."
+            return
+        }
+
+        guard confirmMediaRename(itemCount: items.count, unchangedCount: plan.unchangedCount) else {
+            statusMessage = "Rename cancelled."
+            return
+        }
+
+        mediaCopyTask?.cancel()
+        mediaCopyProgress = nil
+        isMediaCopyScanning = false
+        isMediaCopying = false
+        isMediaDeleting = false
+        isMediaRenaming = true
+        mediaRenameProgressVerb = "renamed"
+        let progressStartedAt = Date()
+        mediaCopyProgress = MediaCopyProgress(
+            completed: 0,
+            total: items.count,
+            copied: 0,
+            skippedExisting: plan.unchangedCount,
+            failed: 0,
+            copiedBytes: 0,
+            totalBytes: items.reduce(Int64(0)) { $0 + $1.fileSizeBytes },
+            startedAt: progressStartedAt,
+            updatedAt: progressStartedAt,
+            currentName: nil
+        )
+        statusMessage =
+            "Renaming \(items.count) file\(items.count == 1 ? "" : "s")..."
+
+        mediaCopyTask = Task { [weak self] in
+            guard let self else { return }
+            let result = await renameMediaItems(items, unchangedCount: plan.unchangedCount)
+
+            guard !Task.isCancelled else { return }
+
+            isMediaRenaming = false
+            mediaCopyTask = nil
+            if !result.historyItems.isEmpty {
+                pushMediaRenameUndoTransaction(
+                    MediaRenameHistoryTransaction(
+                        actionTitle: plan.settings.operation.title,
+                        items: result.historyItems
                     )
-                }
-                let items = try await withTaskCancellationHandler {
-                    try await worker.value
-                } onCancel: {
-                    worker.cancel()
-                }
-
-                guard !Task.isCancelled else { return }
-
-                isMediaCopyScanning = false
-
-                guard !items.isEmpty else {
-                    isMediaDeleting = false
-                    mediaCopyTask = nil
-                    let completionMessage =
-                        "No \(filter.fileTypeName) files matching \(filter.readableExtensionList(selectedExtensions: selectedExtensions)) were found in the selected source folders."
-                    statusMessage = completionMessage
-                    AppNotifier.notifyIfAppInactive(
-                        title: "Filtered delete finished",
-                        body: completionMessage
-                    )
-                    return
-                }
-
-                guard confirmFilteredMediaTrash(
-                    itemCount: items.count,
-                    totalSize: items.reduce(Int64(0)) { $0 + $1.fileSizeBytes },
-                    sourceRootCount: sourceRoots.count,
-                    filter: filter,
-                    selectedExtensions: selectedExtensions
-                ) else {
-                    isMediaDeleting = false
-                    mediaCopyTask = nil
-                    statusMessage = "Filtered delete cancelled."
-                    return
-                }
-
-                let pendingRecordsByItemID: [UUID: PendingTrashSourceRecord]
-                do {
-                    pendingRecordsByItemID = try recordPendingTrashIntents(for: items)
-                } catch {
-                    isMediaDeleting = false
-                    mediaCopyTask = nil
-                    statusMessage =
-                        "Could not save emergency trash journal. Nothing moved to Trash: \(error.localizedDescription)"
-                    return
-                }
-
-                isMediaDeleting = true
-                let progressStartedAt = Date()
-                mediaCopyProgress = MediaCopyProgress(
-                    completed: 0,
-                    total: items.count,
-                    copied: 0,
-                    skippedExisting: 0,
-                    failed: 0,
-                    copiedBytes: 0,
-                    totalBytes: items.reduce(Int64(0)) { $0 + $1.fileSizeBytes },
-                    startedAt: progressStartedAt,
-                    updatedAt: progressStartedAt,
-                    currentName: nil
                 )
-                statusMessage =
-                    "Moving \(items.count) filtered file\(items.count == 1 ? "" : "s") to Trash..."
-
-                let result = await moveTrashableItemsToTrash(
-                    items,
-                    pendingRecordsByItemID: pendingRecordsByItemID
-                )
-
-                guard !Task.isCancelled else { return }
-
-                isMediaDeleting = false
-                mediaCopyTask = nil
-                let completionMessage = Self.mediaTrashResultStatusMessage(
-                    result,
-                    filter: filter,
-                    selectedExtensions: selectedExtensions
-                )
-                statusMessage = completionMessage
-                AppNotifier.notifyIfAppInactive(
-                    title: "Filtered delete finished",
-                    body: completionMessage
-                )
-            } catch is CancellationError {
-                guard !Task.isCancelled else { return }
-                isMediaCopyScanning = false
-                isMediaDeleting = false
-                mediaCopyTask = nil
-                statusMessage = "Filtered delete cancelled."
-            } catch {
-                guard !Task.isCancelled else { return }
-                mediaCopyProgress = nil
-                isMediaCopyScanning = false
-                isMediaDeleting = false
-                mediaCopyTask = nil
-                statusMessage = "Could not prepare filtered delete: \(error.localizedDescription)"
+                mediaRenameRedoStack.removeAll()
             }
+            let completionMessage = Self.mediaRenameResultStatusMessage(result)
+            statusMessage = completionMessage
+            AppNotifier.notifyIfAppInactive(
+                title: "Rename finished",
+                body: completionMessage
+            )
+        }
+    }
+
+    private func runMediaRenameHistoryAction(_ direction: MediaRenameHistoryDirection) {
+        guard fileManagementMode == .rename else { return }
+
+        let transaction: MediaRenameHistoryTransaction?
+        switch direction {
+        case .undo:
+            transaction = mediaRenameUndoStack.last
+        case .redo:
+            transaction = mediaRenameRedoStack.last
+        }
+
+        guard let transaction, !transaction.items.isEmpty else {
+            statusMessage = "No rename action to \(direction == .undo ? "undo" : "redo")."
+            return
+        }
+
+        guard confirmMediaRenameHistoryAction(transaction, direction: direction) else {
+            statusMessage = "\(direction.title) cancelled."
+            return
+        }
+
+        mediaCopyTask?.cancel()
+        mediaCopyProgress = nil
+        isMediaCopyScanning = false
+        isMediaCopying = false
+        isMediaDeleting = false
+        isMediaRenaming = true
+        mediaRenameProgressVerb = direction.progressVerb
+        let progressStartedAt = Date()
+        mediaCopyProgress = MediaCopyProgress(
+            completed: 0,
+            total: transaction.items.count,
+            copied: 0,
+            skippedExisting: 0,
+            failed: 0,
+            copiedBytes: 0,
+            totalBytes: transaction.items.reduce(Int64(0)) { $0 + $1.fileSizeBytes },
+            startedAt: progressStartedAt,
+            updatedAt: progressStartedAt,
+            currentName: nil
+        )
+        statusMessage =
+            "\(direction.progressTitle) for \(transaction.items.count) file\(transaction.items.count == 1 ? "" : "s")..."
+
+        mediaCopyTask = Task { [weak self] in
+            guard let self else { return }
+            let result = await applyMediaRenameHistoryTransaction(
+                transaction,
+                direction: direction
+            )
+
+            guard !Task.isCancelled else { return }
+
+            isMediaRenaming = false
+            mediaCopyTask = nil
+            completeMediaRenameHistoryAction(
+                transaction,
+                direction: direction,
+                result: result
+            )
+            moveMediaInventoryRecords(result.movedItems, direction: direction)
+            mediaRenamePlan = nil
+            isMediaRenamePreviewStale = false
+            let completionMessage = Self.mediaRenameHistoryResultStatusMessage(
+                result,
+                direction: direction
+            )
+            statusMessage = completionMessage
+            AppNotifier.notifyIfAppInactive(
+                title: direction.notificationTitle,
+                body: completionMessage
+            )
         }
     }
 
@@ -2238,11 +2917,384 @@ final class EncoderViewModel: ObservableObject {
 
         if !movedPaths.isEmpty {
             inputs.removeAll { movedPaths.contains($0.url.standardizedFileURL.path) }
+            removeMediaInventoryRecords(matching: movedPaths)
+            if let mediaDeletePlan {
+                self.mediaDeletePlan = MediaDeletePlan(
+                    sourceRoots: mediaDeletePlan.sourceRoots,
+                    filter: mediaDeletePlan.filter,
+                    selectedExtensions: mediaDeletePlan.selectedExtensions,
+                    candidates: mediaDeletePlan.candidates.filter {
+                        !movedPaths.contains($0.sourceURL.standardizedFileURL.path)
+                    },
+                    scannedAt: Date()
+                )
+            }
             jobs.removeAll()
             jobStateFilter = nil
         }
 
         return result
+    }
+
+    private func renameMediaItems(
+        _ items: [MediaRenameItem],
+        unchangedCount: Int
+    ) async -> MediaRenameResult {
+        var result = MediaRenameResult(total: items.count)
+        let progressStartedAt = Date()
+        let totalBytes = items.reduce(Int64(0)) { $0 + $1.fileSizeBytes }
+        var renamedBytes: Int64 = 0
+        var renamedSourcePaths = Set<String>()
+
+        for (index, item) in items.enumerated() {
+            if Task.isCancelled {
+                result.cancelled = true
+                break
+            }
+
+            mediaCopyProgress = MediaCopyProgress(
+                completed: index,
+                total: items.count,
+                copied: result.renamed,
+                skippedExisting: unchangedCount,
+                failed: result.failed,
+                copiedBytes: renamedBytes,
+                totalBytes: totalBytes,
+                startedAt: progressStartedAt,
+                updatedAt: Date(),
+                currentName: item.originalName
+            )
+
+            let renameSucceeded = await Task.detached(priority: .userInitiated) {
+                do {
+                    try Self.renameMediaItem(item)
+                    return true
+                } catch {
+                    return false
+                }
+            }.value
+
+            if renameSucceeded {
+                result.renamed += 1
+                renamedBytes += item.fileSizeBytes
+                renamedSourcePaths.insert(item.sourceURL.standardizedFileURL.path)
+                result.historyItems.append(
+                    MediaRenameHistoryItem(
+                        originalPath: item.sourceURL.standardizedFileURL.path,
+                        renamedPath: item.targetURL.standardizedFileURL.path,
+                        originalName: item.originalName,
+                        renamedName: item.newName,
+                        fileSizeBytes: item.fileSizeBytes
+                    )
+                )
+            } else {
+                result.failed += 1
+                result.failedNames.append(item.originalName)
+            }
+
+            mediaCopyProgress = MediaCopyProgress(
+                completed: index + 1,
+                total: items.count,
+                copied: result.renamed,
+                skippedExisting: unchangedCount,
+                failed: result.failed,
+                copiedBytes: renamedBytes,
+                totalBytes: totalBytes,
+                startedAt: progressStartedAt,
+                updatedAt: Date(),
+                currentName: item.originalName
+            )
+            statusMessage =
+                "Renamed \(result.renamed), failed \(result.failed) of \(items.count)."
+        }
+
+        if !renamedSourcePaths.isEmpty {
+            moveMediaInventoryRecords(result.historyItems, direction: .redo)
+            if let mediaRenamePlan {
+                self.mediaRenamePlan = MediaRenamePlan(
+                    sourceRoots: mediaRenamePlan.sourceRoots,
+                    filter: mediaRenamePlan.filter,
+                    selectedExtensions: mediaRenamePlan.selectedExtensions,
+                    settings: mediaRenamePlan.settings,
+                    items: mediaRenamePlan.items.filter {
+                        !renamedSourcePaths.contains($0.sourceURL.standardizedFileURL.path)
+                    },
+                    scannedAt: Date()
+                )
+            }
+            jobs.removeAll()
+            jobStateFilter = nil
+        }
+
+        return result
+    }
+
+    private func applyMediaRenameHistoryTransaction(
+        _ transaction: MediaRenameHistoryTransaction,
+        direction: MediaRenameHistoryDirection
+    ) async -> MediaRenameHistoryResult {
+        var result = MediaRenameHistoryResult(total: transaction.items.count)
+        let progressStartedAt = Date()
+        let totalBytes = transaction.items.reduce(Int64(0)) { $0 + $1.fileSizeBytes }
+        var movedBytes: Int64 = 0
+
+        for (index, item) in transaction.items.enumerated() {
+            if Task.isCancelled {
+                result.cancelled = true
+                break
+            }
+
+            let sourceURL: URL
+            let targetURL: URL
+            let currentName: String
+            switch direction {
+            case .undo:
+                sourceURL = URL(fileURLWithPath: item.renamedPath)
+                targetURL = URL(fileURLWithPath: item.originalPath)
+                currentName = item.renamedName
+            case .redo:
+                sourceURL = URL(fileURLWithPath: item.originalPath)
+                targetURL = URL(fileURLWithPath: item.renamedPath)
+                currentName = item.originalName
+            }
+
+            mediaCopyProgress = MediaCopyProgress(
+                completed: index,
+                total: transaction.items.count,
+                copied: result.moved,
+                skippedExisting: 0,
+                failed: result.failed,
+                copiedBytes: movedBytes,
+                totalBytes: totalBytes,
+                startedAt: progressStartedAt,
+                updatedAt: Date(),
+                currentName: currentName
+            )
+
+            let moveSucceeded = await Task.detached(priority: .userInitiated) {
+                do {
+                    try Self.moveRenameFile(from: sourceURL, to: targetURL)
+                    return true
+                } catch {
+                    return false
+                }
+            }.value
+
+            if moveSucceeded {
+                result.moved += 1
+                movedBytes += item.fileSizeBytes
+                result.movedItems.append(item)
+            } else {
+                result.failed += 1
+                result.failedNames.append(currentName)
+            }
+
+            mediaCopyProgress = MediaCopyProgress(
+                completed: index + 1,
+                total: transaction.items.count,
+                copied: result.moved,
+                skippedExisting: 0,
+                failed: result.failed,
+                copiedBytes: movedBytes,
+                totalBytes: totalBytes,
+                startedAt: progressStartedAt,
+                updatedAt: Date(),
+                currentName: currentName
+            )
+            statusMessage =
+                "\(direction.progressTitle): \(result.moved) \(direction.progressVerb), \(result.failed) failed of \(transaction.items.count)."
+        }
+
+        if result.moved > 0 {
+            jobs.removeAll()
+            jobStateFilter = nil
+        }
+
+        return result
+    }
+
+    private func completeMediaRenameHistoryAction(
+        _ transaction: MediaRenameHistoryTransaction,
+        direction: MediaRenameHistoryDirection,
+        result: MediaRenameHistoryResult
+    ) {
+        let movedIDs = Set(result.movedItems.map(\.id))
+        let remainingItems = transaction.items.filter { !movedIDs.contains($0.id) }
+
+        switch direction {
+        case .undo:
+            removeMediaRenameTransaction(transaction, fromUndoStack: true)
+            if !remainingItems.isEmpty {
+                pushMediaRenameUndoTransaction(transaction.replacingItems(remainingItems))
+            }
+            if !result.movedItems.isEmpty {
+                pushMediaRenameRedoTransaction(transaction.replacingItems(result.movedItems))
+            }
+        case .redo:
+            removeMediaRenameTransaction(transaction, fromUndoStack: false)
+            if !remainingItems.isEmpty {
+                pushMediaRenameRedoTransaction(transaction.replacingItems(remainingItems))
+            }
+            if !result.movedItems.isEmpty {
+                pushMediaRenameUndoTransaction(transaction.replacingItems(result.movedItems))
+            }
+        }
+    }
+
+    private func pushMediaRenameUndoTransaction(_ transaction: MediaRenameHistoryTransaction) {
+        guard !transaction.items.isEmpty else { return }
+        mediaRenameUndoStack.append(transaction)
+        if mediaRenameUndoStack.count > Self.mediaRenameHistoryLimit {
+            mediaRenameUndoStack.removeFirst(mediaRenameUndoStack.count - Self.mediaRenameHistoryLimit)
+        }
+    }
+
+    private func pushMediaRenameRedoTransaction(_ transaction: MediaRenameHistoryTransaction) {
+        guard !transaction.items.isEmpty else { return }
+        mediaRenameRedoStack.append(transaction)
+        if mediaRenameRedoStack.count > Self.mediaRenameHistoryLimit {
+            mediaRenameRedoStack.removeFirst(mediaRenameRedoStack.count - Self.mediaRenameHistoryLimit)
+        }
+    }
+
+    private func removeMediaRenameTransaction(
+        _ transaction: MediaRenameHistoryTransaction,
+        fromUndoStack: Bool
+    ) {
+        if fromUndoStack {
+            if mediaRenameUndoStack.last?.id == transaction.id {
+                mediaRenameUndoStack.removeLast()
+            } else {
+                mediaRenameUndoStack.removeAll { $0.id == transaction.id }
+            }
+        } else if mediaRenameRedoStack.last?.id == transaction.id {
+            mediaRenameRedoStack.removeLast()
+        } else {
+            mediaRenameRedoStack.removeAll { $0.id == transaction.id }
+        }
+    }
+
+    private func removeMediaInventoryRecords(matching paths: Set<String>) {
+        guard !paths.isEmpty else { return }
+        mediaFileInventory.removeAll {
+            paths.contains($0.sourceURL.standardizedFileURL.path)
+        }
+    }
+
+    private func moveMediaInventoryRecords(
+        _ items: [MediaRenameHistoryItem],
+        direction: MediaRenameHistoryDirection
+    ) {
+        guard !items.isEmpty, !mediaFileInventory.isEmpty else { return }
+
+        for item in items {
+            let sourcePath: String
+            let targetPath: String
+            switch direction {
+            case .undo:
+                sourcePath = item.renamedPath
+                targetPath = item.originalPath
+            case .redo:
+                sourcePath = item.originalPath
+                targetPath = item.renamedPath
+            }
+
+            guard let index = mediaFileInventory.firstIndex(where: {
+                $0.sourceURL.standardizedFileURL.path == sourcePath
+            }) else {
+                continue
+            }
+
+            let record = mediaFileInventory[index]
+            let targetURL = URL(fileURLWithPath: targetPath)
+            let relativePath: String
+            if let relativeDirectory = record.relativeDirectory {
+                relativePath = "\(relativeDirectory)/\(targetURL.lastPathComponent)"
+            } else {
+                relativePath = targetURL.lastPathComponent
+            }
+
+            mediaFileInventory[index] = MediaFileInventoryRecord(
+                id: targetURL.standardizedFileURL.path,
+                sourceURL: targetURL,
+                sourceRoot: record.sourceRoot,
+                relativePath: relativePath,
+                fileSizeBytes: record.fileSizeBytes,
+                modifiedDate: record.modifiedDate
+            )
+        }
+
+        mediaFileInventory.sort {
+            $0.sourceURL.path.localizedCaseInsensitiveCompare($1.sourceURL.path)
+                == .orderedAscending
+        }
+    }
+
+    nonisolated private static func renameMediaItem(_ item: MediaRenameItem) throws {
+        try moveRenameFile(from: item.sourceURL, to: item.targetURL)
+    }
+
+    nonisolated private static func moveRenameFile(from sourceURL: URL, to targetURL: URL) throws {
+        let fileManager = FileManager.default
+        let sourcePath = sourceURL.standardizedFileURL.path
+        let targetPath = targetURL.standardizedFileURL.path
+        let sourceKey = sourcePath.lowercased()
+        let targetKey = targetPath.lowercased()
+
+        if sourceKey == targetKey && sourcePath != targetPath {
+            let temporaryURL = sourceURL.deletingLastPathComponent()
+                .appendingPathComponent(".gphilcoder-rename-\(UUID().uuidString).tmp")
+            try fileManager.moveItem(at: sourceURL, to: temporaryURL)
+            do {
+                try fileManager.moveItem(at: temporaryURL, to: targetURL)
+            } catch {
+                try? fileManager.moveItem(at: temporaryURL, to: sourceURL)
+                throw error
+            }
+            return
+        }
+
+        guard !fileManager.fileExists(atPath: targetPath) else {
+            throw CocoaError(.fileWriteFileExists)
+        }
+
+        try fileManager.moveItem(at: sourceURL, to: targetURL)
+    }
+
+    private func confirmMediaRename(itemCount: Int, unchangedCount: Int) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "Rename filtered files?"
+        var detail =
+            "GPhilCoder will rename \(itemCount) file\(itemCount == 1 ? "" : "s") in place. Extensions are preserved."
+        if unchangedCount > 0 {
+            detail += " \(unchangedCount) unchanged file\(unchangedCount == 1 ? "" : "s") will be skipped."
+        }
+        alert.informativeText = detail
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    private func confirmMediaRenameHistoryAction(
+        _ transaction: MediaRenameHistoryTransaction,
+        direction: MediaRenameHistoryDirection
+    ) -> Bool {
+        let count = transaction.items.count
+        let alert = NSAlert()
+        alert.messageText = "\(direction.title)?"
+        switch direction {
+        case .undo:
+            alert.informativeText =
+                "GPhilCoder will move \(count) renamed file\(count == 1 ? "" : "s") back to their previous name. Files are skipped if the renamed source is missing or the previous name is already taken."
+        case .redo:
+            alert.informativeText =
+                "GPhilCoder will reapply \(count) previously undone rename\(count == 1 ? "" : "s"). Files are skipped if the original source is missing or the renamed target is already taken."
+        }
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: direction == .undo ? "Undo" : "Redo")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     private func confirmFilteredMediaTrash(
@@ -2294,80 +3346,6 @@ final class EncoderViewModel: ObservableObject {
         default:
             return nil
         }
-    }
-
-    nonisolated private static func buildTrashableMediaItems(
-        sourceRoots: [URL],
-        filter: MediaFileFilter,
-        selectedExtensions: Set<String>
-    ) throws -> [TrashableFileItem] {
-        var items: [TrashableFileItem] = []
-        var seenPaths = Set<String>()
-        let fileManager = FileManager.default
-        let keys: [URLResourceKey] = [.isRegularFileKey, .fileSizeKey]
-
-        for sourceRoot in sourceRoots {
-            guard
-                let enumerator = fileManager.enumerator(
-                    at: sourceRoot,
-                    includingPropertiesForKeys: keys,
-                    options: [.skipsPackageDescendants]
-                )
-            else {
-                throw CocoaError(.fileReadNoSuchFile)
-            }
-
-            for case let sourceURL as URL in enumerator {
-                try Task.checkCancellation()
-
-                let values = try? sourceURL.resourceValues(forKeys: Set(keys))
-                guard values?.isRegularFile == true,
-                    filter.matches(sourceURL, selectedExtensions: selectedExtensions)
-                else {
-                    continue
-                }
-
-                let standardizedPath = sourceURL.standardizedFileURL.path
-                guard !seenPaths.contains(standardizedPath) else { continue }
-
-                let relativeComponents = relativePathComponents(
-                    for: sourceURL,
-                    sourceRoot: sourceRoot
-                )
-                let relativeDirectory = relativeComponents?.dropLast().joined(separator: "/")
-                items.append(
-                    TrashableFileItem(
-                        url: sourceURL,
-                        sourceRoot: sourceRoot,
-                        relativeDirectory: relativeDirectory?.isEmpty == true
-                            ? nil
-                            : relativeDirectory,
-                        fileSizeBytes: values?.fileSize.map(Int64.init) ?? 0
-                    )
-                )
-                seenPaths.insert(standardizedPath)
-            }
-        }
-
-        return items.sorted {
-            $0.url.path.localizedCaseInsensitiveCompare($1.url.path) == .orderedAscending
-        }
-    }
-
-    nonisolated private static func relativePathComponents(
-        for url: URL,
-        sourceRoot: URL
-    ) -> [String]? {
-        let rootComponents = sourceRoot.standardizedFileURL.pathComponents
-        let itemComponents = url.standardizedFileURL.pathComponents
-
-        guard itemComponents.count > rootComponents.count,
-            Array(itemComponents.prefix(rootComponents.count)) == rootComponents
-        else {
-            return nil
-        }
-
-        return Array(itemComponents.dropFirst(rootComponents.count))
     }
 
     nonisolated private static func mediaTrashResultStatusMessage(
@@ -2873,6 +3851,9 @@ final class EncoderViewModel: ObservableObject {
     }
 
     private func loadPersistedSettings() {
+        isLoadingPersistedSettings = true
+        defer { isLoadingPersistedSettings = false }
+
         let defaults = UserDefaults.standard
 
         if let data = defaults.data(forKey: DefaultsKey.trashedSourceRecords),
@@ -2880,6 +3861,14 @@ final class EncoderViewModel: ObservableObject {
         {
             trashedSourceRecords = records
         }
+        if let data = defaults.data(forKey: DefaultsKey.mediaRenameHistory),
+            let document = try? JSONDecoder().decode(MediaRenameHistoryDocument.self, from: data),
+            document.version == MediaRenameHistoryDocument.currentVersion
+        {
+            mediaRenameUndoStack = Array(document.undoStack.suffix(Self.mediaRenameHistoryLimit))
+            mediaRenameRedoStack = Array(document.redoStack.suffix(Self.mediaRenameHistoryLimit))
+        }
+        loadMediaRenameSettings(from: defaults)
         loadPendingTrashSourceRecords()
 
         if let rawValue = defaults.string(forKey: DefaultsKey.ffmpegSourcePreference),
@@ -2890,6 +3879,12 @@ final class EncoderViewModel: ObservableObject {
             FFmpegLocator.systemFFmpegURL() != nil
         {
             ffmpegSourcePreference = .system
+        }
+
+        if let rawValue = defaults.string(forKey: DefaultsKey.fileManagementMode),
+            let value = FileManagementMode(rawValue: rawValue)
+        {
+            fileManagementMode = value
         }
 
         if let rawValue = defaults.string(forKey: DefaultsKey.outputMode),
@@ -2920,6 +3915,9 @@ final class EncoderViewModel: ObservableObject {
             let value = MediaFileFilter(rawValue: rawValue)
         {
             mediaCopyFilter = value
+        }
+        if fileManagementMode == .delete, mediaCopyFilter == .all {
+            mediaCopyFilter = .audio
         }
         if let extensions = defaults.array(forKey: DefaultsKey.mediaCopyAudioExtensions) as? [String] {
             mediaCopyAudioExtensions = Set(extensions.map { $0.lowercased() })
@@ -3183,6 +4181,53 @@ final class EncoderViewModel: ObservableObject {
         guard oldValue != newValue, !isMediaCopyBusy else { return }
         mediaCopyPlan = nil
         mediaCopyProgress = nil
+        guard !isLoadingPersistedSettings else { return }
+
+        if mediaCopySourceRoots.isEmpty {
+            mediaFileInventory = []
+            mediaFileInventorySourceRootPaths = []
+            mediaDeletePlan = nil
+            mediaRenamePlan = nil
+            isMediaRenamePreviewStale = false
+            return
+        }
+
+        switch fileManagementMode {
+        case .copy:
+            mediaDeletePlan = nil
+            mediaRenamePlan = nil
+            isMediaRenamePreviewStale = false
+        case .delete:
+            mediaRenamePlan = nil
+            isMediaRenamePreviewStale = false
+            refreshMediaDeletePreviewIfNeeded()
+        case .rename:
+            mediaDeletePlan = nil
+            refreshMediaRenamePreviewIfNeeded()
+        }
+    }
+
+    private func handleMediaRenameSettingChanged<T: Equatable>(from oldValue: T, to newValue: T) {
+        guard oldValue != newValue else { return }
+        if !isLoadingPersistedSettings {
+            persistMediaRenameSettings()
+        }
+        invalidateMediaRenamePlanIfChanged(from: oldValue, to: newValue)
+    }
+
+    private func invalidateMediaRenamePlanIfChanged<T: Equatable>(from oldValue: T, to newValue: T) {
+        guard oldValue != newValue, !isMediaCopyBusy, !isLoadingPersistedSettings else { return }
+        mediaCopyProgress = nil
+        guard fileManagementMode == .rename else { return }
+
+        if mediaFileInventoryMatchesCurrentSources {
+            rebuildMediaRenamePreviewFromInventory()
+        } else if mediaRenamePlan != nil {
+            isMediaRenamePreviewStale = true
+            statusMessage = "Rename settings changed. Refresh the preview when ready."
+        } else {
+            refreshMediaRenamePreviewIfNeeded()
+        }
     }
 
     private func persistTrashedSourceRecords() {
@@ -3194,6 +4239,49 @@ final class EncoderViewModel: ObservableObject {
         if let data = try? JSONEncoder().encode(trashedSourceRecords) {
             UserDefaults.standard.set(data, forKey: DefaultsKey.trashedSourceRecords)
         }
+    }
+
+    private func persistMediaRenameHistory() {
+        if mediaRenameUndoStack.isEmpty && mediaRenameRedoStack.isEmpty {
+            UserDefaults.standard.removeObject(forKey: DefaultsKey.mediaRenameHistory)
+            return
+        }
+
+        let document = MediaRenameHistoryDocument(
+            undoStack: mediaRenameUndoStack,
+            redoStack: mediaRenameRedoStack
+        )
+        if let data = try? JSONEncoder().encode(document) {
+            UserDefaults.standard.set(data, forKey: DefaultsKey.mediaRenameHistory)
+        }
+    }
+
+    private func persistMediaRenameSettings() {
+        let settings = currentMediaRenameSettings()
+        if let data = try? JSONEncoder().encode(settings) {
+            UserDefaults.standard.set(data, forKey: DefaultsKey.mediaRenameSettings)
+        }
+    }
+
+    private func loadMediaRenameSettings(from defaults: UserDefaults) {
+        guard let data = defaults.data(forKey: DefaultsKey.mediaRenameSettings),
+            let settings = try? JSONDecoder().decode(MediaRenameSettings.self, from: data)
+        else {
+            return
+        }
+
+        mediaRenameOperation = settings.operation
+        mediaRenamePattern = settings.pattern
+        mediaRenameFindText = settings.findText
+        mediaRenameReplacementText = settings.replacementText
+        mediaRenameIsCaseSensitive = settings.isCaseSensitive
+        mediaRenameAddedText = settings.addedText
+        mediaRenameTextPlacement = settings.textPlacement
+        mediaRenameCaseStyle = settings.caseStyle
+        mediaRenameSort = settings.sort
+        mediaRenameStartIndex = max(0, min(settings.startIndex, 999_999))
+        mediaRenameIndexStep = max(1, min(settings.indexStep, 999))
+        mediaRenameIndexPadding = max(1, min(settings.indexPadding, 8))
     }
 
     private func loadPendingTrashSourceRecords() {
@@ -3527,6 +4615,37 @@ final class EncoderViewModel: ObservableObject {
         return details.joined(separator: ", ") + "."
     }
 
+    nonisolated private static func mediaDeleteScanStatusMessage(for plan: MediaDeletePlan) -> String {
+        guard plan.hasDeletableContent else {
+            return "No \(plan.filter.fileTypeName) files matching \(plan.filter.readableExtensionList(selectedExtensions: plan.selectedExtensions)) were found in the selected source folders."
+        }
+
+        return
+            "Found \(plan.candidates.count) \(plan.filter.fileTypeName) file\(plan.candidates.count == 1 ? "" : "s") matching \(plan.filter.readableExtensionList(selectedExtensions: plan.selectedExtensions)), totaling \(plan.totalSizeBytes.formattedFileSize)."
+    }
+
+    nonisolated private static func mediaRenameScanStatusMessage(for plan: MediaRenamePlan) -> String {
+        guard plan.hasRenameContent else {
+            if let selectedExtensions = plan.selectedExtensions {
+                return "No \(plan.filter.fileTypeName) files matching \(plan.filter.readableExtensionList(selectedExtensions: selectedExtensions)) were found in the selected source folders."
+            }
+            return "No matching files were found in the selected source folders."
+        }
+
+        var details = [
+            "Found \(plan.items.count) file\(plan.items.count == 1 ? "" : "s") for rename preview",
+            "\(plan.readyCount) ready"
+        ]
+        if plan.unchangedCount > 0 {
+            details.append("\(plan.unchangedCount) unchanged")
+        }
+        if plan.blockedCount > 0 {
+            details.append("\(plan.blockedCount) blocked")
+        }
+        details.append("totaling \(plan.totalSizeBytes.formattedFileSize)")
+        return details.joined(separator: ", ") + "."
+    }
+
     nonisolated private static func mediaCopyResultStatusMessage(
         _ result: MediaCopyResult,
         filter: MediaFileFilter,
@@ -3555,6 +4674,43 @@ final class EncoderViewModel: ObservableObject {
         if result.failedDirectories > 0 {
             details.append(
                 "Failed \(result.failedDirectories) folder\(result.failedDirectories == 1 ? "" : "s"): \(result.failedDirectoryNames.prefix(3).joined(separator: ", "))\(result.failedDirectoryNames.count > 3 ? "..." : "")."
+            )
+        }
+        return details.joined(separator: " ")
+    }
+
+    nonisolated private static func mediaRenameResultStatusMessage(
+        _ result: MediaRenameResult
+    ) -> String {
+        if result.cancelled {
+            return "Rename cancelled after \(result.renamed) renamed file\(result.renamed == 1 ? "" : "s")."
+        }
+
+        var details = [
+            "Renamed \(result.renamed) file\(result.renamed == 1 ? "" : "s")."
+        ]
+        if result.failed > 0 {
+            details.append(
+                "Failed \(result.failed): \(result.failedNames.prefix(3).joined(separator: ", "))\(result.failedNames.count > 3 ? "..." : "")."
+            )
+        }
+        return details.joined(separator: " ")
+    }
+
+    nonisolated private static func mediaRenameHistoryResultStatusMessage(
+        _ result: MediaRenameHistoryResult,
+        direction: MediaRenameHistoryDirection
+    ) -> String {
+        if result.cancelled {
+            return "\(direction.title) cancelled after \(result.moved) file\(result.moved == 1 ? "" : "s") \(direction.progressVerb)."
+        }
+
+        var details = [
+            "\(direction.title) complete: \(result.moved) file\(result.moved == 1 ? "" : "s") \(direction.progressVerb)."
+        ]
+        if result.failed > 0 {
+            details.append(
+                "Skipped \(result.failed): \(result.failedNames.prefix(3).joined(separator: ", "))\(result.failedNames.count > 3 ? "..." : "")."
             )
         }
         return details.joined(separator: " ")

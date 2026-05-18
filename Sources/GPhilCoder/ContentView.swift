@@ -118,6 +118,20 @@ struct ContentView: View {
 
     private var mediaCopySetupPanel: some View {
         VStack(alignment: .leading, spacing: 16) {
+            GroupBox("Mode") {
+                Picker("Mode", selection: $model.fileManagementMode) {
+                    ForEach(FileManagementMode.allCases) { mode in
+                        Label(mode.title, systemImage: mode.symbolName)
+                            .tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .disabled(model.isMediaCopyBusy)
+                .arrowCursorOnHover()
+                .padding(.vertical, 4)
+            }
+
             GroupBox("Source") {
                 FolderPickerControl(
                     title: model.mediaCopySourceSummary,
@@ -131,24 +145,26 @@ struct ContentView: View {
                 .padding(.vertical, 4)
             }
 
-            GroupBox("Destination") {
-                FolderPickerControl(
-                    title: model.mediaCopyDestinationRoot?.path(percentEncoded: false)
-                        ?? "No destination folder selected",
-                    detail: nil,
-                    systemImage: "externaldrive",
-                    buttonTitle: "Choose destination",
-                    disabled: model.isMediaCopyBusy
-                ) {
-                    model.chooseMediaCopyDestinationRoot()
+            if model.fileManagementMode == .copy {
+                GroupBox("Destination") {
+                    FolderPickerControl(
+                        title: model.mediaCopyDestinationRoot?.path(percentEncoded: false)
+                            ?? "No destination folder selected",
+                        detail: nil,
+                        systemImage: "externaldrive",
+                        buttonTitle: "Choose destination",
+                        disabled: model.isMediaCopyBusy
+                    ) {
+                        model.chooseMediaCopyDestinationRoot()
+                    }
+                    .padding(.vertical, 4)
                 }
-                .padding(.vertical, 4)
             }
 
             GroupBox("Filter") {
                 VStack(alignment: .leading, spacing: 10) {
                     Picker("Media type", selection: $model.mediaCopyFilter) {
-                        ForEach(MediaFileFilter.allCases) { filter in
+                        ForEach(model.availableMediaFileFilters) { filter in
                             Label(filter.title, systemImage: filter.symbolName)
                                 .tag(filter)
                         }
@@ -207,28 +223,57 @@ struct ContentView: View {
                 .padding(.vertical, 4)
             }
 
+            if model.fileManagementMode == .rename {
+                mediaRenameSettingsGroup
+            }
+
             GroupBox("Plan") {
                 VStack(alignment: .leading, spacing: 9) {
                     StatLine(
                         title: "Matched",
-                        value: "\(model.mediaCopyMatchedCount)",
-                        symbol: model.mediaCopyFilter.symbolName,
+                        value: "\(model.activeMediaMatchedCount)",
+                        symbol: model.activeMediaPreviewSymbolName,
                         color: .teal
                     )
-                    StatLine(
-                        title: "Existing",
-                        value: "\(model.mediaCopyConflictCount)",
-                        symbol: "exclamationmark.triangle",
-                        color: model.mediaCopyConflictCount > 0 ? .orange : .secondary
-                    )
+                    if model.fileManagementMode == .copy {
+                        StatLine(
+                            title: "Existing",
+                            value: "\(model.mediaCopyConflictCount)",
+                            symbol: "exclamationmark.triangle",
+                            color: model.mediaCopyConflictCount > 0 ? .orange : .secondary
+                        )
+                    }
+                    if model.fileManagementMode == .rename {
+                        StatLine(
+                            title: "Ready",
+                            value: "\(model.mediaRenameReadyCount)",
+                            symbol: "checkmark.circle",
+                            color: .teal
+                        )
+                        StatLine(
+                            title: "Blocked",
+                            value: "\(model.mediaRenameBlockedCount)",
+                            symbol: "exclamationmark.triangle",
+                            color: model.mediaRenameBlockedCount > 0 ? .orange : .secondary
+                        )
+                        StatLine(
+                            title: "Unchanged",
+                            value: "\(model.mediaRenameUnchangedCount)",
+                            symbol: "equal",
+                            color: .secondary
+                        )
+                    }
                     StatLine(
                         title: "Total size",
-                        value: model.mediaCopyTotalSize.formattedFileSize,
+                        value: model.activeMediaTotalSize.formattedFileSize,
                         symbol: "externaldrive",
                         color: .indigo
                     )
 
-                    if let plan = model.mediaCopyPlan, plan.directoryCount > 0 {
+                    if model.fileManagementMode == .copy,
+                        let plan = model.mediaCopyPlan,
+                        plan.directoryCount > 0
+                    {
                         StatLine(
                             title: "Folders",
                             value: "\(plan.directoryCount)",
@@ -237,7 +282,10 @@ struct ContentView: View {
                         )
                     }
 
-                    if let plan = model.mediaCopyPlan, plan.conflictCount > 0 {
+                    if model.fileManagementMode == .copy,
+                        let plan = model.mediaCopyPlan,
+                        plan.conflictCount > 0
+                    {
                         Text(
                             "\(plan.copyableWithoutOverwriteCount) file\(plan.copyableWithoutOverwriteCount == 1 ? "" : "s") can be copied without replacing existing destination files."
                         )
@@ -256,17 +304,13 @@ struct ContentView: View {
                         Text("\(progress.completed) of \(progress.total)")
                             .monospacedDigit()
                         Spacer()
-                        Text(model.isMediaDeleting ? "\(progress.copied) moved" : "\(progress.copied) copied")
+                        Text("\(progress.copied) \(mediaProgressVerb)")
                     }
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
                     HStack {
-                        Text(
-                            model.isMediaDeleting
-                                ? "\(progress.copiedBytes.formattedFileSize) moved"
-                                : "\(progress.copiedBytes.formattedFileSize) copied"
-                        )
+                        Text("\(progress.copiedBytes.formattedFileSize) \(mediaProgressVerb)")
                             .monospacedDigit()
                         Spacer()
                         Text(mediaCopySpeedText(for: progress))
@@ -299,44 +343,102 @@ struct ContentView: View {
                 .controlSize(.large)
             } else {
                 VStack(spacing: 10) {
-                    Button {
-                        model.scanMediaCopyFiles()
-                        selectedMediaCopyPreviewMode = .plan
-                    } label: {
-                        Label("Scan", systemImage: "magnifyingglass")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .disabled(!model.canPrepareMediaCopy)
+                    switch model.fileManagementMode {
+                    case .copy:
+                        Button {
+                            model.scanMediaCopyFiles()
+                            selectedMediaCopyPreviewMode = .plan
+                        } label: {
+                            Label("Scan", systemImage: "magnifyingglass")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .disabled(!model.canPrepareMediaCopy)
 
-                    Button {
-                        model.copyFilteredMediaFiles()
-                        selectedMediaCopyPreviewMode = .plan
-                    } label: {
-                        Label("Copy now", systemImage: "doc.on.doc")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-                    .disabled(!model.canPrepareMediaCopy)
+                        Button {
+                            model.copyFilteredMediaFiles()
+                            selectedMediaCopyPreviewMode = .plan
+                        } label: {
+                            Label("Copy now", systemImage: "doc.on.doc")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                        .disabled(!model.canPrepareMediaCopy)
 
-                    Button {
-                        model.addCurrentMediaCopyWorkflowToQueue()
-                        selectedMediaCopyPreviewMode = .queue
-                    } label: {
-                        Label("Add to queue", systemImage: "text.badge.plus")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .disabled(!model.canAddMediaCopyWorkflowToQueue)
+                        Button {
+                            model.addCurrentMediaCopyWorkflowToQueue()
+                            selectedMediaCopyPreviewMode = .queue
+                        } label: {
+                            Label("Add to queue", systemImage: "text.badge.plus")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .disabled(!model.canAddMediaCopyWorkflowToQueue)
+                    case .delete:
+                        Button {
+                            model.refreshMediaDeletePreview()
+                            selectedMediaCopyPreviewMode = .plan
+                        } label: {
+                            Label("Refresh preview", systemImage: "arrow.clockwise")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .disabled(!model.canRefreshMediaDeletePreview)
 
-                    Button(role: .destructive) {
-                        model.deleteFilteredMediaFiles()
-                        selectedMediaCopyPreviewMode = .plan
-                    } label: {
-                        Label("Delete filtered files", systemImage: "trash")
-                            .frame(maxWidth: .infinity)
+                        Button(role: .destructive) {
+                            model.deleteFilteredMediaFiles()
+                            selectedMediaCopyPreviewMode = .plan
+                        } label: {
+                            Label("Delete filtered files", systemImage: "trash")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.red)
+                        .controlSize(.large)
+                        .disabled(!model.canDeleteFilteredMediaFiles)
+                        .help("Move only the selected filtered extensions from source folders to the macOS Trash")
+                    case .rename:
+                        Button {
+                            model.refreshMediaRenamePreview()
+                            selectedMediaCopyPreviewMode = .plan
+                        } label: {
+                            Label("Refresh preview", systemImage: "arrow.clockwise")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .disabled(!model.canRefreshMediaRenamePreview)
+
+                        Button {
+                            model.renameFilteredMediaFiles()
+                            selectedMediaCopyPreviewMode = .plan
+                        } label: {
+                            Label("Rename files", systemImage: "pencil")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                        .disabled(!model.canRenameFilteredMediaFiles)
+
+                        HStack(spacing: 8) {
+                            Button {
+                                model.undoLastMediaRename()
+                                selectedMediaCopyPreviewMode = .plan
+                            } label: {
+                                Label(model.mediaRenameUndoButtonTitle, systemImage: "arrow.uturn.backward")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .disabled(!model.canUndoMediaRename)
+                            .help(model.mediaRenameUndoHelp)
+
+                            Button {
+                                model.redoLastMediaRename()
+                                selectedMediaCopyPreviewMode = .plan
+                            } label: {
+                                Label(model.mediaRenameRedoButtonTitle, systemImage: "arrow.uturn.forward")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .disabled(!model.canRedoMediaRename)
+                            .help(model.mediaRenameRedoHelp)
+                        }
+                        .controlSize(.small)
                     }
-                    .disabled(!model.canDeleteFilteredMediaFiles)
-                    .help("Move only the selected filtered extensions from source folders to the macOS Trash")
 
                     HStack(spacing: 8) {
                         Button {
@@ -361,66 +463,176 @@ struct ContentView: View {
                 }
             }
 
-            GroupBox("Queue") {
-                VStack(alignment: .leading, spacing: 10) {
-                    StatLine(
-                        title: "Workflows",
-                        value: "\(model.mediaCopyQueueTotalCount)",
-                        symbol: "list.bullet.rectangle",
-                        color: .indigo
-                    )
+            if model.fileManagementMode == .copy {
+                GroupBox("Queue") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        StatLine(
+                            title: "Workflows",
+                            value: "\(model.mediaCopyQueueTotalCount)",
+                            symbol: "list.bullet.rectangle",
+                            color: .indigo
+                        )
 
-                    HStack(spacing: 8) {
-                        Button {
-                            model.loadMediaCopyJob()
-                            selectedMediaCopyPreviewMode = .queue
-                        } label: {
-                            Label("Load", systemImage: "square.and.arrow.up")
-                                .frame(maxWidth: .infinity)
-                        }
+                        HStack(spacing: 8) {
+                            Button {
+                                model.loadMediaCopyJob()
+                                selectedMediaCopyPreviewMode = .queue
+                            } label: {
+                                Label("Load", systemImage: "square.and.arrow.up")
+                                    .frame(maxWidth: .infinity)
+                            }
 
-                        Button {
-                            model.saveMediaCopyJob()
-                        } label: {
-                            Label("Save", systemImage: "square.and.arrow.down")
-                                .frame(maxWidth: .infinity)
+                            Button {
+                                model.saveMediaCopyJob()
+                            } label: {
+                                Label("Save", systemImage: "square.and.arrow.down")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .disabled(!model.canSaveMediaCopyJob)
                         }
-                        .disabled(!model.canSaveMediaCopyJob)
+                        .controlSize(.small)
+
+                        HStack(spacing: 8) {
+                            Button(role: .destructive) {
+                                model.clearMediaCopyQueue()
+                            } label: {
+                                Label("Clear", systemImage: "trash")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .disabled(model.mediaCopyQueueTotalCount == 0 || model.isMediaCopyBusy)
+
+                            Button {
+                                model.runMediaCopyQueue()
+                                selectedMediaCopyPreviewMode = .queue
+                            } label: {
+                                Label("Run", systemImage: "play.fill")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(!model.canRunMediaCopyQueue)
+                        }
                     }
-                    .controlSize(.small)
-
-                    HStack(spacing: 8) {
-                        Button(role: .destructive) {
-                            model.clearMediaCopyQueue()
-                        } label: {
-                            Label("Clear", systemImage: "trash")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .disabled(model.mediaCopyQueueTotalCount == 0 || model.isMediaCopyBusy)
-
-                        Button {
-                            model.runMediaCopyQueue()
-                            selectedMediaCopyPreviewMode = .queue
-                        } label: {
-                            Label("Run", systemImage: "play.fill")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(!model.canRunMediaCopyQueue)
-                    }
+                    .padding(.vertical, 4)
                 }
-                .padding(.vertical, 4)
             }
         }
         .padding(18)
         .background(Color(nsColor: .controlBackgroundColor))
     }
 
+    private var mediaRenameSettingsGroup: some View {
+        GroupBox("Rename") {
+            VStack(alignment: .leading, spacing: 10) {
+                Picker("Action", selection: $model.mediaRenameOperation) {
+                    ForEach(MediaRenameOperation.allCases) { operation in
+                        Text(operation.title)
+                            .tag(operation)
+                    }
+                }
+                .pickerStyle(.menu)
+                .disabled(model.isMediaCopyBusy)
+                .arrowCursorOnHover()
+
+                mediaRenameOperationControls
+
+                Picker("Sort", selection: $model.mediaRenameSort) {
+                    ForEach(MediaRenameSort.allCases) { sort in
+                        Text(sort.title)
+                            .tag(sort)
+                    }
+                }
+                .pickerStyle(.menu)
+                .disabled(model.isMediaCopyBusy)
+                .arrowCursorOnHover()
+
+                if model.mediaRenameOperation == .pattern || model.mediaRenameOperation == .addText {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Stepper(value: $model.mediaRenameStartIndex, in: 0...999_999) {
+                            HStack {
+                                Text("Start")
+                                Spacer()
+                                Text("\(model.mediaRenameStartIndex)")
+                                    .monospacedDigit()
+                            }
+                        }
+
+                        Stepper(value: $model.mediaRenameIndexStep, in: 1...999) {
+                            HStack {
+                                Text("Step")
+                                Spacer()
+                                Text("\(model.mediaRenameIndexStep)")
+                                    .monospacedDigit()
+                            }
+                        }
+
+                        Stepper(value: $model.mediaRenameIndexPadding, in: 1...8) {
+                            HStack {
+                                Text("Digits")
+                                Spacer()
+                                Text("\(model.mediaRenameIndexPadding)")
+                                    .monospacedDigit()
+                            }
+                        }
+                    }
+                    .disabled(model.isMediaCopyBusy)
+                }
+            }
+            .padding(.vertical, 4)
+        }
+    }
+
+    @ViewBuilder
+    private var mediaRenameOperationControls: some View {
+        switch model.mediaRenameOperation {
+        case .pattern:
+            TextField("Pattern", text: $model.mediaRenamePattern)
+                .textFieldStyle(.roundedBorder)
+                .disabled(model.isMediaCopyBusy)
+                .help("Use {name}, {index}, and {parent}")
+        case .replaceText:
+            VStack(alignment: .leading, spacing: 8) {
+                TextField("Find", text: $model.mediaRenameFindText)
+                    .textFieldStyle(.roundedBorder)
+                TextField("Replace", text: $model.mediaRenameReplacementText)
+                    .textFieldStyle(.roundedBorder)
+                Toggle("Case sensitive", isOn: $model.mediaRenameIsCaseSensitive)
+            }
+            .disabled(model.isMediaCopyBusy)
+        case .addText:
+            VStack(alignment: .leading, spacing: 8) {
+                TextField("Text", text: $model.mediaRenameAddedText)
+                    .textFieldStyle(.roundedBorder)
+                    .help("Use {name}, {index}, and {parent}")
+                Picker("Position", selection: $model.mediaRenameTextPlacement) {
+                    ForEach(MediaRenameTextPlacement.allCases) { placement in
+                        Text(placement.title)
+                            .tag(placement)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .arrowCursorOnHover()
+            }
+            .disabled(model.isMediaCopyBusy)
+        case .changeCase:
+            Picker("Case", selection: $model.mediaRenameCaseStyle) {
+                ForEach(MediaRenameCaseStyle.allCases) { style in
+                    Text(style.title)
+                        .tag(style)
+                }
+            }
+            .pickerStyle(.segmented)
+            .disabled(model.isMediaCopyBusy)
+            .arrowCursorOnHover()
+        case .cleanUp:
+            EmptyView()
+        }
+    }
+
     private var mediaCopyResultsPanel: some View {
         VStack(spacing: 0) {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("File Copy Plan")
+                    Text(model.activeMediaPlanTitle)
                         .font(.title3.weight(.semibold))
                     Text(mediaCopySubtitle)
                         .font(.callout)
@@ -429,17 +641,46 @@ struct ContentView: View {
 
                 Spacer()
 
-                Picker("", selection: $selectedMediaCopyPreviewMode) {
-                    Text("Plan").tag(MediaCopyPreviewMode.plan)
-                    Text("Queue").tag(MediaCopyPreviewMode.queue)
+                if model.fileManagementMode == .copy {
+                    Picker("", selection: $selectedMediaCopyPreviewMode) {
+                        Text("Plan").tag(MediaCopyPreviewMode.plan)
+                        Text("Queue").tag(MediaCopyPreviewMode.queue)
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 160)
+                    .labelsHidden()
+                    .disabled(model.isMediaCopyBusy)
+                    .arrowCursorOnHover()
                 }
-                .pickerStyle(.segmented)
-                .frame(width: 160)
-                .labelsHidden()
-                .disabled(model.isMediaCopyBusy)
-                .arrowCursorOnHover()
 
-                if selectedMediaCopyPreviewMode == .plan,
+                if model.fileManagementMode == .rename,
+                    let plan = model.mediaRenamePlan,
+                    plan.hasRenameContent
+                {
+                    HStack(spacing: 8) {
+                        FormatPill(text: plan.settings.operation.title.uppercased())
+                        if model.isMediaRenamePreviewStale {
+                            FormatPill(text: "STALE")
+                        }
+                        FormatPill(text: "\(plan.readyCount) READY")
+                        if plan.blockedCount > 0 {
+                            FormatPill(text: "\(plan.blockedCount) BLOCKED")
+                        }
+                    }
+                } else if model.fileManagementMode == .delete,
+                    let plan = model.mediaDeletePlan,
+                    plan.hasDeletableContent
+                {
+                    HStack(spacing: 8) {
+                        FormatPill(text: plan.filter.title.uppercased())
+                        FormatPill(
+                            text: plan.filter
+                                .compactExtensionSummary(selectedExtensions: plan.selectedExtensions)
+                                .uppercased()
+                        )
+                        FormatPill(text: "\(plan.candidates.count) FILES")
+                    }
+                } else if selectedMediaCopyPreviewMode == .plan,
                     let plan = model.mediaCopyPlan,
                     plan.hasCopyableContent
                 {
@@ -477,15 +718,17 @@ struct ContentView: View {
 
     @ViewBuilder
     private var mediaCopyResultsContent: some View {
-        if selectedMediaCopyPreviewMode == .queue {
+        if model.fileManagementMode == .rename {
+            mediaRenameResultsContent
+        } else if model.fileManagementMode == .delete {
+            mediaDeleteResultsContent
+        } else if selectedMediaCopyPreviewMode == .queue {
             mediaCopyQueueContent
         } else if model.isMediaCopyScanning {
             CenteredStatusView(
                 symbol: "magnifyingglass",
                 title: "Scanning folders",
-                detail: model.isMediaDeleting
-                    ? "Checking \(model.mediaCopyDeleteSummary)."
-                    : "Checking \(model.mediaCopyFilter.fileTypeName) files and destination conflicts."
+                detail: "Checking \(model.mediaCopyFilter.fileTypeName) files and destination conflicts."
             )
         } else if model.isMediaDeleting {
             CenteredStatusView(
@@ -533,6 +776,100 @@ struct ContentView: View {
     }
 
     @ViewBuilder
+    private var mediaRenameResultsContent: some View {
+        if model.isMediaCopyScanning {
+            CenteredStatusView(
+                symbol: "magnifyingglass",
+                title: "Scanning folders",
+                detail: "Preparing rename preview."
+            )
+        } else if model.isMediaRenaming {
+            CenteredStatusView(
+                symbol: "pencil",
+                title: "Renaming files",
+                detail: mediaCopyProgressDetail
+            )
+        } else if model.mediaRenamePlan == nil {
+            CenteredStatusView(
+                symbol: "pencil",
+                title: "No rename preview",
+                detail: "Select source folders and a filter, then refresh the preview."
+            )
+        } else if let plan = model.mediaRenamePlan, !plan.hasRenameContent {
+            CenteredStatusView(
+                symbol: plan.filter.symbolName,
+                title: "No \(plan.filter.fileTypeName) files found",
+                detail: plan.filter.readableExtensionList(selectedExtensions: plan.selectedExtensions)
+            )
+        } else if let plan = model.mediaRenamePlan {
+            ScrollView {
+                LazyVStack(spacing: 8) {
+                    ForEach(model.mediaRenamePreviewItems) { item in
+                        MediaRenameItemRow(item: item)
+                    }
+
+                    if plan.items.count > model.mediaRenamePreviewItems.count {
+                        Text(
+                            "\(plan.items.count - model.mediaRenamePreviewItems.count) more file\(plan.items.count - model.mediaRenamePreviewItems.count == 1 ? "" : "s") hidden from preview."
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.vertical, 12)
+                    }
+                }
+                .padding(18)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var mediaDeleteResultsContent: some View {
+        if model.isMediaCopyScanning {
+            CenteredStatusView(
+                symbol: "magnifyingglass",
+                title: "Scanning folders",
+                detail: "Checking \(model.mediaCopyDeleteSummary)."
+            )
+        } else if model.isMediaDeleting {
+            CenteredStatusView(
+                symbol: "trash",
+                title: "Moving files to Trash",
+                detail: mediaCopyProgressDetail
+            )
+        } else if model.mediaDeletePlan == nil {
+            CenteredStatusView(
+                symbol: "folder",
+                title: "No delete preview",
+                detail: "Select source folders, then choose audio or video extensions."
+            )
+        } else if let plan = model.mediaDeletePlan, !plan.hasDeletableContent {
+            CenteredStatusView(
+                symbol: plan.filter.symbolName,
+                title: "No \(plan.filter.fileTypeName) files found",
+                detail: plan.filter.readableExtensionList(selectedExtensions: plan.selectedExtensions)
+            )
+        } else if let plan = model.mediaDeletePlan {
+            ScrollView {
+                LazyVStack(spacing: 8) {
+                    ForEach(model.mediaDeletePreviewItems) { candidate in
+                        MediaDeleteCandidateRow(candidate: candidate, filter: plan.filter)
+                    }
+
+                    if plan.candidates.count > model.mediaDeletePreviewItems.count {
+                        Text(
+                            "\(plan.candidates.count - model.mediaDeletePreviewItems.count) more file\(plan.candidates.count - model.mediaDeletePreviewItems.count == 1 ? "" : "s") hidden from preview."
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.vertical, 12)
+                    }
+                }
+                .padding(18)
+            }
+        }
+    }
+
+    @ViewBuilder
     private var mediaCopyQueueContent: some View {
         if model.mediaCopyQueue.isEmpty {
             CenteredStatusView(
@@ -562,6 +899,58 @@ struct ContentView: View {
     }
 
     private var mediaCopySubtitle: String {
+        if model.fileManagementMode == .rename {
+            if model.isMediaCopyScanning {
+                return "Scanning filtered files for rename preview."
+            }
+
+            if model.isMediaRenaming {
+                return mediaCopyProgressDetail
+            }
+
+            guard let plan = model.mediaRenamePlan else {
+                return "No source-folder scan has been run."
+            }
+
+            if model.isMediaRenamePreviewStale {
+                return "Preview is stale. Refresh before renaming."
+            }
+
+            if !plan.hasRenameContent {
+                return "No matching \(plan.filter.fileTypeName) files found."
+            }
+
+            if plan.blockedCount > 0 {
+                return "\(plan.readyCount) ready, \(plan.blockedCount) blocked."
+            }
+
+            if plan.unchangedCount > 0 {
+                return "\(plan.readyCount) ready, \(plan.unchangedCount) unchanged."
+            }
+
+            return "\(plan.readyCount) ready to rename."
+        }
+
+        if model.fileManagementMode == .delete {
+            if model.isMediaCopyScanning {
+                return "Scanning filtered files for deletion."
+            }
+
+            if model.isMediaDeleting {
+                return mediaCopyProgressDetail
+            }
+
+            guard let plan = model.mediaDeletePlan else {
+                return "No source-folder scan has been run."
+            }
+
+            if !plan.hasDeletableContent {
+                return "No matching \(plan.filter.fileTypeName) files found."
+            }
+
+            return "\(plan.candidates.count) matched for Trash."
+        }
+
         if selectedMediaCopyPreviewMode == .queue {
             if model.isMediaCopyScanning {
                 return "Scanning queued file copy workflows."
@@ -578,9 +967,7 @@ struct ContentView: View {
         }
 
         if model.isMediaCopyScanning {
-            return model.isMediaDeleting
-                ? "Scanning filtered files before moving them to Trash."
-                : "Scanning \(model.mediaCopyFilter.fileTypeName) files."
+            return "Scanning \(model.mediaCopyFilter.fileTypeName) files."
         }
 
         if model.isMediaDeleting {
@@ -609,7 +996,13 @@ struct ContentView: View {
 
     private var mediaCopyProgressDetail: String {
         guard let progress = model.mediaCopyProgress else {
-            return model.isMediaDeleting ? "Preparing filtered delete." : "Preparing copy."
+            if model.isMediaDeleting {
+                return "Preparing filtered delete."
+            }
+            if model.isMediaRenaming {
+                return "Preparing rename."
+            }
+            return "Preparing copy."
         }
 
         let speedDetail = progress.bytesPerSecond
@@ -618,8 +1011,22 @@ struct ContentView: View {
             return
                 "\(progress.completed) of \(progress.total) processed, \(progress.copied) moved, \(progress.failed) failed\(speedDetail)."
         }
+        if model.isMediaRenaming {
+            return
+                "\(progress.completed) of \(progress.total) processed, \(progress.copied) \(model.mediaRenameProgressVerb), \(progress.failed) failed\(speedDetail)."
+        }
         return
             "\(progress.completed) of \(progress.total) processed, \(progress.copied) copied, \(progress.skippedExisting) skipped, \(progress.failed) failed\(speedDetail)."
+    }
+
+    private var mediaProgressVerb: String {
+        if model.isMediaDeleting {
+            return "moved"
+        }
+        if model.isMediaRenaming {
+            return model.mediaRenameProgressVerb
+        }
+        return "copied"
     }
 
     private func mediaCopySpeedText(for progress: MediaCopyProgress) -> String {
@@ -1771,6 +2178,167 @@ private struct MediaCopyCandidateRow: View {
                         ? Color.orange.opacity(0.45)
                         : Color(nsColor: .separatorColor).opacity(0.35)
                 )
+        }
+    }
+}
+
+private struct MediaRenameItemRow: View {
+    let item: MediaRenameItem
+
+    private var stateColor: Color {
+        switch item.state {
+        case .ready:
+            .teal
+        case .unchanged:
+            Color(nsColor: .secondaryLabelColor)
+        case .duplicate:
+            .orange
+        case .conflict, .invalid:
+            .red
+        }
+    }
+
+    private var stateSymbol: String {
+        switch item.state {
+        case .ready:
+            "checkmark.circle"
+        case .unchanged:
+            "equal.circle"
+        case .duplicate:
+            "square.on.square"
+        case .conflict:
+            "exclamationmark.triangle"
+        case .invalid:
+            "xmark.circle"
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: stateSymbol)
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(stateColor)
+                .frame(width: 34, height: 34)
+                .background(
+                    stateColor.opacity(0.12),
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                )
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    Text(item.originalName)
+                        .font(.callout.weight(.semibold))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+
+                    Image(systemName: "arrow.right")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.secondary)
+
+                    Text(item.newName)
+                        .font(.callout.weight(.semibold))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+
+                    Text(item.state.title.uppercased())
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(stateColor)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(
+                            stateColor.opacity(0.12),
+                            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        )
+
+                    Spacer()
+
+                    Text(item.fileSizeBytes.formattedFileSize)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                HStack(spacing: 8) {
+                    Text(item.sourceURL.path(percentEncoded: false))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+
+                    if item.state != .ready {
+                        Text(item.message)
+                            .font(.caption)
+                            .foregroundStyle(stateColor)
+                            .lineLimit(1)
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .background(
+            Color(nsColor: .controlBackgroundColor),
+            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(stateColor.opacity(item.state == .ready ? 0.35 : 0.5))
+        }
+    }
+}
+
+private struct MediaDeleteCandidateRow: View {
+    let candidate: MediaDeleteCandidate
+    let filter: MediaFileFilter
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "trash")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(.red)
+                .frame(width: 34, height: 34)
+                .background(
+                    Color.red.opacity(0.12),
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                )
+
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 8) {
+                    Text(candidate.relativePath)
+                        .font(.callout.weight(.semibold))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+
+                    Text(filter.title.uppercased())
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.red)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(
+                            .red.opacity(0.12),
+                            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        )
+
+                    Spacer()
+
+                    Text(candidate.fileSizeBytes.formattedFileSize)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Text(candidate.sourceURL.path(percentEncoded: false))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .padding(12)
+        .background(
+            Color(nsColor: .controlBackgroundColor),
+            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color.red.opacity(0.35))
         }
     }
 }
