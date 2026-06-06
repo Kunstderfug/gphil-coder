@@ -3563,10 +3563,6 @@ final class EncoderViewModel: ObservableObject {
         let plannedJobs = itemsToEncode.map {
             EncodeJob(item: $0, outputURL: outputURL(for: $0))
         }
-        jobs = plannedJobs
-        jobStateFilter = nil
-        isEncoding = true
-
         let settings = EncodingSettingsSnapshot(
             ffmpegURL: ffmpegURL,
             useLibVorbis: ffmpegCapabilities.hasLibVorbis,
@@ -3587,6 +3583,15 @@ final class EncoderViewModel: ObservableObject {
             parallelJobs: max(1, min(parallelJobs, processorLimit))
         )
 
+        guard confirmEncodingPreflight(plannedJobs: plannedJobs, settings: settings) else {
+            statusMessage = "Encoding cancelled before starting."
+            return
+        }
+
+        jobs = plannedJobs
+        jobStateFilter = nil
+        isEncoding = true
+
         statusMessage =
             "Encoding \(plannedJobs.count) \(plannedJobs.count == 1 ? "file" : "files") with \(settings.summary)..."
 
@@ -3598,6 +3603,70 @@ final class EncoderViewModel: ObservableObject {
     func cancelEncoding() {
         encodeTask?.cancel()
         statusMessage = "Stopping active encoding jobs..."
+    }
+
+    func refreshCurrentFileManagementPreview() {
+        refreshActiveFileManagementPreviewIfNeeded()
+    }
+
+    private func confirmEncodingPreflight(
+        plannedJobs: [EncodeJob],
+        settings: EncodingSettingsSnapshot
+    ) -> Bool {
+        let existingOutputCount = plannedJobs.filter {
+            !existingOutputURLs(for: $0.outputURL).isEmpty
+        }.count
+        let routeDescription: String
+        switch outputMode {
+        case .sourceFolders:
+            routeDescription = "Outputs will be written beside each source file."
+        case .exportFolder:
+            if let exportFolder {
+                let subfolderDetail = preserveSubfolders ? " Nested folders will be preserved." : ""
+                routeDescription =
+                    "Outputs will be written to \(exportFolder.path(percentEncoded: false)).\(subfolderDetail)"
+            } else {
+                routeDescription = "No export folder is selected."
+            }
+        }
+
+        var details = [
+            "\(plannedJobs.count) file\(plannedJobs.count == 1 ? "" : "s") will be encoded as \(outputFormat.title).",
+            routeDescription,
+            "Encoding settings: \(settings.summary).",
+            "Parallel jobs: \(settings.parallelJobs); FFmpeg threads: \(settings.ffmpegThreads == 0 ? "Auto" : "\(settings.ffmpegThreads)")."
+        ]
+
+        if existingOutputCount > 0 {
+            let conflictBehavior =
+                overwriteExisting
+                ? "They will be replaced."
+                : "They will be skipped unless overwrite is enabled."
+            details.append(
+                "\(existingOutputCount) output path\(existingOutputCount == 1 ? "" : "s") already exist. \(conflictBehavior)"
+            )
+        }
+
+        if let sameFormatWarningMessage {
+            details.append(sameFormatWarningMessage)
+        }
+
+        if let lossyToLosslessWarningMessage {
+            details.append(lossyToLosslessWarningMessage)
+        }
+
+        if let nativeOggReencodeWarningMessage {
+            details.append(nativeOggReencodeWarningMessage)
+        }
+
+        let alert = NSAlert()
+        alert.messageText = "Start encoding?"
+        alert.informativeText = details.joined(separator: "\n\n")
+        alert.alertStyle = existingOutputCount > 0 && overwriteExisting ? .warning : .informational
+        alert.addButton(withTitle: "Start Encoding")
+        alert.addButton(withTitle: "Cancel")
+
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     private func defaultQueueFileName() -> String {
@@ -3872,7 +3941,8 @@ final class EncoderViewModel: ObservableObject {
         loadPendingTrashSourceRecords()
 
         if let rawValue = defaults.string(forKey: DefaultsKey.ffmpegSourcePreference),
-            let value = FFmpegSourcePreference(rawValue: rawValue)
+            let value = FFmpegSourcePreference(rawValue: rawValue),
+            FFmpegSourcePreference.selectableCases.contains(value)
         {
             ffmpegSourcePreference = value
         } else if FFmpegLocator.bundledFFmpegURL() == nil,

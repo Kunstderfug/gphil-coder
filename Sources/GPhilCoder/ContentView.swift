@@ -4,7 +4,10 @@ import SwiftUI
 
 private enum WorkflowTab: Hashable {
     case audioEncoding
-    case fileManagement
+    case mediaCopy
+    case mediaRename
+    case mediaDelete
+    case backupRestore
 }
 
 private enum MediaCopyPreviewMode: Hashable {
@@ -18,7 +21,6 @@ struct ContentView: View {
     @State private var selectedWorkflowTab: WorkflowTab = .audioEncoding
     @State private var selectedMediaCopyPreviewMode: MediaCopyPreviewMode = .plan
     @State private var showingInputFilterSheet = false
-    @State private var showingRestoreFromBackupSheet = false
 
     var body: some View {
         ZStack {
@@ -36,11 +38,29 @@ struct ContentView: View {
                         }
                         .tag(WorkflowTab.audioEncoding)
 
-                    fileManagementWorkflow
+                    fileManagementWorkflow(for: .copy)
                         .tabItem {
-                            Label("File Management", systemImage: "folder")
+                            Label("Copy", systemImage: "doc.on.doc")
                         }
-                        .tag(WorkflowTab.fileManagement)
+                        .tag(WorkflowTab.mediaCopy)
+
+                    fileManagementWorkflow(for: .rename)
+                        .tabItem {
+                            Label("Rename", systemImage: "pencil")
+                        }
+                        .tag(WorkflowTab.mediaRename)
+
+                    fileManagementWorkflow(for: .delete)
+                        .tabItem {
+                            Label("Delete", systemImage: "trash")
+                        }
+                        .tag(WorkflowTab.mediaDelete)
+
+                    backupRestoreWorkflow
+                        .tabItem {
+                            Label("Restore", systemImage: "externaldrive.badge.icloud")
+                        }
+                        .tag(WorkflowTab.backupRestore)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 Divider()
@@ -52,9 +72,11 @@ struct ContentView: View {
             InputFilterSheet()
                 .environmentObject(model)
         }
-        .sheet(isPresented: $showingRestoreFromBackupSheet) {
-            RestoreFromBackupSheet()
-                .environmentObject(model)
+        .onAppear {
+            syncWorkflowSelection(selectedWorkflowTab)
+        }
+        .onChange(of: selectedWorkflowTab) { _, tab in
+            syncWorkflowSelection(tab)
         }
     }
 
@@ -62,6 +84,20 @@ struct ContentView: View {
         Color.clear
             .frame(height: 10)
             .background(.bar)
+    }
+
+    private func syncWorkflowSelection(_ tab: WorkflowTab) {
+        switch tab {
+        case .audioEncoding, .backupRestore:
+            break
+        case .mediaCopy:
+            model.fileManagementMode = .copy
+            selectedMediaCopyPreviewMode = .plan
+        case .mediaRename:
+            model.fileManagementMode = .rename
+        case .mediaDelete:
+            model.fileManagementMode = .delete
+        }
     }
 
     private var topBar: some View {
@@ -105,7 +141,7 @@ struct ContentView: View {
         }
     }
 
-    private var fileManagementWorkflow: some View {
+    private func fileManagementWorkflow(for mode: FileManagementMode) -> some View {
         HStack(spacing: 0) {
             mediaCopySetupPanel
                 .frame(width: 340)
@@ -115,24 +151,22 @@ struct ContentView: View {
             mediaCopyResultsPanel
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .onAppear {
+            model.fileManagementMode = mode
+            if mode == .copy {
+                selectedMediaCopyPreviewMode = .plan
+            }
+        }
+    }
+
+    private var backupRestoreWorkflow: some View {
+        RestoreFromBackupSheet(isEmbedded: true)
+            .environmentObject(model)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var mediaCopySetupPanel: some View {
         VStack(alignment: .leading, spacing: 16) {
-            GroupBox("Mode") {
-                Picker("Mode", selection: $model.fileManagementMode) {
-                    ForEach(FileManagementMode.allCases) { mode in
-                        Label(mode.title, systemImage: mode.symbolName)
-                            .tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .disabled(model.isMediaCopyBusy)
-                .arrowCursorOnHover()
-                .padding(.vertical, 4)
-            }
-
             GroupBox("Source") {
                 FolderPickerControl(
                     title: model.mediaCopySourceSummary,
@@ -1081,17 +1115,6 @@ struct ContentView: View {
                 }
                 .disabled(!model.canClearTrashedSourceRecords)
                 .help("Forget saved restore records without changing any files")
-
-                Button {
-                    showingRestoreFromBackupSheet = true
-                } label: {
-                    Label("Plan restore from backup", systemImage: "externaldrive.badge.icloud")
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
-                        .frame(maxWidth: .infinity)
-                }
-                .disabled(model.isEncoding)
-                .help("Infer original folders from a structured backup volume")
             }
         }
         .padding(18)
@@ -1608,7 +1631,7 @@ private struct ToolStatusView: View {
             }
 
             Picker("FFmpeg", selection: $model.ffmpegSourcePreference) {
-                ForEach(FFmpegSourcePreference.allCases) { source in
+                ForEach(FFmpegSourcePreference.selectableCases) { source in
                     Text(sourceLabel(source))
                         .tag(source)
                 }

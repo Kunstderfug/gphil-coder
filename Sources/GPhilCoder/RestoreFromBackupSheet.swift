@@ -4,6 +4,11 @@ import SwiftUI
 struct RestoreFromBackupSheet: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var model: EncoderViewModel
+    let isEmbedded: Bool
+
+    init(isEmbedded: Bool = false) {
+        self.isEmbedded = isEmbedded
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -23,7 +28,7 @@ struct RestoreFromBackupSheet: View {
             Divider()
             footer
         }
-        .frame(width: 880, height: 680)
+        .modifier(RestoreFrameModifier(isEmbedded: isEmbedded))
     }
 
     private var header: some View {
@@ -38,13 +43,15 @@ struct RestoreFromBackupSheet: View {
 
             Spacer()
 
-            Button {
-                dismiss()
-            } label: {
-                Image(systemName: "xmark")
+            if !isEmbedded {
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.borderless)
+                .help("Close")
             }
-            .buttonStyle(.borderless)
-            .help("Close")
         }
         .padding(20)
         .background(.bar)
@@ -298,6 +305,20 @@ struct RestoreFromBackupSheet: View {
         .padding(.horizontal, 18)
         .padding(.vertical, 10)
         .background(.bar)
+    }
+}
+
+private struct RestoreFrameModifier: ViewModifier {
+    let isEmbedded: Bool
+
+    func body(content: Content) -> some View {
+        if isEmbedded {
+            content
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            content
+                .frame(width: 880, height: 680)
+        }
     }
 }
 

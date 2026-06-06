@@ -52,6 +52,44 @@ struct GPhilCoderApp: App {
                 }
                 .keyboardShortcut("o", modifiers: [.command, .shift])
             }
+
+            CommandMenu("Workflow") {
+                Button("Start Encoding") {
+                    encoder.startEncoding()
+                }
+                .keyboardShortcut("e")
+                .disabled(!encoder.canEncode)
+
+                Button("Cancel Active Operation") {
+                    if encoder.isEncoding {
+                        encoder.cancelEncoding()
+                    } else {
+                        encoder.cancelMediaCopy()
+                    }
+                }
+                .keyboardShortcut(".", modifiers: [.command])
+                .disabled(!encoder.isEncoding && !encoder.isMediaCopyBusy)
+
+                Divider()
+
+                Button("Refresh File Management Preview") {
+                    encoder.refreshCurrentFileManagementPreview()
+                }
+                .keyboardShortcut("r")
+                .disabled(encoder.isEncoding || encoder.isMediaCopyBusy)
+
+                Divider()
+
+                Button("Save Encoding Queue...") {
+                    encoder.saveQueue()
+                }
+                .disabled(!encoder.canSaveQueue)
+
+                Button("Load Encoding Queue...") {
+                    encoder.loadQueue()
+                }
+                .disabled(encoder.isEncoding)
+            }
         }
 
         Window("Rename Settings", id: AppWindowID.renameSettings) {
