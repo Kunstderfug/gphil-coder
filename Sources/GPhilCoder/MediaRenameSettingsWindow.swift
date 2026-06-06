@@ -68,7 +68,7 @@ private struct MediaRenameSettingsForm: View {
                 .arrowCursorOnHover()
             }
 
-            if model.mediaRenameOperation == .pattern || model.mediaRenameOperation == .addText {
+            if model.mediaRenameOperation.usesIndexControls {
                 Divider()
                 indexControls
             }
@@ -84,6 +84,12 @@ private struct MediaRenameSettingsForm: View {
                     .textFieldStyle(.roundedBorder)
                     .disabled(model.isMediaCopyBusy)
                     .help("Use {name}, {index}, and {parent}")
+            }
+        case .autoIndex:
+            settingRow("Name") {
+                Text("Use the increasing index as the file name.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
             }
         case .replaceText:
             VStack(alignment: .leading, spacing: 10) {
@@ -178,6 +184,17 @@ private struct MediaRenameSettingsForm: View {
             Text("\(value)")
                 .monospacedDigit()
                 .foregroundStyle(.primary)
+        }
+    }
+}
+
+private extension MediaRenameOperation {
+    var usesIndexControls: Bool {
+        switch self {
+        case .pattern, .autoIndex, .addText:
+            true
+        case .replaceText, .changeCase, .cleanUp:
+            false
         }
     }
 }

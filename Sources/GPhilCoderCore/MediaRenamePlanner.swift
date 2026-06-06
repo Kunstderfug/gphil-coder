@@ -2,6 +2,7 @@ import Foundation
 
 public enum MediaRenameOperation: String, CaseIterable, Codable, Identifiable, Sendable {
     case pattern
+    case autoIndex
     case replaceText
     case addText
     case changeCase
@@ -13,6 +14,8 @@ public enum MediaRenameOperation: String, CaseIterable, Codable, Identifiable, S
         switch self {
         case .pattern:
             "Pattern"
+        case .autoIndex:
+            "Auto Index"
         case .replaceText:
             "Replace"
         case .addText:
@@ -514,6 +517,8 @@ extension MediaCopyPlanner {
                 parentName: parentName,
                 indexText: indexText
             )
+        case .autoIndex:
+            return indexText
         case .replaceText:
             return replaceText(
                 in: baseName,

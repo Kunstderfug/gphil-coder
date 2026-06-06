@@ -218,6 +218,30 @@ final class MediaCopyPlannerTests: XCTestCase {
         XCTAssertEqual(plan.blockedCount, 0)
     }
 
+    func testBuildRenamePlanAutoIndexesFromUserStartIndex() throws {
+        let sourceRoot = try makeTemporaryDirectory()
+        try writeFile("Audio/song.flac", in: sourceRoot, contents: "song")
+        try writeFile("Audio/dialogue.flac", in: sourceRoot, contents: "dialogue")
+
+        let plan = try MediaCopyPlanner.buildRenamePlan(
+            sourceRoots: [sourceRoot],
+            filter: .audio,
+            selectedExtensions: ["flac"],
+            settings: MediaRenameSettings(
+                operation: .autoIndex,
+                sort: .name,
+                startIndex: 12,
+                indexStep: 3,
+                indexPadding: 4
+            )
+        )
+
+        XCTAssertEqual(plan.items.map(\.originalName), ["dialogue.flac", "song.flac"])
+        XCTAssertEqual(plan.items.map(\.newName), ["0012.flac", "0015.flac"])
+        XCTAssertEqual(plan.readyCount, 2)
+        XCTAssertEqual(plan.blockedCount, 0)
+    }
+
     func testBuildRenamePlanReplacesTextAndPreservesExtension() throws {
         let sourceRoot = try makeTemporaryDirectory()
         try writeFile("Audio/old_song.wav", in: sourceRoot, contents: "audio")
