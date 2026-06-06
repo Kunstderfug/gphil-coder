@@ -58,15 +58,22 @@ struct FFmpegCapabilities {
 
 struct FFmpegLocator {
     static func locate(preference: FFmpegSourcePreference) -> URL? {
+        #if APP_STORE
+        return bundledFFmpegURL()
+        #else
         switch preference {
         case .bundled:
             return bundledFFmpegURL()
         case .system:
             return systemFFmpegURL()
         }
+        #endif
     }
 
     static func systemFFmpegURL() -> URL? {
+        #if APP_STORE
+        return nil
+        #else
         if let overridePath = ProcessInfo.processInfo.environment["GPHILCODER_FFMPEG"],
             !overridePath.isEmpty
         {
@@ -95,23 +102,31 @@ struct FFmpegLocator {
         }
 
         return nil
+        #endif
     }
 
     static func bundledFFmpegURL() -> URL? {
-        guard let resourceURL = Bundle.main.resourceURL else { return nil }
+        let executableDirectoryURL = Bundle.main.executableURL?.deletingLastPathComponent()
+        let resourceURL = Bundle.main.resourceURL
         let candidates = [
-            resourceURL.appendingPathComponent("ffmpeg"),
-            resourceURL.appendingPathComponent("bin/ffmpeg")
-        ]
+            executableDirectoryURL?.appendingPathComponent("ffmpeg"),
+            resourceURL?.appendingPathComponent("ffmpeg"),
+            resourceURL?.appendingPathComponent("bin/ffmpeg")
+        ].compactMap { $0 }
 
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0.path) }
     }
 
     static func isBundled(_ url: URL) -> Bool {
-        guard let resourceURL = Bundle.main.resourceURL else { return false }
-        let resourcePath = resourceURL.standardizedFileURL.resolvingSymlinksInPath().path
+        let bundleDirectories = [
+            Bundle.main.executableURL?.deletingLastPathComponent(),
+            Bundle.main.resourceURL
+        ].compactMap { $0 }
         let toolPath = url.standardizedFileURL.resolvingSymlinksInPath().path
-        return toolPath.hasPrefix(resourcePath + "/")
+        return bundleDirectories.contains {
+            let bundlePath = $0.standardizedFileURL.resolvingSymlinksInPath().path
+            return toolPath.hasPrefix(bundlePath + "/")
+        }
     }
 }
 

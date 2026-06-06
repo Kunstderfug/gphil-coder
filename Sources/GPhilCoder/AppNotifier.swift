@@ -6,14 +6,20 @@ import Foundation
 enum AppNotifier {
     private static let notificationDelegate = ForegroundNotificationDelegate()
 
-    static func configure() {
+    @discardableResult
+    static func configure() -> Bool {
+        guard canUseUserNotifications else { return false }
         UNUserNotificationCenter.current().delegate = notificationDelegate
+        return true
     }
 
     static func refreshAuthorization(
         completion: @escaping @MainActor (NotificationPermissionState) -> Void
     ) {
-        configure()
+        guard configure() else {
+            completion(.unknown)
+            return
+        }
         UNUserNotificationCenter.current().getNotificationSettings { settings in
             let state = NotificationPermissionState(settings.authorizationStatus)
             Task { @MainActor in
@@ -25,7 +31,10 @@ enum AppNotifier {
     static func requestAuthorization(
         completion: @escaping @MainActor (NotificationPermissionState, String?) -> Void
     ) {
-        configure()
+        guard configure() else {
+            completion(.unknown, "Notifications require the packaged app bundle.")
+            return
+        }
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) {
             _, error in
             UNUserNotificationCenter.current().getNotificationSettings { settings in
@@ -39,7 +48,7 @@ enum AppNotifier {
 
     static func notifyIfAppInactive(title: String, body: String) {
         guard !NSApplication.shared.isActive else { return }
-        configure()
+        guard configure() else { return }
 
         let center = UNUserNotificationCenter.current()
         center.getNotificationSettings { settings in
@@ -64,7 +73,10 @@ enum AppNotifier {
     }
 
     static func sendTestNotification(completion: @escaping @MainActor (String?) -> Void) {
-        configure()
+        guard configure() else {
+            completion("Notifications require the packaged app bundle.")
+            return
+        }
         let center = UNUserNotificationCenter.current()
         center.getNotificationSettings { settings in
             guard settings.authorizationStatus == .authorized
@@ -122,6 +134,10 @@ enum AppNotifier {
             at: settingsAppURL,
             configuration: NSWorkspace.OpenConfiguration()
         )
+    }
+
+    private static var canUseUserNotifications: Bool {
+        Bundle.main.bundleURL.pathExtension == "app"
     }
 }
 

@@ -44,6 +44,14 @@ enum FFmpegSourcePreference: String, CaseIterable, Identifiable {
     case bundled
     case system
 
+    static var selectableCases: [FFmpegSourcePreference] {
+        #if APP_STORE
+        [.bundled]
+        #else
+        allCases
+        #endif
+    }
+
     var id: String { rawValue }
 
     var title: String {
