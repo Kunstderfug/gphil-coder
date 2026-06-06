@@ -29,7 +29,7 @@ Native macOS batch audio encoder built with SwiftUI and FFmpeg.
 - macOS 14 or newer.
 - Xcode command line tools.
 - FFmpeg available at one of:
-  - bundled in the app at `Contents/Resources/ffmpeg`
+  - bundled in the app at `Contents/MacOS/ffmpeg`
   - `/opt/homebrew/bin/ffmpeg`
   - `/usr/local/bin/ffmpeg`
   - `ffmpeg` on `PATH`
@@ -89,6 +89,71 @@ The app bundle is written to:
 
 ```text
 dist/GPhilCoder.app
+```
+
+## Build for the Mac App Store
+
+App Store builds are macOS-only, sandboxed, and self-contained. The build script
+compiles with `APP_STORE`, disables the System FFmpeg option, embeds FFmpeg at
+`Contents/MacOS/ffmpeg`, signs that helper with sandbox inheritance, signs the
+app with sandbox plus user-selected read/write file access, and creates a
+signed `.pkg` for App Store Connect upload.
+
+Prerequisites:
+
+- A self-contained LGPL FFmpeg from `./scripts/build_lgpl_ffmpeg.sh`.
+- A Mac App Store app identifier matching `BUNDLE_IDENTIFIER`.
+- A Mac App Store distribution signing identity, shown by `security find-identity -v -p codesigning` as `3rd Party Mac Developer Application: Team Name (TEAMID)`.
+- A Mac installer distribution identity, usually shown by `security find-identity -v` as `3rd Party Mac Developer Installer: Team Name (TEAMID)`.
+- A Mac App Store provisioning profile for `com.gphil.coder` that contains the local app signing certificate.
+
+```sh
+./scripts/build_lgpl_ffmpeg.sh
+./scripts/upload_macos_app_store.sh --marketing-version 1.0
+```
+
+The upload script builds the app, auto-selects the next App Store Connect build
+number, embeds the matching provisioning profile, uploads the `.pkg`, checks the
+delivery status, and updates TestFlight release notes when a release-notes file
+exists.
+
+By default, release notes are read from:
+
+```text
+releases/build_<build-number>/testflight_release.md
+```
+
+You can pass a specific file:
+
+```sh
+./scripts/upload_macos_app_store.sh \
+  --marketing-version 1.0 \
+  --build-number 4 \
+  --release-notes releases/build_4/testflight_release.md
+```
+
+The signed upload package is written to:
+
+```text
+dist/GPhilCoder-AppStore.pkg
+```
+
+If you need to inspect the signed app before packaging, add `SKIP_PACKAGE=1`.
+If your App Store Connect/TestFlight setup requires a provisioning profile, pass
+`PROVISIONING_PROFILE=/path/to/profile.provisionprofile`; the script embeds it
+at `Contents/embedded.provisionprofile`.
+
+For a manual package-only build, call `scripts/build_app.sh` directly:
+
+```sh
+SIGNING_MODE=app-store \
+BUNDLE_IDENTIFIER=com.gphil.coder \
+MARKETING_VERSION=1.0 \
+BUILD_NUMBER=4 \
+PROVISIONING_PROFILE=/path/to/profile.provisionprofile \
+APP_SIGN_IDENTITY="3rd Party Mac Developer Application: Team Name (TEAMID)" \
+PKG_SIGN_IDENTITY="3rd Party Mac Developer Installer: Team Name (TEAMID)" \
+./scripts/build_app.sh
 ```
 
 ## Test Common Conversions

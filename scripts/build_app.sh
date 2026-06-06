@@ -15,6 +15,32 @@ ICONSET_DIR="$ROOT_DIR/.build/AppIcon.iconset"
 DEFAULT_BUNDLED_FFMPEG="$ROOT_DIR/vendor/ffmpeg-lgpl/prefix/bin/ffmpeg"
 BUNDLED_FFMPEG="${BUNDLED_FFMPEG:-$DEFAULT_BUNDLED_FFMPEG}"
 ALLOW_NON_LGPL_FFMPEG="${ALLOW_NON_LGPL_FFMPEG:-0}"
+BUNDLE_IDENTIFIER="${BUNDLE_IDENTIFIER:-com.gphil.coder}"
+MARKETING_VERSION="${MARKETING_VERSION:-0.1.0}"
+BUILD_NUMBER="${BUILD_NUMBER:-1}"
+APP_CATEGORY="${APP_CATEGORY:-public.app-category.music}"
+SIGNING_MODE="${SIGNING_MODE:-local}"
+APP_STORE_BUILD="${APP_STORE_BUILD:-0}"
+APP_ENTITLEMENTS="${APP_ENTITLEMENTS:-$ROOT_DIR/Packaging/GPhilCoder.entitlements}"
+HELPER_ENTITLEMENTS="${HELPER_ENTITLEMENTS:-$ROOT_DIR/Packaging/GPhilCoderFFmpeg.entitlements}"
+APP_SIGN_IDENTITY="${APP_SIGN_IDENTITY:-${CODE_SIGN_IDENTITY:-Apple Distribution}}"
+PKG_SIGN_IDENTITY="${PKG_SIGN_IDENTITY:-3rd Party Mac Developer Installer}"
+PROVISIONING_PROFILE="${PROVISIONING_PROFILE:-}"
+CODE_SIGN_TIMESTAMP="${CODE_SIGN_TIMESTAMP:-1}"
+SKIP_PACKAGE="${SKIP_PACKAGE:-0}"
+PKG_PATH="${PKG_PATH:-$DIST_DIR/$APP_NAME-AppStore.pkg}"
+
+case "$SIGNING_MODE" in
+  app-store)
+    APP_STORE_BUILD=1
+    ;;
+  local | none)
+    ;;
+  *)
+    echo "SIGNING_MODE must be one of: local, app-store, none" >&2
+    exit 1
+    ;;
+esac
 
 validate_lgpl_ffmpeg() {
   local ffmpeg_path="$1"
@@ -43,12 +69,134 @@ validate_lgpl_ffmpeg() {
   fi
 }
 
+validate_distribution_ffmpeg() {
+  local ffmpeg_path="$1"
+
+  validate_lgpl_ffmpeg "$ffmpeg_path"
+
+  if command -v otool >/dev/null 2>&1 && otool -L "$ffmpeg_path" | grep -E '/opt/homebrew|/usr/local' >/dev/null; then
+    if [[ "$APP_STORE_BUILD" == "1" ]]; then
+      echo "error: App Store builds require a self-contained FFmpeg binary." >&2
+      echo "The selected FFmpeg links to Homebrew/local libraries:" >&2
+      otool -L "$ffmpeg_path" >&2
+      exit 1
+    fi
+
+    echo "warning: bundled FFmpeg links to Homebrew libraries. Use a self-contained/static FFmpeg build for distribution." >&2
+  fi
+}
+
+sign_local_bundle() {
+  if ! command -v codesign >/dev/null 2>&1; then
+    echo "warning: codesign not found; app bundle was not signed." >&2
+    return
+  fi
+
+  if [[ -x "$MACOS_DIR/ffmpeg" ]]; then
+    codesign --force --sign - "$MACOS_DIR/ffmpeg"
+  fi
+  codesign --force --sign - "$APP_DIR"
+}
+
+sign_app_store_bundle() {
+  local codesign_options=(--options runtime)
+  local app_entitlements_for_signing="$APP_ENTITLEMENTS"
+
+  if [[ ! -f "$APP_ENTITLEMENTS" ]]; then
+    echo "App entitlement file not found: $APP_ENTITLEMENTS" >&2
+    exit 1
+  fi
+  if [[ ! -f "$HELPER_ENTITLEMENTS" ]]; then
+    echo "FFmpeg helper entitlement file not found: $HELPER_ENTITLEMENTS" >&2
+    exit 1
+  fi
+
+  if [[ "$CODE_SIGN_TIMESTAMP" == "1" ]]; then
+    codesign_options+=(--timestamp)
+  fi
+
+  if [[ -n "$PROVISIONING_PROFILE" ]]; then
+    if [[ ! -f "$PROVISIONING_PROFILE" ]]; then
+      echo "Provisioning profile not found: $PROVISIONING_PROFILE" >&2
+      exit 1
+    fi
+    cp "$PROVISIONING_PROFILE" "$CONTENTS_DIR/embedded.provisionprofile"
+    mkdir -p "$ROOT_DIR/.build/signing"
+    app_entitlements_for_signing="$ROOT_DIR/.build/signing/$APP_NAME.entitlements"
+    /usr/bin/python3 - "$APP_ENTITLEMENTS" "$PROVISIONING_PROFILE" "$app_entitlements_for_signing" <<'PY'
+import plistlib
+import subprocess
+import sys
+
+base_path, profile_path, output_path = sys.argv[1:4]
+with open(base_path, "rb") as handle:
+    entitlements = plistlib.load(handle)
+
+profile_plist = plistlib.loads(
+    subprocess.check_output(["security", "cms", "-D", "-i", profile_path])
+)
+profile_entitlements = profile_plist.get("Entitlements", {})
+for key in (
+    "com.apple.application-identifier",
+    "com.apple.developer.team-identifier",
+    "keychain-access-groups",
+):
+    if key in profile_entitlements:
+        entitlements[key] = profile_entitlements[key]
+
+with open(output_path, "wb") as handle:
+    plistlib.dump(entitlements, handle, fmt=plistlib.FMT_XML, sort_keys=True)
+PY
+  fi
+
+  if [[ -x "$MACOS_DIR/ffmpeg" ]]; then
+    codesign \
+      --force \
+      --sign "$APP_SIGN_IDENTITY" \
+      --identifier "$BUNDLE_IDENTIFIER.ffmpeg" \
+      --entitlements "$HELPER_ENTITLEMENTS" \
+      "${codesign_options[@]}" \
+      "$MACOS_DIR/ffmpeg"
+  fi
+
+  codesign \
+    --force \
+    --sign "$APP_SIGN_IDENTITY" \
+    --entitlements "$app_entitlements_for_signing" \
+    "${codesign_options[@]}" \
+    "$APP_DIR"
+
+  codesign --verify --strict --verbose=2 "$APP_DIR"
+
+  if [[ "$SKIP_PACKAGE" == "1" ]]; then
+    return
+  fi
+
+  rm -f "$PKG_PATH"
+  productbuild \
+    --component "$APP_DIR" /Applications \
+    --sign "$PKG_SIGN_IDENTITY" \
+    "$PKG_PATH"
+
+  pkgutil --check-signature "$PKG_PATH"
+}
+
 cd "$ROOT_DIR"
-swift build -c "$CONFIGURATION"
+
+swift_build_args=(swift build -c "$CONFIGURATION")
+if [[ "$APP_STORE_BUILD" == "1" ]]; then
+  swift_build_args+=(-Xswiftc -DAPP_STORE)
+fi
+"${swift_build_args[@]}"
 
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 cp "$BUILD_DIR/$APP_NAME" "$MACOS_DIR/$APP_NAME"
+
+if [[ "$APP_STORE_BUILD" == "1" && -z "$BUNDLED_FFMPEG" ]]; then
+  echo "App Store builds must bundle FFmpeg inside the app." >&2
+  exit 1
+fi
 
 if [[ -n "$BUNDLED_FFMPEG" ]]; then
   if [[ ! -x "$BUNDLED_FFMPEG" ]]; then
@@ -59,17 +207,13 @@ if [[ -n "$BUNDLED_FFMPEG" ]]; then
     exit 1
   fi
 
-  validate_lgpl_ffmpeg "$BUNDLED_FFMPEG"
+  validate_distribution_ffmpeg "$BUNDLED_FFMPEG"
 
-  cp "$BUNDLED_FFMPEG" "$RESOURCES_DIR/ffmpeg"
-  chmod 755 "$RESOURCES_DIR/ffmpeg"
+  cp "$BUNDLED_FFMPEG" "$MACOS_DIR/ffmpeg"
+  chmod 755 "$MACOS_DIR/ffmpeg"
 
-  if ! "$RESOURCES_DIR/ffmpeg" -hide_banner -encoders 2>/dev/null | grep -q 'libvorbis'; then
+  if ! "$MACOS_DIR/ffmpeg" -hide_banner -encoders 2>/dev/null | grep -q 'libvorbis'; then
     echo "warning: bundled FFmpeg does not report libvorbis; Ogg bitrate mode will remain unavailable." >&2
-  fi
-
-  if command -v otool >/dev/null 2>&1 && otool -L "$RESOURCES_DIR/ffmpeg" | grep -E '/opt/homebrew|/usr/local' >/dev/null; then
-    echo "warning: bundled FFmpeg links to Homebrew libraries. Use a self-contained/static FFmpeg build for distribution." >&2
   fi
 fi
 
@@ -99,7 +243,7 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
   <key>CFBundleExecutable</key>
   <string>$APP_NAME</string>
   <key>CFBundleIdentifier</key>
-  <string>com.gphil.coder</string>
+  <string>$BUNDLE_IDENTIFIER</string>
   <key>CFBundleName</key>
   <string>GPhilCoder</string>
   <key>CFBundleDisplayName</key>
@@ -109,21 +253,34 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.1.0</string>
+  <string>$MARKETING_VERSION</string>
   <key>CFBundleVersion</key>
-  <string>1</string>
+  <string>$BUILD_NUMBER</string>
+  <key>LSApplicationCategoryType</key>
+  <string>$APP_CATEGORY</string>
   <key>LSMinimumSystemVersion</key>
   <string>14.0</string>
   <key>NSHighResolutionCapable</key>
   <true/>
+  <key>ITSAppUsesNonExemptEncryption</key>
+  <false/>
 </dict>
 </plist>
 PLIST
 
-if command -v codesign >/dev/null 2>&1; then
-  codesign --force --deep --sign - "$APP_DIR"
-else
-  echo "warning: codesign not found; app bundle was not signed." >&2
-fi
+case "$SIGNING_MODE" in
+  app-store)
+    sign_app_store_bundle
+    ;;
+  local)
+    sign_local_bundle
+    ;;
+  none)
+    echo "warning: SIGNING_MODE=none; app bundle was not signed." >&2
+    ;;
+esac
 
 echo "Built $APP_DIR"
+if [[ "$SIGNING_MODE" == "app-store" && "$SKIP_PACKAGE" != "1" ]]; then
+  echo "Built $PKG_PATH"
+fi
