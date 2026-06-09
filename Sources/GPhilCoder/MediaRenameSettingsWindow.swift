@@ -79,11 +79,16 @@ private struct MediaRenameSettingsForm: View {
     private var operationControls: some View {
         switch model.mediaRenameOperation {
         case .pattern:
-            settingRow("Pattern") {
-                TextField("Pattern", text: $model.mediaRenamePattern)
-                    .textFieldStyle(.roundedBorder)
-                    .disabled(model.isMediaCopyBusy)
-                    .help("Use {name}, {index}, {parent}, and {date}")
+            VStack(alignment: .leading, spacing: 8) {
+                settingRow("Pattern") {
+                    TextField("Pattern", text: $model.mediaRenamePattern)
+                        .textFieldStyle(.roundedBorder)
+                        .disabled(model.isMediaCopyBusy)
+                        .help("Use {name}, {index}, {parent}, and {date}")
+                }
+
+                PatternVariableHelp()
+                    .padding(.leading, 104)
             }
         case .autoIndex:
             settingRow("Name") {
@@ -184,6 +189,39 @@ private struct MediaRenameSettingsForm: View {
             Text("\(value)")
                 .monospacedDigit()
                 .foregroundStyle(.primary)
+        }
+    }
+}
+
+private struct PatternVariableHelp: View {
+    private let variables: [(token: String, detail: String)] = [
+        ("{name}", "Original file name without extension"),
+        ("{index}", "Increasing number using Start, Step, and Digits"),
+        ("{parent}", "Containing folder name"),
+        ("{date}", "Modified date as yyyy-MM-dd")
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Available variables")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            VStack(alignment: .leading, spacing: 3) {
+                ForEach(variables, id: \.token) { variable in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(variable.token)
+                            .font(.caption.monospaced().weight(.semibold))
+                            .foregroundStyle(.primary)
+                            .frame(width: 58, alignment: .leading)
+
+                        Text(variable.detail)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
         }
     }
 }
