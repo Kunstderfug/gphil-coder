@@ -83,7 +83,7 @@ private struct MediaRenameSettingsForm: View {
                 TextField("Pattern", text: $model.mediaRenamePattern)
                     .textFieldStyle(.roundedBorder)
                     .disabled(model.isMediaCopyBusy)
-                    .help("Use {name}, {index}, and {parent}")
+                    .help("Use {name}, {index}, {parent}, and {date}")
             }
         case .autoIndex:
             settingRow("Name") {
@@ -110,7 +110,7 @@ private struct MediaRenameSettingsForm: View {
                 settingRow("Text") {
                     TextField("Text", text: $model.mediaRenameAddedText)
                         .textFieldStyle(.roundedBorder)
-                        .help("Use {name}, {index}, and {parent}")
+                        .help("Use {name}, {index}, {parent}, and {date}")
                 }
                 settingRow("Position") {
                     Picker("Position", selection: $model.mediaRenameTextPlacement) {

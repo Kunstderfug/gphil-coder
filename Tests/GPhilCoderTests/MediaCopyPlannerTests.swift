@@ -218,6 +218,29 @@ final class MediaCopyPlannerTests: XCTestCase {
         XCTAssertEqual(plan.blockedCount, 0)
     }
 
+    func testBuildRenamePlanAppliesModifiedDatePatternVariable() throws {
+        let sourceRoot = try makeTemporaryDirectory()
+        let fileURL = sourceRoot.appendingPathComponent("Audio/song.flac")
+        try writeFile("Audio/song.flac", in: sourceRoot, contents: "song")
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 1_710_421_200)],
+            ofItemAtPath: fileURL.path
+        )
+
+        let plan = try MediaCopyPlanner.buildRenamePlan(
+            sourceRoots: [sourceRoot],
+            filter: .audio,
+            selectedExtensions: ["flac"],
+            settings: MediaRenameSettings(
+                operation: .pattern,
+                pattern: "{date} - {name}"
+            )
+        )
+
+        XCTAssertEqual(plan.items.first?.newName, "2024-03-14 - song.flac")
+        XCTAssertEqual(plan.items.first?.state, .ready)
+    }
+
     func testBuildRenamePlanAutoIndexesFromUserStartIndex() throws {
         let sourceRoot = try makeTemporaryDirectory()
         try writeFile("Audio/song.flac", in: sourceRoot, contents: "song")

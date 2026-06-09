@@ -459,11 +459,13 @@ extension MediaCopyPlanner {
         let parentName = candidate.sourceURL.deletingLastPathComponent().lastPathComponent
         let index = settings.startIndex + (itemIndex * max(1, settings.indexStep))
         let indexText = paddedIndex(index, width: settings.indexPadding)
+        let dateText = formattedTemplateDate(candidate.modifiedDate)
         let proposedBaseName = sanitizedFileName(
             baseNameAfterRename(
                 baseName: baseName,
                 parentName: parentName,
                 indexText: indexText,
+                dateText: dateText,
                 settings: settings
             )
         )
@@ -507,6 +509,7 @@ extension MediaCopyPlanner {
         baseName: String,
         parentName: String,
         indexText: String,
+        dateText: String,
         settings: MediaRenameSettings
     ) -> String {
         switch settings.operation {
@@ -515,7 +518,8 @@ extension MediaCopyPlanner {
                 settings.pattern,
                 baseName: baseName,
                 parentName: parentName,
-                indexText: indexText
+                indexText: indexText,
+                dateText: dateText
             )
         case .autoIndex:
             return indexText
@@ -531,7 +535,8 @@ extension MediaCopyPlanner {
                 settings.addedText,
                 baseName: baseName,
                 parentName: parentName,
-                indexText: indexText
+                indexText: indexText,
+                dateText: dateText
             )
             switch settings.textPlacement {
             case .prefix:
@@ -557,12 +562,22 @@ extension MediaCopyPlanner {
         _ template: String,
         baseName: String,
         parentName: String,
-        indexText: String
+        indexText: String,
+        dateText: String
     ) -> String {
         template
             .replacingOccurrences(of: "{name}", with: baseName)
             .replacingOccurrences(of: "{index}", with: indexText)
             .replacingOccurrences(of: "{parent}", with: parentName)
+            .replacingOccurrences(of: "{date}", with: dateText)
+    }
+
+    private static func formattedTemplateDate(_ date: Date?) -> String {
+        guard let date else { return "" }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: date)
     }
 
     private static func replaceText(
