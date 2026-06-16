@@ -194,48 +194,52 @@ public struct MediaRenamePlan: Sendable {
     public let sourceRoots: [URL]
     public let filter: MediaFileFilter
     public let selectedExtensions: Set<String>?
+    public let fileNameFilter: MediaFileNameFilter
     public let settings: MediaRenameSettings
     public let items: [MediaRenameItem]
+    public let itemCount: Int
+    public let totalSizeBytes: Int64
+    public let readyCount: Int
+    public let blockedCount: Int
+    public let unchangedCount: Int
     public let scannedAt: Date
 
     public init(
         sourceRoots: [URL],
         filter: MediaFileFilter,
         selectedExtensions: Set<String>?,
+        fileNameFilter: MediaFileNameFilter = MediaFileNameFilter(),
         settings: MediaRenameSettings,
         items: [MediaRenameItem],
+        itemCount: Int? = nil,
+        totalSizeBytes: Int64? = nil,
+        readyCount: Int? = nil,
+        blockedCount: Int? = nil,
+        unchangedCount: Int? = nil,
         scannedAt: Date
     ) {
         self.sourceRoots = sourceRoots
         self.filter = filter
         self.selectedExtensions = selectedExtensions
+        self.fileNameFilter = fileNameFilter
         self.settings = settings
         self.items = items
+        self.itemCount = itemCount ?? items.count
+        self.totalSizeBytes = totalSizeBytes ?? items.reduce(0) { $0 + $1.fileSizeBytes }
+        self.readyCount = readyCount ?? items.filter { $0.state == .ready }.count
+        self.blockedCount =
+            blockedCount
+            ?? items.filter { $0.state == .duplicate || $0.state == .conflict || $0.state == .invalid }.count
+        self.unchangedCount = unchangedCount ?? items.filter { $0.state == .unchanged }.count
         self.scannedAt = scannedAt
-    }
-
-    public var totalSizeBytes: Int64 {
-        items.reduce(0) { $0 + $1.fileSizeBytes }
     }
 
     public var readyItems: [MediaRenameItem] {
         items.filter { $0.state == .ready }
     }
 
-    public var readyCount: Int {
-        readyItems.count
-    }
-
-    public var blockedCount: Int {
-        items.filter { $0.state == .duplicate || $0.state == .conflict || $0.state == .invalid }.count
-    }
-
-    public var unchangedCount: Int {
-        items.filter { $0.state == .unchanged }.count
-    }
-
     public var hasRenameContent: Bool {
-        !items.isEmpty
+        itemCount > 0
     }
 }
 
@@ -244,6 +248,8 @@ extension MediaCopyPlanner {
         sourceRoots: [URL],
         filter: MediaFileFilter,
         selectedExtensions: Set<String>?,
+        fileNameFilter: MediaFileNameFilter = MediaFileNameFilter(),
+        itemLimit: Int? = nil,
         settings: MediaRenameSettings
     ) throws -> MediaRenamePlan {
         let inventory = try MediaCopyPlanner.scanFileInventory(sourceRoots: sourceRoots)
@@ -251,6 +257,8 @@ extension MediaCopyPlanner {
             sourceRoots: sourceRoots,
             filter: filter,
             selectedExtensions: selectedExtensions,
+            fileNameFilter: fileNameFilter,
+            itemLimit: itemLimit,
             settings: settings,
             inventory: inventory
         )
@@ -260,6 +268,8 @@ extension MediaCopyPlanner {
         sourceRoots: [URL],
         filter: MediaFileFilter,
         selectedExtensions: Set<String>?,
+        fileNameFilter: MediaFileNameFilter = MediaFileNameFilter(),
+        itemLimit: Int? = nil,
         settings: MediaRenameSettings,
         inventory: [MediaFileInventoryRecord]
     ) -> MediaRenamePlan {
@@ -267,7 +277,8 @@ extension MediaCopyPlanner {
         let allKnownTargetKeys = Set(inventory.map { $0.sourceURL.standardizedFileURL.path.lowercased() })
         let candidates = inventory.compactMap { record -> RenameScanCandidate? in
             guard sourceRootKeys.contains(record.sourceRoot.standardizedFileURL.path),
-                filter.matches(record.sourceURL, selectedExtensions: selectedExtensions)
+                filter.matches(record.sourceURL, selectedExtensions: selectedExtensions),
+                fileNameFilter.matches(normalizedFileName: record.normalizedFileName)
             else {
                 return nil
             }
@@ -285,13 +296,20 @@ extension MediaCopyPlanner {
             settings: settings,
             knownTargetKeys: allKnownTargetKeys
         )
+        let visibleItems = itemLimit.map { Array(items.prefix($0)) } ?? items
 
         return MediaRenamePlan(
             sourceRoots: sourceRoots,
             filter: filter,
             selectedExtensions: selectedExtensions,
+            fileNameFilter: fileNameFilter,
             settings: settings,
-            items: items,
+            items: visibleItems,
+            itemCount: items.count,
+            totalSizeBytes: items.reduce(0) { $0 + $1.fileSizeBytes },
+            readyCount: items.filter { $0.state == .ready }.count,
+            blockedCount: items.filter { $0.state == .duplicate || $0.state == .conflict || $0.state == .invalid }.count,
+            unchangedCount: items.filter { $0.state == .unchanged }.count,
             scannedAt: Date()
         )
     }

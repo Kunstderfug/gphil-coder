@@ -96,6 +96,46 @@ public enum MediaFileFilter: String, CaseIterable, Codable, Identifiable, Sendab
     }
 }
 
+public struct MediaFileNameFilter: Codable, Hashable, Sendable {
+    public var query: String
+
+    public init(query: String = "") {
+        self.query = query
+    }
+
+    public var trimmedQuery: String {
+        query.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    public var isActive: Bool {
+        !trimmedQuery.isEmpty
+    }
+
+    public func matches(_ url: URL) -> Bool {
+        matches(fileName: url.lastPathComponent)
+    }
+
+    public func matches(fileName: String) -> Bool {
+        let query = normalizedQuery
+        guard !query.isEmpty else { return true }
+        return Self.normalizedFileName(fileName).contains(query)
+    }
+
+    public func matches(normalizedFileName: String) -> Bool {
+        let query = normalizedQuery
+        guard !query.isEmpty else { return true }
+        return normalizedFileName.contains(query)
+    }
+
+    public var normalizedQuery: String {
+        Self.normalizedFileName(trimmedQuery)
+    }
+
+    public static func normalizedFileName(_ value: String) -> String {
+        value.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+    }
+}
+
 public enum MediaCopyConflictResolution: Sendable {
     case skipExisting
     case replaceExisting
@@ -177,6 +217,7 @@ public struct MediaFileInventoryRecord: Identifiable, Hashable, Sendable {
     public let sourceURL: URL
     public let sourceRoot: URL
     public let relativePath: String
+    public let normalizedFileName: String
     public let fileSizeBytes: Int64
     public let modifiedDate: Date?
 
@@ -185,6 +226,7 @@ public struct MediaFileInventoryRecord: Identifiable, Hashable, Sendable {
         sourceURL: URL,
         sourceRoot: URL,
         relativePath: String,
+        normalizedFileName: String? = nil,
         fileSizeBytes: Int64,
         modifiedDate: Date?
     ) {
@@ -192,6 +234,8 @@ public struct MediaFileInventoryRecord: Identifiable, Hashable, Sendable {
         self.sourceURL = sourceURL
         self.sourceRoot = sourceRoot
         self.relativePath = relativePath
+        self.normalizedFileName =
+            normalizedFileName ?? MediaFileNameFilter.normalizedFileName(sourceURL.lastPathComponent)
         self.fileSizeBytes = fileSizeBytes
         self.modifiedDate = modifiedDate
     }
@@ -211,8 +255,12 @@ public struct MediaCopyPlan: Sendable {
     public let destinationRoot: URL
     public let filter: MediaFileFilter
     public let selectedExtensions: Set<String>?
+    public let fileNameFilter: MediaFileNameFilter
     public let candidates: [MediaCopyCandidate]
     public let relativeDirectories: [String]
+    public let candidateCount: Int
+    public let totalSizeBytes: Int64
+    public let conflictCount: Int
     public let scannedAt: Date
 
     public init(
@@ -220,33 +268,33 @@ public struct MediaCopyPlan: Sendable {
         destinationRoot: URL,
         filter: MediaFileFilter,
         selectedExtensions: Set<String>? = nil,
+        fileNameFilter: MediaFileNameFilter = MediaFileNameFilter(),
         candidates: [MediaCopyCandidate],
         relativeDirectories: [String] = [],
+        candidateCount: Int? = nil,
+        totalSizeBytes: Int64? = nil,
+        conflictCount: Int? = nil,
         scannedAt: Date
     ) {
         self.sourceRoot = sourceRoot
         self.destinationRoot = destinationRoot
         self.filter = filter
         self.selectedExtensions = selectedExtensions
+        self.fileNameFilter = fileNameFilter
         self.candidates = candidates
         self.relativeDirectories = relativeDirectories
+        self.candidateCount = candidateCount ?? candidates.count
+        self.totalSizeBytes = totalSizeBytes ?? candidates.reduce(0) { $0 + $1.fileSizeBytes }
+        self.conflictCount = conflictCount ?? candidates.filter(\.hasDestinationConflict).count
         self.scannedAt = scannedAt
     }
 
     public var hasCopyableContent: Bool {
-        !candidates.isEmpty || !relativeDirectories.isEmpty
-    }
-
-    public var totalSizeBytes: Int64 {
-        candidates.reduce(0) { $0 + $1.fileSizeBytes }
-    }
-
-    public var conflictCount: Int {
-        candidates.filter(\.hasDestinationConflict).count
+        candidateCount > 0 || !relativeDirectories.isEmpty
     }
 
     public var copyableWithoutOverwriteCount: Int {
-        candidates.count - conflictCount
+        candidateCount - conflictCount
     }
 
     public var directoryCount: Int {
@@ -258,29 +306,34 @@ public struct MediaDeletePlan: Sendable {
     public let sourceRoots: [URL]
     public let filter: MediaFileFilter
     public let selectedExtensions: Set<String>
+    public let fileNameFilter: MediaFileNameFilter
     public let candidates: [MediaDeleteCandidate]
+    public let candidateCount: Int
+    public let totalSizeBytes: Int64
     public let scannedAt: Date
 
     public init(
         sourceRoots: [URL],
         filter: MediaFileFilter,
         selectedExtensions: Set<String>,
+        fileNameFilter: MediaFileNameFilter = MediaFileNameFilter(),
         candidates: [MediaDeleteCandidate],
+        candidateCount: Int? = nil,
+        totalSizeBytes: Int64? = nil,
         scannedAt: Date
     ) {
         self.sourceRoots = sourceRoots
         self.filter = filter
         self.selectedExtensions = selectedExtensions
+        self.fileNameFilter = fileNameFilter
         self.candidates = candidates
+        self.candidateCount = candidateCount ?? candidates.count
+        self.totalSizeBytes = totalSizeBytes ?? candidates.reduce(0) { $0 + $1.fileSizeBytes }
         self.scannedAt = scannedAt
     }
 
     public var hasDeletableContent: Bool {
-        !candidates.isEmpty
-    }
-
-    public var totalSizeBytes: Int64 {
-        candidates.reduce(0) { $0 + $1.fileSizeBytes }
+        candidateCount > 0
     }
 }
 
@@ -367,11 +420,22 @@ public struct MediaCopyResult: Sendable {
 }
 
 public struct MediaCopyWorkflow: Codable, Hashable, Identifiable, Sendable {
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case sourceRoot
+        case destinationRoot
+        case filter
+        case selectedExtensions
+        case fileNameFilter
+        case createdAt
+    }
+
     public let id: UUID
     public var sourceRoot: URL
     public var destinationRoot: URL
     public var filter: MediaFileFilter
     public var selectedExtensions: Set<String>?
+    public var fileNameFilter: MediaFileNameFilter
     public var createdAt: Date
 
     public init(
@@ -380,6 +444,7 @@ public struct MediaCopyWorkflow: Codable, Hashable, Identifiable, Sendable {
         destinationRoot: URL,
         filter: MediaFileFilter,
         selectedExtensions: Set<String>? = nil,
+        fileNameFilter: MediaFileNameFilter = MediaFileNameFilter(),
         createdAt: Date = Date()
     ) {
         self.id = id
@@ -387,7 +452,21 @@ public struct MediaCopyWorkflow: Codable, Hashable, Identifiable, Sendable {
         self.destinationRoot = destinationRoot
         self.filter = filter
         self.selectedExtensions = selectedExtensions
+        self.fileNameFilter = fileNameFilter
         self.createdAt = createdAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        sourceRoot = try container.decode(URL.self, forKey: .sourceRoot)
+        destinationRoot = try container.decode(URL.self, forKey: .destinationRoot)
+        filter = try container.decode(MediaFileFilter.self, forKey: .filter)
+        selectedExtensions = try container.decodeIfPresent(Set<String>.self, forKey: .selectedExtensions)
+        fileNameFilter =
+            try container.decodeIfPresent(MediaFileNameFilter.self, forKey: .fileNameFilter)
+            ?? MediaFileNameFilter()
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
     }
 
     public var destinationRootPreservingSourceFolder: URL {
@@ -461,6 +540,9 @@ public enum MediaCopyPlanner {
                         sourceURL: sourceURL,
                         sourceRoot: sourceRoot,
                         relativePath: relativeComponents.joined(separator: "/"),
+                        normalizedFileName: MediaFileNameFilter.normalizedFileName(
+                            sourceURL.lastPathComponent
+                        ),
                         fileSizeBytes: values?.fileSize.map(Int64.init) ?? 0,
                         modifiedDate: values?.contentModificationDate
                     )
@@ -478,13 +560,17 @@ public enum MediaCopyPlanner {
     public static func buildDeletePlan(
         sourceRoots: [URL],
         filter: MediaFileFilter,
-        selectedExtensions: Set<String>
+        selectedExtensions: Set<String>,
+        fileNameFilter: MediaFileNameFilter = MediaFileNameFilter(),
+        candidateLimit: Int? = nil
     ) throws -> MediaDeletePlan {
         let inventory = try scanFileInventory(sourceRoots: sourceRoots)
         return buildDeletePlan(
             sourceRoots: sourceRoots,
             filter: filter,
             selectedExtensions: selectedExtensions,
+            fileNameFilter: fileNameFilter,
+            candidateLimit: candidateLimit,
             inventory: inventory
         )
     }
@@ -493,29 +579,42 @@ public enum MediaCopyPlanner {
         sourceRoots: [URL],
         filter: MediaFileFilter,
         selectedExtensions: Set<String>,
+        fileNameFilter: MediaFileNameFilter = MediaFileNameFilter(),
+        candidateLimit: Int? = nil,
         inventory: [MediaFileInventoryRecord]
     ) -> MediaDeletePlan {
         let sourceRootKeys = Set(sourceRoots.map { $0.standardizedFileURL.path })
-        let candidates = inventory
-            .filter {
-                sourceRootKeys.contains($0.sourceRoot.standardizedFileURL.path)
-                    && filter.matches($0.sourceURL, selectedExtensions: selectedExtensions)
-            }
-            .map {
-                MediaDeleteCandidate(
-                    id: $0.id,
-                    sourceURL: $0.sourceURL,
-                    sourceRoot: $0.sourceRoot,
-                    relativePath: $0.relativePath,
-                    fileSizeBytes: $0.fileSizeBytes
+        var candidates: [MediaDeleteCandidate] = []
+        var candidateCount = 0
+        var totalSizeBytes: Int64 = 0
+
+        for record in inventory where sourceRootKeys.contains(record.sourceRoot.standardizedFileURL.path)
+            && filter.matches(record.sourceURL, selectedExtensions: selectedExtensions)
+            && fileNameFilter.matches(normalizedFileName: record.normalizedFileName)
+        {
+            candidateCount += 1
+            totalSizeBytes += record.fileSizeBytes
+            if candidateLimit.map({ candidates.count < $0 }) ?? true {
+                candidates.append(
+                    MediaDeleteCandidate(
+                        id: record.id,
+                        sourceURL: record.sourceURL,
+                        sourceRoot: record.sourceRoot,
+                        relativePath: record.relativePath,
+                        fileSizeBytes: record.fileSizeBytes
+                    )
                 )
             }
+        }
 
         return MediaDeletePlan(
             sourceRoots: sourceRoots,
             filter: filter,
             selectedExtensions: selectedExtensions,
+            fileNameFilter: fileNameFilter,
             candidates: candidates,
+            candidateCount: candidateCount,
+            totalSizeBytes: totalSizeBytes,
             scannedAt: Date()
         )
     }
@@ -524,10 +623,15 @@ public enum MediaCopyPlanner {
         sourceRoot: URL,
         destinationRoot: URL,
         filter: MediaFileFilter,
-        selectedExtensions: Set<String>? = nil
+        selectedExtensions: Set<String>? = nil,
+        fileNameFilter: MediaFileNameFilter = MediaFileNameFilter(),
+        candidateLimit: Int? = nil
     ) throws -> MediaCopyPlan {
         var candidates: [MediaCopyCandidate] = []
         var relativeDirectories: [String] = []
+        var candidateCount = 0
+        var totalSizeBytes: Int64 = 0
+        var conflictCount = 0
         let fileManager = FileManager.default
         let keys: [URLResourceKey] = [.isDirectoryKey, .isRegularFileKey, .fileSizeKey]
 
@@ -546,7 +650,7 @@ public enum MediaCopyPlanner {
 
             let values = try? sourceURL.resourceValues(forKeys: Set(keys))
 
-            if filter == .all, values?.isDirectory == true,
+            if filter == .all, !fileNameFilter.isActive, values?.isDirectory == true,
                 let relativeComponents = relativePathComponents(
                     for: sourceURL,
                     sourceRoot: sourceRoot
@@ -557,7 +661,8 @@ public enum MediaCopyPlanner {
             }
 
             guard values?.isRegularFile == true,
-                filter.matches(sourceURL, selectedExtensions: selectedExtensions)
+                filter.matches(sourceURL, selectedExtensions: selectedExtensions),
+                fileNameFilter.matches(fileName: sourceURL.lastPathComponent)
             else {
                 continue
             }
@@ -576,16 +681,24 @@ public enum MediaCopyPlanner {
             let relativePath = relativeComponents.joined(separator: "/")
             let destinationConflict = fileManager.fileExists(atPath: destinationURL.path)
 
-            candidates.append(
-                MediaCopyCandidate(
-                    id: sourceURL.standardizedFileURL.path,
-                    sourceURL: sourceURL,
-                    destinationURL: destinationURL,
-                    relativePath: relativePath,
-                    fileSizeBytes: values?.fileSize.map(Int64.init) ?? 0,
-                    hasDestinationConflict: destinationConflict
+            candidateCount += 1
+            totalSizeBytes += values?.fileSize.map(Int64.init) ?? 0
+            if destinationConflict {
+                conflictCount += 1
+            }
+
+            if candidateLimit.map({ candidates.count < $0 }) ?? true {
+                candidates.append(
+                    MediaCopyCandidate(
+                        id: sourceURL.standardizedFileURL.path,
+                        sourceURL: sourceURL,
+                        destinationURL: destinationURL,
+                        relativePath: relativePath,
+                        fileSizeBytes: values?.fileSize.map(Int64.init) ?? 0,
+                        hasDestinationConflict: destinationConflict
+                    )
                 )
-            )
+            }
         }
 
         candidates.sort {
@@ -600,8 +713,12 @@ public enum MediaCopyPlanner {
             destinationRoot: destinationRoot,
             filter: filter,
             selectedExtensions: selectedExtensions,
+            fileNameFilter: fileNameFilter,
             candidates: candidates,
             relativeDirectories: relativeDirectories,
+            candidateCount: candidateCount,
+            totalSizeBytes: totalSizeBytes,
+            conflictCount: conflictCount,
             scannedAt: Date()
         )
     }

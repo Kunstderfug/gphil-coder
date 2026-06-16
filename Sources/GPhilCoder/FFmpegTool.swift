@@ -32,6 +32,7 @@ enum FFmpegToolError: LocalizedError {
 
 struct FFmpegCapabilities {
     var hasLibVorbis = false
+    var hasHEVCVideoToolbox = false
 
     static func detect(ffmpegURL: URL) -> FFmpegCapabilities {
         let process = Process()
@@ -52,7 +53,10 @@ struct FFmpegCapabilities {
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         let output = String(data: data, encoding: .utf8) ?? ""
 
-        return FFmpegCapabilities(hasLibVorbis: output.contains("libvorbis"))
+        return FFmpegCapabilities(
+            hasLibVorbis: output.contains("libvorbis"),
+            hasHEVCVideoToolbox: output.contains("hevc_videotoolbox")
+        )
     }
 }
 
@@ -134,6 +138,10 @@ struct FFmpegEncoder {
     let ffmpegURL: URL
 
     func encode(input: URL, output: URL, settings: EncodingSettingsSnapshot) async throws -> String {
+        if settings.encodingWorkflow == .video {
+            return try await encodeVideo(input: input, output: output, settings: settings)
+        }
+
         try FileManager.default.createDirectory(
             at: output.deletingLastPathComponent(),
             withIntermediateDirectories: true
@@ -193,6 +201,74 @@ struct FFmpegEncoder {
         arguments.append(output.path)
 
         return try await ProcessRunner.run(executableURL: ffmpegURL, arguments: arguments)
+    }
+
+    private func encodeVideo(
+        input: URL,
+        output: URL,
+        settings: EncodingSettingsSnapshot
+    ) async throws -> String {
+        try FileManager.default.createDirectory(
+            at: output.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+
+        let inputPath = input.standardizedFileURL.resolvingSymlinksInPath().path
+        let outputPath = output.standardizedFileURL.resolvingSymlinksInPath().path
+        if inputPath == outputPath {
+            throw FFmpegToolError.outputWouldOverwriteInput
+        }
+
+        if FileManager.default.fileExists(atPath: output.path), !settings.overwriteExisting {
+            throw EncodeSkipError.outputExists
+        }
+
+        var arguments = [
+            "-hide_banner",
+            "-nostdin",
+            settings.overwriteExisting ? "-y" : "-n",
+            "-i", input.path,
+            "-map", "0:v:0",
+            "-map", "0:a?"
+        ]
+
+        arguments.append(contentsOf: videoCodecArguments(for: settings))
+
+        switch settings.videoAudioMode {
+        case .copy:
+            arguments.append(contentsOf: ["-c:a", "copy"])
+        case .aac192:
+            arguments.append(contentsOf: ["-c:a", "aac", "-b:a", "192k"])
+        case .aac320:
+            arguments.append(contentsOf: ["-c:a", "aac", "-b:a", "320k"])
+        }
+
+        if settings.ffmpegThreads > 0 {
+            arguments.append(contentsOf: ["-threads", "\(settings.ffmpegThreads)"])
+        }
+
+        arguments.append(output.path)
+
+        return try await ProcessRunner.run(executableURL: ffmpegURL, arguments: arguments)
+    }
+
+    private func videoCodecArguments(for settings: EncodingSettingsSnapshot) -> [String] {
+        var arguments = [
+            "-c:v", "hevc_videotoolbox",
+            "-b:v", "\(settings.videoBitrateKbps)k",
+            "-maxrate", "\(settings.videoBitrateKbps)k",
+            "-bufsize", "\(settings.videoBitrateKbps * 2)k",
+            "-tag:v", "hvc1",
+            "-allow_sw", "0"
+        ]
+
+        if settings.hevcPreset.bitDepth == 10 {
+            arguments.append(contentsOf: ["-pix_fmt", "p010le", "-profile:v", "main10"])
+        } else {
+            arguments.append(contentsOf: ["-pix_fmt", "yuv420p"])
+        }
+
+        return arguments
     }
 
     private func encodeSplitMultichannel(

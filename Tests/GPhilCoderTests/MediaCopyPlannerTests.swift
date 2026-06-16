@@ -141,6 +141,45 @@ final class MediaCopyPlannerTests: XCTestCase {
         XCTAssertTrue(emptySelectionPlan.candidates.isEmpty)
     }
 
+    func testBuildPlanFiltersByFileNameText() throws {
+        let sourceRoot = try makeTemporaryDirectory()
+        let destinationRoot = try makeTemporaryDirectory()
+        try writeFile("Audio/camera_001.wav", in: sourceRoot, contents: "one")
+        try writeFile("Audio/camera_002.wav", in: sourceRoot, contents: "two")
+        try writeFile("Audio/roomtone.wav", in: sourceRoot, contents: "tone")
+
+        let plan = try MediaCopyPlanner.buildPlan(
+            sourceRoot: sourceRoot,
+            destinationRoot: destinationRoot,
+            filter: .audio,
+            selectedExtensions: ["wav"],
+            fileNameFilter: MediaFileNameFilter(query: "CAMERA_")
+        )
+
+        XCTAssertEqual(plan.candidates.map(\.relativePath), ["Audio/camera_001.wav", "Audio/camera_002.wav"])
+    }
+
+    func testBuildPlanCanLimitPreviewCandidatesWhileKeepingTotals() throws {
+        let sourceRoot = try makeTemporaryDirectory()
+        let destinationRoot = try makeTemporaryDirectory()
+        try writeFile("Audio/take_001.wav", in: sourceRoot, contents: "one")
+        try writeFile("Audio/take_002.wav", in: sourceRoot, contents: "two")
+        try writeFile("Audio/take_003.wav", in: sourceRoot, contents: "three")
+
+        let plan = try MediaCopyPlanner.buildPlan(
+            sourceRoot: sourceRoot,
+            destinationRoot: destinationRoot,
+            filter: .audio,
+            selectedExtensions: ["wav"],
+            candidateLimit: 2
+        )
+
+        XCTAssertEqual(plan.candidateCount, 3)
+        XCTAssertEqual(plan.candidates.count, 2)
+        XCTAssertTrue(plan.candidates.allSatisfy { $0.relativePath.hasPrefix("Audio/take_") })
+        XCTAssertEqual(plan.totalSizeBytes, Int64("onetwothree".utf8.count))
+    }
+
     func testBuildDeletePlanUsesSourceOnlyExtensionFilter() throws {
         let firstRoot = try makeTemporaryDirectory()
         let secondRoot = try makeTemporaryDirectory()
@@ -193,6 +232,58 @@ final class MediaCopyPlannerTests: XCTestCase {
         XCTAssertEqual(renamePlan.items.map(\.newName), ["voice.wav"])
     }
 
+    func testBuildDeletePlanAllFilesIncludesNonMediaFiles() throws {
+        let sourceRoot = try makeTemporaryDirectory()
+        try writeFile("Audio/song.flac", in: sourceRoot, contents: "song")
+        try writeFile("Docs/readme.txt", in: sourceRoot, contents: "notes")
+        try writeFile("Images/cover.jpg", in: sourceRoot, contents: "image")
+
+        let plan = try MediaCopyPlanner.buildDeletePlan(
+            sourceRoots: [sourceRoot],
+            filter: .all,
+            selectedExtensions: []
+        )
+
+        XCTAssertEqual(
+            plan.candidates.map(\.relativePath),
+            ["Audio/song.flac", "Docs/readme.txt", "Images/cover.jpg"]
+        )
+    }
+
+    func testBuildDeletePlanFiltersByFileNameText() throws {
+        let sourceRoot = try makeTemporaryDirectory()
+        try writeFile("Batch/take_001.txt", in: sourceRoot, contents: "one")
+        try writeFile("Batch/take_002.txt", in: sourceRoot, contents: "two")
+        try writeFile("Batch/notes.txt", in: sourceRoot, contents: "notes")
+
+        let plan = try MediaCopyPlanner.buildDeletePlan(
+            sourceRoots: [sourceRoot],
+            filter: .all,
+            selectedExtensions: [],
+            fileNameFilter: MediaFileNameFilter(query: "take_")
+        )
+
+        XCTAssertEqual(plan.candidates.map(\.relativePath), ["Batch/take_001.txt", "Batch/take_002.txt"])
+    }
+
+    func testBuildDeletePlanCanLimitPreviewCandidatesWhileKeepingTotals() throws {
+        let sourceRoot = try makeTemporaryDirectory()
+        try writeFile("Batch/take_001.txt", in: sourceRoot, contents: "one")
+        try writeFile("Batch/take_002.txt", in: sourceRoot, contents: "two")
+        try writeFile("Batch/take_003.txt", in: sourceRoot, contents: "three")
+
+        let plan = try MediaCopyPlanner.buildDeletePlan(
+            sourceRoots: [sourceRoot],
+            filter: .all,
+            selectedExtensions: [],
+            candidateLimit: 2
+        )
+
+        XCTAssertEqual(plan.candidateCount, 3)
+        XCTAssertEqual(plan.candidates.map(\.relativePath), ["Batch/take_001.txt", "Batch/take_002.txt"])
+        XCTAssertEqual(plan.totalSizeBytes, Int64("onetwothree".utf8.count))
+    }
+
     func testBuildRenamePlanAppliesPatternAndIndexToSelectedExtensions() throws {
         let sourceRoot = try makeTemporaryDirectory()
         try writeFile("Audio/song.flac", in: sourceRoot, contents: "song")
@@ -216,6 +307,52 @@ final class MediaCopyPlannerTests: XCTestCase {
         XCTAssertEqual(plan.items.map(\.newName), ["Track 01 - dialogue.flac", "Track 02 - song.flac"])
         XCTAssertEqual(plan.readyCount, 2)
         XCTAssertEqual(plan.blockedCount, 0)
+    }
+
+    func testBuildRenamePlanFiltersByFileNameText() throws {
+        let sourceRoot = try makeTemporaryDirectory()
+        try writeFile("Audio/camera_001.wav", in: sourceRoot, contents: "one")
+        try writeFile("Audio/camera_002.wav", in: sourceRoot, contents: "two")
+        try writeFile("Audio/roomtone.wav", in: sourceRoot, contents: "tone")
+
+        let plan = try MediaCopyPlanner.buildRenamePlan(
+            sourceRoots: [sourceRoot],
+            filter: .audio,
+            selectedExtensions: ["wav"],
+            fileNameFilter: MediaFileNameFilter(query: "camera_"),
+            settings: MediaRenameSettings(
+                operation: .autoIndex,
+                startIndex: 1,
+                indexPadding: 2
+            )
+        )
+
+        XCTAssertEqual(plan.items.map(\.originalName), ["camera_001.wav", "camera_002.wav"])
+        XCTAssertEqual(plan.items.map(\.newName), ["01.wav", "02.wav"])
+    }
+
+    func testBuildRenamePlanCanLimitPreviewItemsWhileKeepingCounts() throws {
+        let sourceRoot = try makeTemporaryDirectory()
+        try writeFile("Audio/take_001.wav", in: sourceRoot, contents: "one")
+        try writeFile("Audio/take_002.wav", in: sourceRoot, contents: "two")
+        try writeFile("Audio/take_003.wav", in: sourceRoot, contents: "three")
+
+        let plan = try MediaCopyPlanner.buildRenamePlan(
+            sourceRoots: [sourceRoot],
+            filter: .audio,
+            selectedExtensions: ["wav"],
+            itemLimit: 2,
+            settings: MediaRenameSettings(
+                operation: .autoIndex,
+                startIndex: 1,
+                indexPadding: 2
+            )
+        )
+
+        XCTAssertEqual(plan.itemCount, 3)
+        XCTAssertEqual(plan.items.map(\.originalName), ["take_001.wav", "take_002.wav"])
+        XCTAssertEqual(plan.readyCount, 3)
+        XCTAssertEqual(plan.totalSizeBytes, Int64("onetwothree".utf8.count))
     }
 
     func testBuildRenamePlanAppliesModifiedDatePatternVariable() throws {
@@ -438,6 +575,7 @@ final class MediaCopyPlannerTests: XCTestCase {
             destinationRoot: destinationRoot,
             filter: .all,
             selectedExtensions: nil,
+            fileNameFilter: MediaFileNameFilter(query: "take_"),
             createdAt: Date(timeIntervalSince1970: 1_800_000_000)
         )
         let document = MediaCopyJobDocument(
@@ -459,6 +597,7 @@ final class MediaCopyPlannerTests: XCTestCase {
         XCTAssertEqual(decoded.workflows.first?.destinationRoot, destinationRoot)
         XCTAssertEqual(decoded.workflows.first?.filter, .all)
         XCTAssertNil(decoded.workflows.first?.selectedExtensions)
+        XCTAssertEqual(decoded.workflows.first?.fileNameFilter, MediaFileNameFilter(query: "take_"))
     }
 
     func testMediaCopyJobDocumentRoundTripsSelectedExtensions() throws {
@@ -509,6 +648,7 @@ final class MediaCopyPlannerTests: XCTestCase {
 
         XCTAssertEqual(decoded.workflows.first?.filter, .audio)
         XCTAssertNil(decoded.workflows.first?.selectedExtensions)
+        XCTAssertEqual(decoded.workflows.first?.fileNameFilter, MediaFileNameFilter())
     }
 
     func testQueuedWorkflowDestinationPreservesSourceFolderName() {

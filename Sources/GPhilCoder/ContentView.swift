@@ -249,10 +249,28 @@ struct ContentView: View {
                         .help("Choose the exact file extensions for this filter")
                     }
 
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text("Name")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 46, alignment: .trailing)
+
+                        TextField("Any file name", text: $model.mediaFileNameFilterQuery)
+                            .textFieldStyle(.roundedBorder)
+                            .disabled(model.isMediaCopyBusy)
+                            .help("Match files whose names contain this text")
+                    }
+
                     Text(model.mediaCopySelectedExtensionSummary)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Text(model.mediaFileNameFilterSummary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .padding(.vertical, 4)
@@ -429,7 +447,7 @@ struct ContentView: View {
                         .tint(.red)
                         .controlSize(.large)
                         .disabled(!model.canDeleteFilteredMediaFiles)
-                        .help("Move only the selected filtered extensions from source folders to the macOS Trash")
+                        .help("Move files from source folders to the macOS Trash using the selected filter")
                     case .rename:
                         Button {
                             model.refreshMediaRenamePreview()
@@ -634,7 +652,7 @@ struct ContentView: View {
                                 .compactExtensionSummary(selectedExtensions: plan.selectedExtensions)
                                 .uppercased()
                         )
-                        FormatPill(text: "\(plan.candidates.count) FILES")
+                        FormatPill(text: "\(plan.candidateCount) FILES")
                     }
                 } else if selectedMediaCopyPreviewMode == .plan,
                     let plan = model.mediaCopyPlan,
@@ -649,7 +667,7 @@ struct ContentView: View {
                                     .uppercased()
                             )
                         }
-                        FormatPill(text: "\(plan.candidates.count) FILES")
+                        FormatPill(text: "\(plan.candidateCount) FILES")
                         if plan.directoryCount > 0 {
                             FormatPill(text: "\(plan.directoryCount) FOLDERS")
                         }
@@ -717,9 +735,9 @@ struct ContentView: View {
                         MediaCopyCandidateRow(candidate: candidate, filter: plan.filter)
                     }
 
-                    if plan.candidates.count > model.mediaCopyPreviewItems.count {
+                    if plan.candidateCount > model.mediaCopyPreviewItems.count {
                         Text(
-                            "\(plan.candidates.count - model.mediaCopyPreviewItems.count) more file\(plan.candidates.count - model.mediaCopyPreviewItems.count == 1 ? "" : "s") hidden from preview."
+                            "\(plan.candidateCount - model.mediaCopyPreviewItems.count) more file\(plan.candidateCount - model.mediaCopyPreviewItems.count == 1 ? "" : "s") hidden from preview."
                         )
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -764,9 +782,9 @@ struct ContentView: View {
                         MediaRenameItemRow(item: item)
                     }
 
-                    if plan.items.count > model.mediaRenamePreviewItems.count {
+                    if plan.itemCount > model.mediaRenamePreviewItems.count {
                         Text(
-                            "\(plan.items.count - model.mediaRenamePreviewItems.count) more file\(plan.items.count - model.mediaRenamePreviewItems.count == 1 ? "" : "s") hidden from preview."
+                            "\(plan.itemCount - model.mediaRenamePreviewItems.count) more file\(plan.itemCount - model.mediaRenamePreviewItems.count == 1 ? "" : "s") hidden from preview."
                         )
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -811,9 +829,9 @@ struct ContentView: View {
                         MediaDeleteCandidateRow(candidate: candidate, filter: plan.filter)
                     }
 
-                    if plan.candidates.count > model.mediaDeletePreviewItems.count {
+                    if plan.candidateCount > model.mediaDeletePreviewItems.count {
                         Text(
-                            "\(plan.candidates.count - model.mediaDeletePreviewItems.count) more file\(plan.candidates.count - model.mediaDeletePreviewItems.count == 1 ? "" : "s") hidden from preview."
+                            "\(plan.candidateCount - model.mediaDeletePreviewItems.count) more file\(plan.candidateCount - model.mediaDeletePreviewItems.count == 1 ? "" : "s") hidden from preview."
                         )
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -904,7 +922,7 @@ struct ContentView: View {
                 return "No matching \(plan.filter.fileTypeName) files found."
             }
 
-            return "\(plan.candidates.count) matched for Trash."
+            return "\(plan.candidateCount) matched for Trash."
         }
 
         if selectedMediaCopyPreviewMode == .queue {
@@ -944,10 +962,10 @@ struct ContentView: View {
 
         if plan.conflictCount > 0 {
             return
-                "\(plan.candidates.count) matched, \(plan.conflictCount) already exist in the destination."
+                "\(plan.candidateCount) matched, \(plan.conflictCount) already exist in the destination."
         }
 
-        return "\(plan.candidates.count) matched, no destination conflicts."
+        return "\(plan.candidateCount) matched, no destination conflicts."
     }
 
     private var mediaCopyProgressDetail: String {
@@ -2328,6 +2346,13 @@ private struct MediaCopyWorkflowRow: View {
                         )
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
+                    }
+
+                    if workflow.fileNameFilter.isActive {
+                        Text("Name: \(workflow.fileNameFilter.trimmedQuery)")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
 
                     Spacer()

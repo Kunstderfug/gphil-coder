@@ -30,6 +30,40 @@ enum FileManagementMode: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+enum EncodingWorkflow: String, CaseIterable, Identifiable {
+    case audio
+    case video
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .audio:
+            "Audio"
+        case .video:
+            "Video"
+        }
+    }
+
+    var queueNoun: String {
+        switch self {
+        case .audio:
+            "audio file"
+        case .video:
+            "video file"
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .audio:
+            "waveform"
+        case .video:
+            "film"
+        }
+    }
+}
+
 enum AudioFormat {
     static let inputExtensions: Set<String> = Set(InputAudioFormat.allCases.flatMap(\.fileExtensions))
     static let readableInputList = readableList(for: inputExtensions)
@@ -38,6 +72,11 @@ enum AudioFormat {
         guard !extensions.isEmpty else { return "None" }
         return extensions.sorted().map { ".\($0)" }.joined(separator: ", ")
     }
+}
+
+enum VideoFormat {
+    static let inputExtensions: Set<String> = Set(InputVideoFormat.allCases.flatMap(\.fileExtensions))
+    static let readableInputList = AudioFormat.readableList(for: inputExtensions)
 }
 
 enum FFmpegSourcePreference: String, CaseIterable, Identifiable {
@@ -133,6 +172,36 @@ enum InputAudioFormat: String, CaseIterable, Identifiable {
     }
 }
 
+enum InputVideoFormat: String, CaseIterable, Identifiable {
+    case mp4
+    case mov
+    case m4v
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .mp4:
+            "MP4"
+        case .mov:
+            "MOV"
+        case .m4v:
+            "M4V"
+        }
+    }
+
+    var fileExtensions: Set<String> {
+        switch self {
+        case .mp4:
+            ["mp4"]
+        case .mov:
+            ["mov"]
+        case .m4v:
+            ["m4v"]
+        }
+    }
+}
+
 enum AudioOutputFormat: String, CaseIterable, Identifiable {
     case mp3
     case ogg
@@ -208,6 +277,134 @@ enum AudioOutputFormat: String, CaseIterable, Identifiable {
             true
         case .mp3, .ogg, .opus:
             false
+        }
+    }
+}
+
+enum VideoOutputContainer: String, CaseIterable, Identifiable {
+    case mp4
+    case mov
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .mp4:
+            "MP4"
+        case .mov:
+            "MOV"
+        }
+    }
+
+    var fileExtension: String { rawValue }
+
+    var detail: String {
+        switch self {
+        case .mp4:
+            "Best default for sharing HEVC files across Apple devices and modern players."
+        case .mov:
+            "Useful when staying close to camera-original QuickTime workflows."
+        }
+    }
+}
+
+enum HEVCVideoPreset: String, CaseIterable, Identifiable {
+    case compact1080p
+    case balanced1080p
+    case compact4k
+    case balanced4k
+    case main10
+    case custom
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .compact1080p:
+            "1080p Compact"
+        case .balanced1080p:
+            "1080p Balanced"
+        case .compact4k:
+            "4K Compact"
+        case .balanced4k:
+            "4K Balanced"
+        case .main10:
+            "HEVC 10-bit"
+        case .custom:
+            "Custom"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .compact1080p:
+            "Lower bitrate 8-bit HEVC for small 1080p exports."
+        case .balanced1080p:
+            "General-purpose 8-bit HEVC for 1080p video."
+        case .compact4k:
+            "Smaller 8-bit HEVC exports for 4K sources."
+        case .balanced4k:
+            "Higher-bitrate 8-bit HEVC for cleaner 4K exports."
+        case .main10:
+            "10-bit HEVC Main10 using p010 output for sources that benefit from extra precision."
+        case .custom:
+            "Choose a manual target bitrate."
+        }
+    }
+
+    var defaultBitrateKbps: Int {
+        switch self {
+        case .compact1080p:
+            4_000
+        case .balanced1080p:
+            7_000
+        case .compact4k:
+            14_000
+        case .balanced4k:
+            22_000
+        case .main10:
+            12_000
+        case .custom:
+            8_000
+        }
+    }
+
+    var bitDepth: Int {
+        switch self {
+        case .main10:
+            10
+        case .compact1080p, .balanced1080p, .compact4k, .balanced4k, .custom:
+            8
+        }
+    }
+}
+
+enum VideoAudioMode: String, CaseIterable, Identifiable {
+    case copy
+    case aac192
+    case aac320
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .copy:
+            "Copy"
+        case .aac192:
+            "AAC 192 kbps"
+        case .aac320:
+            "AAC 320 kbps"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .copy:
+            "Keep the source audio stream without re-encoding."
+        case .aac192:
+            "Re-encode audio to broadly compatible AAC at 192 kbps."
+        case .aac320:
+            "Re-encode audio to higher-bitrate AAC at 320 kbps."
         }
     }
 }
@@ -495,12 +692,31 @@ struct AudioInputItem: Identifiable, Hashable {
         url.deletingLastPathComponent().path(percentEncoded: false)
     }
 
+    var encodingWorkflow: EncodingWorkflow? {
+        let fileExtension = url.pathExtension.lowercased()
+        if AudioFormat.inputExtensions.contains(fileExtension) {
+            return .audio
+        }
+        if VideoFormat.inputExtensions.contains(fileExtension) {
+            return .video
+        }
+        return nil
+    }
+
     func outputFileName(for format: AudioOutputFormat) -> String {
         let baseName = url.deletingPathExtension().lastPathComponent
         let outputBaseName = url.pathExtension.lowercased() == format.fileExtension
             ? "\(baseName)-encoded"
             : baseName
         return outputBaseName + "." + format.fileExtension
+    }
+
+    func outputFileName(for container: VideoOutputContainer) -> String {
+        let baseName = url.deletingPathExtension().lastPathComponent
+        let outputBaseName = url.pathExtension.lowercased() == container.fileExtension
+            ? "\(baseName)-encoded"
+            : baseName
+        return outputBaseName + "." + container.fileExtension
     }
 }
 
@@ -523,7 +739,12 @@ struct EncodeJob: Identifiable {
 struct EncodingSettingsSnapshot {
     let ffmpegURL: URL
     let useLibVorbis: Bool
+    let encodingWorkflow: EncodingWorkflow
     let outputFormat: AudioOutputFormat
+    let videoOutputContainer: VideoOutputContainer
+    let hevcPreset: HEVCVideoPreset
+    let customVideoBitrateKbps: Int
+    let videoAudioMode: VideoAudioMode
     let mp3Mode: MP3EncodingMode
     let vbrQuality: Int
     let cbrBitrateKbps: Int
@@ -539,7 +760,15 @@ struct EncodingSettingsSnapshot {
     let overwriteExisting: Bool
     let parallelJobs: Int
 
+    var videoBitrateKbps: Int {
+        hevcPreset == .custom ? customVideoBitrateKbps : hevcPreset.defaultBitrateKbps
+    }
+
     var summary: String {
+        if encodingWorkflow == .video {
+            return "\(hevcPreset.title) HEVC \(videoBitrateKbps) kbps \(videoOutputContainer.title), audio \(videoAudioMode.title)"
+        }
+
         switch outputFormat {
         case .mp3:
             switch mp3Mode {
@@ -581,12 +810,18 @@ struct QueueDocument: Codable {
 }
 
 struct QueueSettings: Codable {
+    var encodingWorkflow: String?
     var outputMode: String?
     var exportFolderPath: String?
     var selectedInputExtensions: [String]?
+    var selectedVideoInputExtensions: [String]?
     var preserveSubfolders: Bool?
     var overwriteExisting: Bool?
     var outputFormat: String?
+    var videoOutputContainer: String?
+    var hevcPreset: String?
+    var customVideoBitrateKbps: Int?
+    var videoAudioMode: String?
     var mp3Mode: String?
     var vbrQuality: Int?
     var cbrBitrateKbps: Int?
