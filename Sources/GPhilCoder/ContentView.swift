@@ -4,6 +4,7 @@ import SwiftUI
 
 private enum WorkflowTab: Hashable {
     case audioEncoding
+    case videoEncoding
     case mediaCopy
     case mediaRename
     case mediaDelete
@@ -37,6 +38,12 @@ struct ContentView: View {
                             Label("Audio Encoding", systemImage: "waveform")
                         }
                         .tag(WorkflowTab.audioEncoding)
+
+                    audioEncodingWorkflow
+                        .tabItem {
+                            Label("Video Encoding", systemImage: "film")
+                        }
+                        .tag(WorkflowTab.videoEncoding)
 
                     fileManagementWorkflow(for: .copy)
                         .tabItem {
@@ -88,7 +95,11 @@ struct ContentView: View {
 
     private func syncWorkflowSelection(_ tab: WorkflowTab) {
         switch tab {
-        case .audioEncoding, .backupRestore:
+        case .audioEncoding:
+            model.encodingWorkflow = .audio
+        case .videoEncoding:
+            model.encodingWorkflow = .video
+        case .backupRestore:
             break
         case .mediaCopy:
             model.fileManagementMode = .copy
@@ -108,7 +119,7 @@ struct ContentView: View {
                 Text("GPhil Coder")
                     .font(.system(size: 24, weight: .bold, design: .rounded))
                 Text(
-                    "Batch audio encoding and filtered media copy workflows"
+                    "Batch audio/video encoding and filtered media workflows"
                 )
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -1059,7 +1070,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 10) {
                 StatLine(
                     title: "Active", value: "\(model.activeInputs.count)",
-                    symbol: "music.note.list",
+                    symbol: model.encodingWorkflow.symbolName,
                     color: .teal)
                 StatLine(
                     title: "Active size", value: model.activeInputSize.formattedFileSize,
@@ -1159,7 +1170,7 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity)
             }
             .disabled(model.isEncoding)
-            .help("Choose input audio formats")
+            .help("Choose input \(model.encodingWorkflow.title.lowercased()) formats")
         }
     }
 
@@ -1205,7 +1216,7 @@ struct ContentView: View {
     private var inputList: some View {
         Group {
             if model.inputs.isEmpty {
-                EmptyQueueView()
+                EmptyQueueView(workflow: model.encodingWorkflow)
             } else if model.activeInputs.isEmpty {
                 EmptyFilteredQueueView(hiddenCount: model.inactiveInputCount)
             } else {
@@ -1245,162 +1256,281 @@ struct ContentView: View {
     }
 
     private var settingsPanel: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            GroupBox("Output") {
-                VStack(alignment: .leading, spacing: 12) {
-                    Picker("", selection: $model.outputMode) {
-                        ForEach(OutputMode.allCases) { mode in
-                            Text(mode.title).tag(mode)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .disabled(model.isEncoding)
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    presetControls
 
-                    if model.outputMode == .exportFolder {
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                Image(systemName: "folder")
-                                    .foregroundStyle(.teal)
-                                Text(
-                                    model.exportFolder?.path(percentEncoded: false)
-                                        ?? "No export folder selected"
-                                )
-                                .lineLimit(2)
-                                .font(.callout)
-                                .foregroundStyle(model.exportFolder == nil ? .secondary : .primary)
+                    GroupBox("Output") {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Picker("", selection: $model.outputMode) {
+                                ForEach(OutputMode.allCases) { mode in
+                                    Text(mode.title).tag(mode)
+                                }
                             }
+                            .pickerStyle(.segmented)
+                            .labelsHidden()
+                            .disabled(model.isEncoding)
 
-                            Button {
-                                model.chooseExportFolder()
-                            } label: {
-                                Label("Choose folder", systemImage: "folder.badge.gearshape")
+                            if model.outputMode == .exportFolder {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    HStack {
+                                        Image(systemName: "folder")
+                                            .foregroundStyle(.teal)
+                                        Text(
+                                            model.exportFolder?.path(percentEncoded: false)
+                                                ?? "No export folder selected"
+                                        )
+                                        .lineLimit(2)
+                                        .font(.callout)
+                                        .foregroundStyle(model.exportFolder == nil ? .secondary : .primary)
+                                    }
+
+                                    Button {
+                                        model.chooseExportFolder()
+                                    } label: {
+                                        Label("Choose folder", systemImage: "folder.badge.gearshape")
+                                    }
+                                    .disabled(model.isEncoding)
+
+                                    Toggle("Preserve subfolders", isOn: $model.preserveSubfolders)
+                                        .disabled(model.isEncoding)
+                                }
+                            } else {
+                                Text(
+                                    "\(model.outputFormatTitle) files are written next to each source file. Files added from nested folders stay in those folders."
+                                )
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+
+                    GroupBox("Encoding") {
+                        VStack(alignment: .leading, spacing: 13) {
+                            outputFormatPicker
+
+                            Text(model.outputFormatDetail)
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            formatEncodingControls
+
+                            Stepper(value: $model.parallelJobs, in: 1...model.processorLimit) {
+                                SettingValue(title: "Parallel jobs", value: "\(model.parallelJobs)")
                             }
                             .disabled(model.isEncoding)
 
-                            Toggle("Preserve subfolders", isOn: $model.preserveSubfolders)
-                                .disabled(model.isEncoding)
+                            Stepper(value: $model.ffmpegThreads, in: 0...model.processorLimit) {
+                                SettingValue(
+                                    title: "FFmpeg threads",
+                                    value: model.ffmpegThreads == 0 ? "Auto" : "\(model.ffmpegThreads)"
+                                )
+                            }
+                            .disabled(model.isEncoding)
+
+                            Toggle(
+                                "Overwrite existing \(model.outputFormatTitle) files",
+                                isOn: $model.overwriteExisting
+                            )
+                            .disabled(model.isEncoding)
                         }
-                    } else {
-                        Text(
-                            "\(model.outputFormat.title) files are written next to each source file. Files added from nested folders stay in those folders."
-                        )
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
+                        .padding(.vertical, 4)
                     }
-                }
-                .padding(.vertical, 4)
-            }
 
-            GroupBox("Encoding") {
-                VStack(alignment: .leading, spacing: 13) {
-                    Picker("Output format", selection: $model.outputFormat) {
-                        ForEach(AudioOutputFormat.allCases) { format in
-                            Text(format.title).tag(format)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .disabled(model.isEncoding)
-
-                    Text(model.outputFormat.detail)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    formatEncodingControls
-
-                    Stepper(value: $model.parallelJobs, in: 1...model.processorLimit) {
-                        SettingValue(title: "Parallel jobs", value: "\(model.parallelJobs)")
-                    }
-                    .disabled(model.isEncoding)
-
-                    Stepper(value: $model.ffmpegThreads, in: 0...model.processorLimit) {
-                        SettingValue(
-                            title: "FFmpeg threads",
-                            value: model.ffmpegThreads == 0 ? "Auto" : "\(model.ffmpegThreads)"
-                        )
-                    }
-                    .disabled(model.isEncoding)
-
-                    Toggle(
-                        "Overwrite existing \(model.outputFormat.title) files",
-                        isOn: $model.overwriteExisting
-                    )
-                    .disabled(model.isEncoding)
-                }
-                .padding(.vertical, 4)
-            }
-
-            GroupBox("Format") {
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack {
-                        FormatPill(text: "AUDIO")
-                        Image(systemName: "arrow.right")
-                            .font(.caption.weight(.semibold))
+                    GroupBox("Format") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                FormatPill(text: model.encodingWorkflow.title.uppercased())
+                                Image(systemName: "arrow.right")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                FormatPill(text: model.outputFormatTitle)
+                            }
+                            Text(
+                                "The queue keeps every supported \(model.encodingWorkflow.title.lowercased()) file you add. Input filters choose which queued formats are visible and sent to FFmpeg's \(model.selectedEncoderName) encoder."
+                            )
+                            .font(.callout)
                             .foregroundStyle(.secondary)
-                        FormatPill(text: model.outputFormat.title)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                            if let warning = model.sameFormatWarningMessage {
+                                Label(warning, systemImage: "exclamationmark.triangle.fill")
+                                    .font(.callout)
+                                    .foregroundStyle(.orange)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+
+                            if let warning = model.lossyToLosslessWarningMessage {
+                                Label(warning, systemImage: "exclamationmark.triangle.fill")
+                                    .font(.callout)
+                                    .foregroundStyle(.orange)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+
+                            if let warning = model.nativeOggReencodeWarningMessage {
+                                Label(warning, systemImage: "exclamationmark.triangle.fill")
+                                    .font(.callout)
+                                    .foregroundStyle(.orange)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+
+                            if let warning = model.videoEncodingWarningMessage {
+                                Label(warning, systemImage: "exclamationmark.triangle.fill")
+                                    .font(.callout)
+                                    .foregroundStyle(.orange)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        .padding(.vertical, 4)
                     }
-                    Text(
-                        "The queue keeps every supported audio file you add. Input filters choose which queued formats are visible and sent to FFmpeg's \(model.selectedEncoderName) encoder."
+                }
+                .padding(18)
+            }
+
+            Divider()
+
+            Group {
+                if model.isEncoding {
+                    Button {
+                        model.cancelEncoding()
+                    } label: {
+                        Label("Cancel encoding", systemImage: "stop.fill")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.red)
+                    .controlSize(.large)
+                } else {
+                    Button {
+                        model.startEncoding()
+                    } label: {
+                        Label("Start encoding", systemImage: "play.fill")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .disabled(!model.canEncode)
+                }
+            }
+            .padding(18)
+        }
+        .background(Color(nsColor: .textBackgroundColor))
+    }
+
+    private var presetControls: some View {
+        GroupBox("Presets") {
+            VStack(alignment: .leading, spacing: 10) {
+                Picker(
+                    "Preset",
+                    selection: Binding<UUID?>(
+                        get: { model.selectedEncodingPresetID },
+                        set: { model.setSelectedEncodingPresetID($0) }
                     )
-                    .font(.callout)
+                ) {
+                    Text("No preset").tag(Optional<UUID>.none)
+                    ForEach(model.workflowEncodingPresets) { preset in
+                        Text(preset.name).tag(Optional(preset.id))
+                    }
+                }
+                .disabled(model.isEncoding)
+
+                Text(model.selectedEncodingPresetSummary)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
+                    .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
 
-                    if let warning = model.sameFormatWarningMessage {
-                        Label(warning, systemImage: "exclamationmark.triangle.fill")
-                            .font(.callout)
-                            .foregroundStyle(.orange)
-                            .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 8) {
+                    Button {
+                        model.loadSelectedEncodingPreset()
+                    } label: {
+                        Label("Load", systemImage: "arrow.down.circle")
+                            .frame(maxWidth: .infinity)
                     }
+                    .disabled(!model.canLoadSelectedEncodingPreset)
 
-                    if let warning = model.lossyToLosslessWarningMessage {
-                        Label(warning, systemImage: "exclamationmark.triangle.fill")
-                            .font(.callout)
-                            .foregroundStyle(.orange)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+                    Menu {
+                        Button {
+                            model.updateSelectedEncodingPreset()
+                        } label: {
+                            Label("Update Current Preset", systemImage: "square.and.arrow.down")
+                        }
+                        .disabled(!model.canUpdateSelectedEncodingPreset)
 
-                    if let warning = model.nativeOggReencodeWarningMessage {
-                        Label(warning, systemImage: "exclamationmark.triangle.fill")
-                            .font(.callout)
-                            .foregroundStyle(.orange)
-                            .fixedSize(horizontal: false, vertical: true)
+                        Button {
+                            model.saveCurrentSettingsAsEncodingPreset()
+                        } label: {
+                            Label("Save As New Preset", systemImage: "plus.circle")
+                        }
+                        .disabled(model.isEncoding)
+
+                        Button {
+                            model.renameSelectedEncodingPreset()
+                        } label: {
+                            Label("Rename Preset", systemImage: "pencil")
+                        }
+                        .disabled(!model.canUpdateSelectedEncodingPreset)
+
+                        Divider()
+
+                        Button(role: .destructive) {
+                            model.deleteSelectedEncodingPreset()
+                        } label: {
+                            Label("Delete Preset", systemImage: "trash")
+                        }
+                        .disabled(!model.canDeleteSelectedEncodingPreset)
+
+                        Divider()
+
+                        Button {
+                            openWindow(id: AppWindowID.encodingPresets)
+                        } label: {
+                            Label("Manage Presets", systemImage: "slider.horizontal.3")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                            .frame(width: 28)
                     }
+                    .disabled(model.isEncoding)
+                    .help("Preset actions")
                 }
-                .padding(.vertical, 4)
+                .controlSize(.small)
             }
-
-            Spacer()
-
-            if model.isEncoding {
-                Button {
-                    model.cancelEncoding()
-                } label: {
-                    Label("Cancel encoding", systemImage: "stop.fill")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(.red)
-                .controlSize(.large)
-            } else {
-                Button {
-                    model.startEncoding()
-                } label: {
-                    Label("Start encoding", systemImage: "play.fill")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .disabled(!model.canEncode)
-            }
+            .padding(.vertical, 4)
         }
-        .padding(18)
-        .background(Color(nsColor: .textBackgroundColor))
+    }
+
+    @ViewBuilder
+    private var outputFormatPicker: some View {
+        switch model.encodingWorkflow {
+        case .audio:
+            Picker("Output format", selection: $model.outputFormat) {
+                ForEach(AudioOutputFormat.allCases) { format in
+                    Text(format.title).tag(format)
+                }
+            }
+            .pickerStyle(.menu)
+            .disabled(model.isEncoding)
+        case .video:
+            Picker("Container", selection: $model.videoOutputContainer) {
+                ForEach(VideoOutputContainer.allCases) { container in
+                    Text(container.title).tag(container)
+                }
+            }
+            .pickerStyle(.segmented)
+            .disabled(model.isEncoding)
+            .arrowCursorOnHover()
+        }
     }
 
     @ViewBuilder
     private var formatEncodingControls: some View {
+        if model.encodingWorkflow == .video {
+            videoEncodingControls
+        } else {
         switch model.outputFormat {
         case .mp3:
             Picker("MP3 mode", selection: $model.mp3Mode) {
@@ -1524,6 +1654,80 @@ struct ContentView: View {
 
             multichannelSplitToggle
         }
+        }
+    }
+
+    private var videoEncodingControls: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Picker("HEVC preset", selection: $model.hevcPreset) {
+                ForEach(HEVCVideoPreset.allCases) { preset in
+                    Text(preset.title).tag(preset)
+                }
+            }
+            .pickerStyle(.menu)
+            .disabled(model.isEncoding)
+
+            Text(model.hevcPreset.detail)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if model.hevcPreset == .custom {
+                Stepper(value: $model.customVideoBitrateKbps, in: 500...100_000, step: 500) {
+                    SettingValue(
+                        title: "Video bitrate",
+                        value: "\(model.customVideoBitrateKbps) kbps"
+                    )
+                }
+                .disabled(model.isEncoding)
+            } else {
+                SettingValue(title: "Video bitrate", value: "\(model.videoBitrateKbps) kbps")
+            }
+
+            Picker("Resolution", selection: $model.videoScaleMode) {
+                ForEach(VideoScaleMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .disabled(model.isEncoding)
+
+            Text(model.videoScaleMode.detail)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Picker("Audio", selection: $model.videoAudioMode) {
+                ForEach(VideoAudioMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .pickerStyle(.menu)
+            .disabled(model.isEncoding)
+
+            Text(model.videoAudioMode.detail)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Picker("Decode", selection: $model.videoHardwareDecodeMode) {
+                ForEach(VideoHardwareDecodeMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .disabled(model.isEncoding)
+
+            Text(model.videoHardwareDecodeMode.detail)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text("Video uses Apple's HEVC VideoToolbox encoder and blocks software fallback.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     private var multichannelSplitToggle: some View {
@@ -1575,15 +1779,20 @@ struct ContentView: View {
     private var footer: some View {
         HStack(spacing: 8) {
             Image(
-                systemName: model.ffmpegURL == nil ? "exclamationmark.triangle.fill" : "info.circle"
+                systemName: model.encodingFFmpegURL == nil ? "exclamationmark.triangle.fill" : "info.circle"
             )
-            .foregroundStyle(model.ffmpegURL == nil ? .orange : .secondary)
+            .foregroundStyle(model.encodingFFmpegURL == nil ? .orange : .secondary)
             Text(model.statusMessage)
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .font(.callout)
                 .foregroundStyle(.secondary)
             Spacer()
+
+            if model.encodingWorkflow == .video {
+                VideoPipelineStatusBadges()
+                    .environmentObject(model)
+            }
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 9)
@@ -1593,12 +1802,12 @@ struct ContentView: View {
     private var outputRouteDescription: String {
         switch model.outputMode {
         case .sourceFolders:
-            return "Write \(model.outputFormat.title) files beside each source file."
+            return "Write \(model.outputFormatTitle) files beside each source file."
         case .exportFolder:
             if let exportFolder = model.exportFolder {
                 let suffix = model.preserveSubfolders ? " and preserve nested folders." : "."
                 return
-                    "Write \(model.outputFormat.title) files to \(exportFolder.lastPathComponent)\(suffix)"
+                    "Write \(model.outputFormatTitle) files to \(exportFolder.lastPathComponent)\(suffix)"
             }
             return "Choose a destination folder before encoding."
         }
@@ -1608,7 +1817,7 @@ struct ContentView: View {
         if model.jobs.isEmpty {
             return model.inputs.isEmpty
                 ? "Drop into the workflow by adding files or folders."
-                : "\(model.activeInputs.count) of \(model.inputs.count) queued audio file\(model.inputs.count == 1 ? "" : "s") active."
+                : "\(model.activeInputs.count) of \(model.inputs.count) queued \(model.encodingWorkflow.queueNoun)\(model.inputs.count == 1 ? "" : "s") active."
         }
 
         if model.isEncoding {
@@ -1625,17 +1834,74 @@ struct ContentView: View {
     }
 }
 
+private struct VideoPipelineStatusBadges: View {
+    @EnvironmentObject private var model: EncoderViewModel
+
+    var body: some View {
+        HStack(spacing: 6) {
+            StatusBadge(
+                text: model.videoDecodeModeTitle,
+                systemImage: model.videoHardwareDecodeMode.usesVideoToolbox
+                    ? "bolt.horizontal.fill"
+                    : "cpu",
+                color: model.videoHardwareDecodeMode.usesVideoToolbox ? .green : .secondary,
+                helpText: model.videoDecodeModeDetail
+            )
+
+            StatusBadge(
+                text: model.videoScaleModeTitle,
+                systemImage: model.videoScaleMode.usesSoftwareScale
+                    ? "arrow.down.right.and.arrow.up.left"
+                    : "rectangle",
+                color: model.videoScaleMode.usesSoftwareScale ? .orange : .secondary,
+                helpText: model.videoScaleModeDetail
+            )
+
+            StatusBadge(
+                text: model.videoEncodeModeTitle,
+                systemImage: model.supportsHEVCVideoToolbox
+                    ? "bolt.horizontal.circle.fill"
+                    : "exclamationmark.triangle.fill",
+                color: model.supportsHEVCVideoToolbox ? .green : .orange,
+                helpText: model.videoEncodeModeDetail
+            )
+        }
+    }
+}
+
+private struct StatusBadge: View {
+    let text: String
+    let systemImage: String
+    let color: Color
+    let helpText: String
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: systemImage)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(color)
+            Text(text)
+                .font(.caption.weight(.semibold))
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 5)
+        .background(.quaternary, in: Capsule())
+        .help(helpText)
+    }
+}
+
 private struct ToolStatusView: View {
     @EnvironmentObject private var model: EncoderViewModel
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: model.ffmpegURL == nil ? "xmark.octagon.fill" : "checkmark.seal.fill")
-                .foregroundStyle(model.ffmpegURL == nil ? .orange : .green)
+            Image(systemName: model.encodingFFmpegURL == nil ? "xmark.octagon.fill" : "checkmark.seal.fill")
+                .foregroundStyle(model.encodingFFmpegURL == nil ? .orange : .green)
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(
-                    model.ffmpegURL == nil
+                    model.encodingFFmpegURL == nil
                         ? "\(model.ffmpegSourceTitle) FFmpeg missing"
                         : "\(model.ffmpegSourceTitle) FFmpeg ready"
                 )
@@ -1646,6 +1912,18 @@ private struct ToolStatusView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .frame(maxWidth: 260, alignment: .leading)
+
+                if model.encodingWorkflow == .video {
+                    Text("\(model.videoDecodeModeTitle) | \(model.videoScaleModeTitle) | \(model.videoEncodeModeTitle)")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: 260, alignment: .leading)
+                        .help(
+                            "\(model.videoDecodeModeDetail). \(model.videoScaleModeDetail). \(model.videoEncodeModeDetail)."
+                        )
+                }
             }
 
             Picker("FFmpeg", selection: $model.ffmpegSourcePreference) {
@@ -1658,9 +1936,11 @@ private struct ToolStatusView: View {
             .pickerStyle(.menu)
             .controlSize(.small)
             .frame(width: 118)
-            .disabled(model.isEncoding)
+            .disabled(model.isEncoding || model.encodingWorkflow == .video)
             .help(
-                "Choose whether encoding uses the app-bundled FFmpeg or the FFmpeg installed on this Mac."
+                model.encodingWorkflow == .video
+                    ? "Video encoding uses system FFmpeg for HEVC VideoToolbox."
+                    : "Choose whether audio encoding uses the app-bundled FFmpeg or the FFmpeg installed on this Mac."
             )
 
             Button {
@@ -1764,7 +2044,7 @@ private struct InputFilterSheet: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Input Filters")
                         .font(.title3.weight(.semibold))
-                    Text("Choose which file extensions are accepted when adding files or folders.")
+                    Text("Choose which \(model.encodingWorkflow.title.lowercased()) extensions are accepted when adding files or folders.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
@@ -1782,19 +2062,7 @@ private struct InputFilterSheet: View {
 
             Divider()
 
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 12)], spacing: 12) {
-                ForEach(InputAudioFormat.allCases) { format in
-                    Toggle(
-                        format.title,
-                        isOn: Binding(
-                            get: { model.isInputFormatEnabled(format) },
-                            set: { model.setInputFormat(format, enabled: $0) }
-                        )
-                    )
-                    .toggleStyle(.checkbox)
-                    .disabled(model.isEncoding)
-                }
-            }
+            inputToggles
 
             Text("Current selection: \(model.selectedInputReadableList)")
                 .font(.callout)
@@ -1826,6 +2094,38 @@ private struct InputFilterSheet: View {
         }
         .padding(22)
         .frame(width: 460)
+    }
+
+    @ViewBuilder
+    private var inputToggles: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 12)], spacing: 12) {
+            switch model.encodingWorkflow {
+            case .audio:
+                ForEach(InputAudioFormat.allCases) { format in
+                    Toggle(
+                        format.title,
+                        isOn: Binding(
+                            get: { model.isInputFormatEnabled(format) },
+                            set: { model.setInputFormat(format, enabled: $0) }
+                        )
+                    )
+                    .toggleStyle(.checkbox)
+                    .disabled(model.isEncoding)
+                }
+            case .video:
+                ForEach(InputVideoFormat.allCases) { format in
+                    Toggle(
+                        format.title,
+                        isOn: Binding(
+                            get: { model.isInputFormatEnabled(format) },
+                            set: { model.setInputFormat(format, enabled: $0) }
+                        )
+                    )
+                    .toggleStyle(.checkbox)
+                    .disabled(model.isEncoding)
+                }
+            }
+        }
     }
 }
 
@@ -1956,6 +2256,8 @@ private struct SummaryChip: View {
 }
 
 private struct EmptyQueueView: View {
+    let workflow: EncodingWorkflow
+
     var body: some View {
         VStack(spacing: 16) {
             Image(systemName: "tray.and.arrow.down")
@@ -1964,7 +2266,7 @@ private struct EmptyQueueView: View {
             VStack(spacing: 5) {
                 Text("No input files yet")
                     .font(.title3.weight(.semibold))
-                Text("Use Add Files or Add Folder to collect audio files for batch encoding.")
+                Text("Use Add Files or Add Folder to collect \(workflow.title.lowercased()) files for batch encoding.")
                     .foregroundStyle(.secondary)
             }
         }
@@ -2404,12 +2706,14 @@ private struct InputRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: "waveform")
+            Image(systemName: item.encodingWorkflow?.symbolName ?? "doc")
                 .font(.system(size: 18, weight: .medium))
-                .foregroundStyle(.teal)
+                .foregroundStyle(item.encodingWorkflow == .video ? .indigo : .teal)
                 .frame(width: 34, height: 34)
                 .background(
-                    .teal.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    (item.encodingWorkflow == .video ? Color.indigo : Color.teal).opacity(0.12),
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                )
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack {

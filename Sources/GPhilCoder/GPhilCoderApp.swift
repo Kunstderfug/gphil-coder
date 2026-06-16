@@ -13,6 +13,7 @@ private enum MainWindowConfiguration {
 
 enum AppWindowID {
     static let renameSettings = "rename-settings"
+    static let encodingPresets = "encoding-presets"
 }
 
 @main
@@ -97,6 +98,13 @@ struct GPhilCoderApp: App {
                 .environmentObject(encoder)
         }
         .defaultSize(width: 430, height: 420)
+        .windowResizability(.contentSize)
+
+        Window("Encoding Presets", id: AppWindowID.encodingPresets) {
+            EncodingPresetManagerWindow()
+                .environmentObject(encoder)
+        }
+        .defaultSize(width: 620, height: 520)
         .windowResizability(.contentSize)
     }
 }

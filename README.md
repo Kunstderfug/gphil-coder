@@ -1,6 +1,6 @@
 # GPhilCoder
 
-Native macOS batch audio encoder built with SwiftUI and FFmpeg.
+Native macOS batch audio/video encoder built with SwiftUI and FFmpeg.
 
 ## Current Scope
 
@@ -10,6 +10,7 @@ Native macOS batch audio encoder built with SwiftUI and FFmpeg.
 - Remember the last selected input folder across launches.
 - Remember the last selected output format, export route, and encoder settings across launches.
 - Save and load explicit `.gphilcoderqueue` files with queued sources and encoder settings.
+- Save, load, update, rename, and delete reusable audio/video encoding presets.
 - Encode audio to MP3 with `libmp3lame`.
 - Encode audio to Ogg Vorbis. Bitrate mode uses `libvorbis` when the installed FFmpeg build provides it; otherwise use quality mode with FFmpeg's native `vorbis` encoder.
 - Encode audio to Opus with `libopus`.
@@ -23,6 +24,15 @@ Native macOS batch audio encoder built with SwiftUI and FFmpeg.
 - Export beside each source file or into a selected export folder.
 - Preserve nested folder structure when exporting to a custom folder.
 - Process files in parallel while optionally passing a thread count to FFmpeg.
+- Encode `.mp4`, `.mov`, and `.m4v` video sources to HEVC using Apple's
+  `hevc_videotoolbox` hardware encoder from system FFmpeg.
+- Prefer VideoToolbox hardware decode for supported video sources, with an Off
+  mode for compatibility checks.
+- Choose HEVC presets for compact/balanced 1080p and 4K output, plus a 10-bit
+  Main10 preset, custom bitrate control, and explicit source/1080p/4K
+  resolution caps.
+- Show live video encoding throughput in the job list, including frames per
+  second and relative realtime speed.
 
 ## Requirements
 
@@ -39,6 +49,11 @@ Install FFmpeg with Homebrew:
 ```sh
 brew install ffmpeg
 ```
+
+Audio encoding can use the bundled FFmpeg or system FFmpeg. Video encoding uses
+system FFmpeg for now so GPhilCoder can use the Mac's Apple Silicon
+VideoToolbox HEVC encoder and request VideoToolbox decode for supported sources
+without increasing the bundled audio-focused FFmpeg size.
 
 ## Run From Source
 
@@ -84,6 +99,11 @@ To build a local LGPL-compatible, audio-only FFmpeg candidate with libvorbis:
 ```
 
 The helper script builds static libogg, libvorbis, libopus, libmp3lame, and a trimmed audio-only FFmpeg into `vendor/ffmpeg-lgpl/`, then validates that the resulting FFmpeg has no GPL/nonfree/version3 configure flags and no Homebrew runtime library links.
+
+If a future self-contained video build is worth shipping, measure the added app
+size first. A VideoToolbox-enabled bundled FFmpeg would need at least MOV/MP4
+demuxing/muxing, common video decoders, native AAC, and `hevc_videotoolbox`;
+until that size tradeoff is accepted, video stays on system FFmpeg.
 
 The app bundle is written to:
 
@@ -173,6 +193,18 @@ files that fail to import or play in apps such as REAPER or foobar2000. Enable
 oversized multichannel splitting to write channel-order chunks such as
 `source_ch1-10.wv` and `source_ch11-21.wv` for WavPack, or up to 8-channel
 chunks for FLAC.
+
+## Test Video Conversions
+
+```sh
+./scripts/test_video_conversions.sh
+```
+
+The script uses system FFmpeg to create short `.mp4`, `.mov`, and 4K fixtures,
+then requests VideoToolbox decode and verifies HEVC VideoToolbox output,
+4K-to-1080p software scaling, and the 10-bit Main10 preset with `ffprobe`.
+Set `FFMPEG=/path/to/ffmpeg` and `FFPROBE=/path/to/ffprobe` to test a specific
+system install.
 
 ## Trash Safety
 

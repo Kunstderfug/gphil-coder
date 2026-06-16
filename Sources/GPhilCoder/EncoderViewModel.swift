@@ -18,7 +18,9 @@ final class EncoderViewModel: ObservableObject {
         static let videoOutputContainer = "videoOutputContainer"
         static let hevcPreset = "hevcPreset"
         static let customVideoBitrateKbps = "customVideoBitrateKbps"
+        static let videoScaleMode = "videoScaleMode"
         static let videoAudioMode = "videoAudioMode"
+        static let videoHardwareDecodeMode = "videoHardwareDecodeMode"
         static let mp3Mode = "mp3Mode"
         static let vbrQuality = "vbrQuality"
         static let cbrBitrateKbps = "cbrBitrateKbps"
@@ -33,6 +35,9 @@ final class EncoderViewModel: ObservableObject {
         static let parallelJobs = "parallelJobs"
         static let ffmpegThreads = "ffmpegThreads"
         static let ffmpegSourcePreference = "ffmpegSourcePreference"
+        static let encodingPresets = "encodingPresets"
+        static let selectedAudioEncodingPresetID = "selectedAudioEncodingPresetID"
+        static let selectedVideoEncodingPresetID = "selectedVideoEncodingPresetID"
         static let trashedSourceRecords = "trashedSourceRecords"
         static let restoreDeletedFolderPath = "restoreDeletedFolderPath"
         static let restoreBackupRootPath = "restoreBackupRootPath"
@@ -302,6 +307,7 @@ final class EncoderViewModel: ObservableObject {
     @Published private(set) var bundledFFmpegURL: URL?
     @Published private(set) var systemFFmpegURL: URL?
     @Published private(set) var ffmpegCapabilities = FFmpegCapabilities()
+    @Published private(set) var systemFFmpegCapabilities = FFmpegCapabilities()
     @Published private(set) var statusMessage = "Add audio or video files to begin."
     @Published private(set) var notificationPermission: NotificationPermissionState = .unknown
     @Published private(set) var trashedSourceRecords: [TrashedSourceRecord] = [] {
@@ -424,6 +430,28 @@ final class EncoderViewModel: ObservableObject {
     @Published private var mediaRenameRedoStack: [MediaRenameHistoryTransaction] = [] {
         didSet { persistMediaRenameHistory() }
     }
+    @Published private(set) var encodingPresets: [EncodingPreset] = [] {
+        didSet {
+            guard !isLoadingPersistedSettings else { return }
+            persistEncodingPresets()
+        }
+    }
+    @Published private(set) var selectedAudioEncodingPresetID: UUID? {
+        didSet {
+            persistOptionalUUID(
+                selectedAudioEncodingPresetID,
+                forKey: DefaultsKey.selectedAudioEncodingPresetID
+            )
+        }
+    }
+    @Published private(set) var selectedVideoEncodingPresetID: UUID? {
+        didSet {
+            persistOptionalUUID(
+                selectedVideoEncodingPresetID,
+                forKey: DefaultsKey.selectedVideoEncodingPresetID
+            )
+        }
+    }
 
     @Published var mediaRenameOperation: MediaRenameOperation = .pattern {
         didSet { handleMediaRenameSettingChanged(from: oldValue, to: mediaRenameOperation) }
@@ -538,7 +566,12 @@ final class EncoderViewModel: ObservableObject {
     }
 
     @Published var hevcPreset: HEVCVideoPreset = .balanced1080p {
-        didSet { UserDefaults.standard.set(hevcPreset.rawValue, forKey: DefaultsKey.hevcPreset) }
+        didSet {
+            UserDefaults.standard.set(hevcPreset.rawValue, forKey: DefaultsKey.hevcPreset)
+            if !isLoadingPersistedSettings {
+                videoScaleMode = hevcPreset.defaultScaleMode
+            }
+        }
     }
 
     @Published var customVideoBitrateKbps = 8_000 {
@@ -550,9 +583,24 @@ final class EncoderViewModel: ObservableObject {
         }
     }
 
+    @Published var videoScaleMode: VideoScaleMode = HEVCVideoPreset.balanced1080p.defaultScaleMode {
+        didSet {
+            UserDefaults.standard.set(videoScaleMode.rawValue, forKey: DefaultsKey.videoScaleMode)
+        }
+    }
+
     @Published var videoAudioMode: VideoAudioMode = .copy {
         didSet {
             UserDefaults.standard.set(videoAudioMode.rawValue, forKey: DefaultsKey.videoAudioMode)
+        }
+    }
+
+    @Published var videoHardwareDecodeMode: VideoHardwareDecodeMode = .auto {
+        didSet {
+            UserDefaults.standard.set(
+                videoHardwareDecodeMode.rawValue,
+                forKey: DefaultsKey.videoHardwareDecodeMode
+            )
         }
     }
 
@@ -644,7 +692,7 @@ final class EncoderViewModel: ObservableObject {
     }
 
     var canEncode: Bool {
-        !activeInputs.isEmpty && !isEncoding && ffmpegURL != nil
+        !activeInputs.isEmpty && !isEncoding && encodingFFmpegURL != nil
             && (outputMode == .sourceFolders || exportFolder != nil)
     }
 
@@ -754,7 +802,7 @@ final class EncoderViewModel: ObservableObject {
     }
 
     var supportsHEVCVideoToolbox: Bool {
-        ffmpegCapabilities.hasHEVCVideoToolbox
+        systemFFmpegCapabilities.hasHEVCVideoToolbox
     }
 
     var selectedEncoderName: String {
@@ -762,11 +810,63 @@ final class EncoderViewModel: ObservableObject {
             return "hevc_videotoolbox"
         }
 
-        switch outputFormat {
+        return switch outputFormat {
         case .ogg:
             supportsOggBitrate ? "libvorbis" : "vorbis"
         default:
             outputFormat.codecName
+        }
+    }
+
+    var videoEncodeModeTitle: String {
+        supportsHEVCVideoToolbox ? "Encode: HW only" : "Encode: no HW"
+    }
+
+    var videoEncodeModeDetail: String {
+        supportsHEVCVideoToolbox
+            ? "VideoToolbox HEVC, software fallback blocked"
+            : "System FFmpeg has no hevc_videotoolbox"
+    }
+
+    var videoDecodeModeTitle: String {
+        switch videoHardwareDecodeMode {
+        case .auto:
+            "Decode: HW auto"
+        case .on:
+            "Decode: HW preferred"
+        case .off:
+            "Decode: SW"
+        }
+    }
+
+    var videoDecodeModeDetail: String {
+        switch videoHardwareDecodeMode {
+        case .auto:
+            "VideoToolbox requested when FFmpeg can use it"
+        case .on:
+            "VideoToolbox requested for this job"
+        case .off:
+            "FFmpeg software decoder path"
+        }
+    }
+
+    var videoScaleModeTitle: String {
+        switch videoScaleMode {
+        case .source:
+            "Scale: off"
+        case .max1080p:
+            "Scale: SW 1080p"
+        case .max4k:
+            "Scale: SW 4K"
+        }
+    }
+
+    var videoScaleModeDetail: String {
+        switch videoScaleMode {
+        case .source:
+            "No resize filter; source dimensions are preserved"
+        case .max1080p, .max4k:
+            "\(videoScaleMode.detail) FFmpeg performs this scale filter in software before VideoToolbox encode."
         }
     }
 
@@ -810,6 +910,42 @@ final class EncoderViewModel: ObservableObject {
         case .video:
             !selectedVideoInputExtensions.isEmpty
         }
+    }
+
+    var workflowEncodingPresets: [EncodingPreset] {
+        encodingPresets
+            .filter { $0.workflow == encodingWorkflow }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    var selectedEncodingPresetID: UUID? {
+        switch encodingWorkflow {
+        case .audio:
+            selectedAudioEncodingPresetID
+        case .video:
+            selectedVideoEncodingPresetID
+        }
+    }
+
+    var selectedEncodingPreset: EncodingPreset? {
+        guard let selectedEncodingPresetID else { return nil }
+        return encodingPresets.first { $0.id == selectedEncodingPresetID }
+    }
+
+    var selectedEncodingPresetSummary: String {
+        selectedEncodingPreset?.summary ?? "No preset selected"
+    }
+
+    var canLoadSelectedEncodingPreset: Bool {
+        selectedEncodingPreset != nil && !isEncoding
+    }
+
+    var canUpdateSelectedEncodingPreset: Bool {
+        selectedEncodingPreset != nil && !isEncoding
+    }
+
+    var canDeleteSelectedEncodingPreset: Bool {
+        selectedEncodingPreset != nil && !isEncoding
     }
 
     var canRestoreTrashedSources: Bool {
@@ -1265,11 +1401,23 @@ final class EncoderViewModel: ObservableObject {
     }
 
     var ffmpegSourceTitle: String {
-        ffmpegSourcePreference.title
+        if encodingWorkflow == .video {
+            return "System"
+        }
+        return ffmpegSourcePreference.title
     }
 
     var activeFFmpegPath: String {
-        ffmpegURL?.path(percentEncoded: false) ?? "No executable selected"
+        encodingFFmpegURL?.path(percentEncoded: false) ?? "No executable selected"
+    }
+
+    var encodingFFmpegURL: URL? {
+        switch encodingWorkflow {
+        case .audio:
+            ffmpegURL
+        case .video:
+            systemFFmpegURL
+        }
     }
 
     private var pendingTrashJournalNotice: String {
@@ -1338,14 +1486,23 @@ final class EncoderViewModel: ObservableObject {
         bundledFFmpegURL = FFmpegLocator.bundledFFmpegURL()
         systemFFmpegURL = FFmpegLocator.systemFFmpegURL()
         ffmpegURL = FFmpegLocator.locate(preference: ffmpegSourcePreference)
+        if let systemFFmpegURL {
+            systemFFmpegCapabilities = FFmpegCapabilities.detect(ffmpegURL: systemFFmpegURL)
+        } else {
+            systemFFmpegCapabilities = FFmpegCapabilities()
+        }
 
         if let ffmpegURL {
             ffmpegCapabilities = FFmpegCapabilities.detect(ffmpegURL: ffmpegURL)
             let vorbisStatus =
                 ffmpegCapabilities.hasLibVorbis ? "libvorbis available" : "native Vorbis only"
+            let videoStatus =
+                systemFFmpegCapabilities.hasHEVCVideoToolbox
+                ? "HEVC VideoToolbox available"
+                : "HEVC VideoToolbox unavailable"
             let source = FFmpegLocator.isBundled(ffmpegURL) ? "bundled FFmpeg" : "system FFmpeg"
             statusMessage =
-                "Using \(source) at \(ffmpegURL.path(percentEncoded: false)) (\(vorbisStatus)).\(pendingTrashJournalNotice)"
+                "Audio uses \(source) at \(ffmpegURL.path(percentEncoded: false)) (\(vorbisStatus)). Video uses system FFmpeg (\(videoStatus)).\(pendingTrashJournalNotice)"
         } else {
             ffmpegCapabilities = FFmpegCapabilities()
             switch ffmpegSourcePreference {
@@ -1376,15 +1533,128 @@ final class EncoderViewModel: ObservableObject {
         }
     }
 
+    func setSelectedEncodingPresetID(_ id: UUID?) {
+        setSelectedEncodingPresetID(id, for: encodingWorkflow)
+    }
+
+    func setSelectedEncodingPresetID(_ id: UUID?, for workflow: EncodingWorkflow) {
+        switch workflow {
+        case .audio:
+            selectedAudioEncodingPresetID = id
+        case .video:
+            selectedVideoEncodingPresetID = id
+        }
+    }
+
+    func loadSelectedEncodingPreset() {
+        guard let preset = selectedEncodingPreset else {
+            statusMessage = "Choose a preset before loading."
+            return
+        }
+        applyEncodingPreset(preset)
+    }
+
+    func loadEncodingPreset(_ preset: EncodingPreset) {
+        applyEncodingPreset(preset)
+    }
+
+    func saveCurrentSettingsAsEncodingPreset() {
+        guard !isEncoding else { return }
+        guard let name = promptEncodingPresetName(
+            title: "Save Encoding Preset",
+            message: "Name this \(encodingWorkflow.title.lowercased()) encoding preset.",
+            defaultName: defaultEncodingPresetName()
+        ) else {
+            return
+        }
+
+        let preset = currentEncodingPreset(named: name)
+        encodingPresets.append(preset)
+        setSelectedEncodingPresetID(preset.id)
+        statusMessage = "Saved \(encodingWorkflow.title.lowercased()) preset \(preset.name)."
+    }
+
+    func updateSelectedEncodingPreset() {
+        guard !isEncoding else { return }
+        guard let preset = selectedEncodingPreset,
+            let index = encodingPresets.firstIndex(where: { $0.id == preset.id })
+        else {
+            statusMessage = "Choose a preset before updating."
+            return
+        }
+
+        encodingPresets[index] = currentEncodingPreset(
+            id: preset.id,
+            named: preset.name,
+            createdAt: preset.createdAt
+        )
+        statusMessage = "Updated preset \(preset.name)."
+    }
+
+    func renameSelectedEncodingPreset() {
+        guard !isEncoding else { return }
+        guard let preset = selectedEncodingPreset else { return }
+        renameEncodingPreset(preset)
+    }
+
+    func renameEncodingPreset(_ preset: EncodingPreset) {
+        guard !isEncoding else { return }
+        guard let index = encodingPresets.firstIndex(where: { $0.id == preset.id }),
+            let name = promptEncodingPresetName(
+                title: "Rename Encoding Preset",
+                message: "Rename this preset.",
+                defaultName: preset.name
+            )
+        else {
+            return
+        }
+
+        encodingPresets[index].name = name
+        encodingPresets[index].updatedAt = Date()
+        statusMessage = "Renamed preset to \(name)."
+    }
+
+    func updateEncodingPreset(_ preset: EncodingPreset) {
+        guard preset.workflow == encodingWorkflow else {
+            statusMessage =
+                "Switch to the \(preset.workflow.title) workflow before updating \(preset.name)."
+            return
+        }
+        setSelectedEncodingPresetID(preset.id, for: preset.workflow)
+        updateSelectedEncodingPreset()
+    }
+
+    func deleteSelectedEncodingPreset() {
+        guard let preset = selectedEncodingPreset else {
+            statusMessage = "Choose a preset before deleting."
+            return
+        }
+        deleteEncodingPreset(preset)
+    }
+
+    func deleteEncodingPreset(_ preset: EncodingPreset) {
+        guard !isEncoding else { return }
+        guard confirmDeleteEncodingPreset(preset) else { return }
+
+        encodingPresets.removeAll { $0.id == preset.id }
+        if selectedAudioEncodingPresetID == preset.id {
+            selectedAudioEncodingPresetID = nil
+        }
+        if selectedVideoEncodingPresetID == preset.id {
+            selectedVideoEncodingPresetID = nil
+        }
+        statusMessage = "Deleted preset \(preset.name)."
+    }
+
     func addFiles() {
         let panel = NSOpenPanel()
-        panel.title = "Add Audio Files"
+        panel.title = "Add \(encodingWorkflow.title) Files"
         panel.prompt = "Add Files"
         panel.allowsMultipleSelection = true
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.canCreateDirectories = false
-        panel.allowedContentTypes = AudioFormat.inputExtensions.compactMap {
+        panel.allowedContentTypes = currentSupportedInputExtensions.compactMap {
             UTType(filenameExtension: $0)
         }
         panel.directoryURL = lastInputDirectoryURL()
@@ -1423,12 +1693,29 @@ final class EncoderViewModel: ObservableObject {
         setInputFormat(format, enabled: !isInputFormatEnabled(format))
     }
 
+    func toggleInputFormat(_ format: InputVideoFormat) {
+        guard !isEncoding else { return }
+        setInputFormat(format, enabled: !isInputFormatEnabled(format))
+    }
+
     func setInputFormat(_ format: InputAudioFormat, enabled: Bool) {
         guard !isEncoding else { return }
         if enabled {
             selectedInputExtensions.formUnion(format.fileExtensions)
         } else {
             selectedInputExtensions.subtract(format.fileExtensions)
+        }
+        jobs.removeAll()
+        jobStateFilter = nil
+        statusMessage = activeFilterStatusMessage
+    }
+
+    func setInputFormat(_ format: InputVideoFormat, enabled: Bool) {
+        guard !isEncoding else { return }
+        if enabled {
+            selectedVideoInputExtensions.formUnion(format.fileExtensions)
+        } else {
+            selectedVideoInputExtensions.subtract(format.fileExtensions)
         }
         jobs.removeAll()
         jobStateFilter = nil
@@ -1454,6 +1741,10 @@ final class EncoderViewModel: ObservableObject {
 
     func isInputFormatEnabled(_ format: InputAudioFormat) -> Bool {
         format.fileExtensions.isSubset(of: selectedInputExtensions)
+    }
+
+    func isInputFormatEnabled(_ format: InputVideoFormat) -> Bool {
+        format.fileExtensions.isSubset(of: selectedVideoInputExtensions)
     }
 
     func isMediaCopyExtensionEnabled(_ fileExtension: String) -> Bool {
@@ -1518,7 +1809,12 @@ final class EncoderViewModel: ObservableObject {
 
     func selectAllInputFormats() {
         guard !isEncoding else { return }
-        selectedInputExtensions = AudioFormat.inputExtensions
+        switch encodingWorkflow {
+        case .audio:
+            selectedInputExtensions = AudioFormat.inputExtensions
+        case .video:
+            selectedVideoInputExtensions = VideoFormat.inputExtensions
+        }
         jobs.removeAll()
         jobStateFilter = nil
         statusMessage = activeFilterStatusMessage
@@ -1526,7 +1822,12 @@ final class EncoderViewModel: ObservableObject {
 
     func deselectAllInputFormats() {
         guard !isEncoding else { return }
-        selectedInputExtensions.removeAll()
+        switch encodingWorkflow {
+        case .audio:
+            selectedInputExtensions.removeAll()
+        case .video:
+            selectedVideoInputExtensions.removeAll()
+        }
         jobs.removeAll()
         jobStateFilter = nil
         statusMessage = activeFilterStatusMessage
@@ -3754,10 +4055,16 @@ final class EncoderViewModel: ObservableObject {
     }
 
     func startEncoding() {
-        guard canEncode, let ffmpegURL else { return }
+        guard canEncode, let selectedFFmpegURL = encodingFFmpegURL else { return }
 
-        if outputFormat == .ogg, oggMode == .bitrate, !supportsOggBitrate {
+        if encodingWorkflow == .audio, outputFormat == .ogg, oggMode == .bitrate, !supportsOggBitrate {
             statusMessage = FFmpegToolError.unsupportedOggBitrate.localizedDescription
+            return
+        }
+
+        if encodingWorkflow == .video, !supportsHEVCVideoToolbox {
+            statusMessage =
+                "This FFmpeg build does not include hevc_videotoolbox, so Apple Silicon HEVC encoding is unavailable."
             return
         }
 
@@ -3771,9 +4078,16 @@ final class EncoderViewModel: ObservableObject {
             EncodeJob(item: $0, outputURL: outputURL(for: $0))
         }
         let settings = EncodingSettingsSnapshot(
-            ffmpegURL: ffmpegURL,
+            ffmpegURL: selectedFFmpegURL,
             useLibVorbis: ffmpegCapabilities.hasLibVorbis,
+            encodingWorkflow: encodingWorkflow,
             outputFormat: outputFormat,
+            videoOutputContainer: videoOutputContainer,
+            hevcPreset: hevcPreset,
+            customVideoBitrateKbps: customVideoBitrateKbps,
+            videoScaleMode: videoScaleMode,
+            videoAudioMode: videoAudioMode,
+            videoHardwareDecodeMode: videoHardwareDecodeMode,
             mp3Mode: mp3Mode,
             vbrQuality: vbrQuality,
             cbrBitrateKbps: cbrBitrateKbps,
@@ -3838,7 +4152,7 @@ final class EncoderViewModel: ObservableObject {
         }
 
         var details = [
-            "\(plannedJobs.count) file\(plannedJobs.count == 1 ? "" : "s") will be encoded as \(outputFormat.title).",
+            "\(plannedJobs.count) file\(plannedJobs.count == 1 ? "" : "s") will be encoded as \(outputFormatTitle).",
             routeDescription,
             "Encoding settings: \(settings.summary).",
             "Parallel jobs: \(settings.parallelJobs); FFmpeg threads: \(settings.ffmpegThreads == 0 ? "Auto" : "\(settings.ffmpegThreads)")."
@@ -3934,12 +4248,20 @@ final class EncoderViewModel: ObservableObject {
 
     private func currentQueueSettings() -> QueueSettings {
         QueueSettings(
+            encodingWorkflow: encodingWorkflow.rawValue,
             outputMode: outputMode.rawValue,
             exportFolderPath: exportFolder?.standardizedFileURL.path(percentEncoded: false),
             selectedInputExtensions: selectedInputExtensions.sorted(),
+            selectedVideoInputExtensions: selectedVideoInputExtensions.sorted(),
             preserveSubfolders: preserveSubfolders,
             overwriteExisting: overwriteExisting,
             outputFormat: outputFormat.rawValue,
+            videoOutputContainer: videoOutputContainer.rawValue,
+            hevcPreset: hevcPreset.rawValue,
+            customVideoBitrateKbps: customVideoBitrateKbps,
+            videoScaleMode: videoScaleMode.rawValue,
+            videoAudioMode: videoAudioMode.rawValue,
+            videoHardwareDecodeMode: videoHardwareDecodeMode.rawValue,
             mp3Mode: mp3Mode.rawValue,
             vbrQuality: vbrQuality,
             cbrBitrateKbps: cbrBitrateKbps,
@@ -3954,6 +4276,136 @@ final class EncoderViewModel: ObservableObject {
             parallelJobs: max(1, min(parallelJobs, processorLimit)),
             ffmpegThreads: max(0, min(ffmpegThreads, processorLimit))
         )
+    }
+
+    private func currentEncodingPreset(
+        id: UUID = UUID(),
+        named name: String,
+        createdAt: Date = Date()
+    ) -> EncodingPreset {
+        let now = Date()
+        switch encodingWorkflow {
+        case .audio:
+            return EncodingPreset(
+                id: id,
+                name: name,
+                workflow: .audio,
+                audio: AudioEncodingPresetSettings(
+                    outputFormat: outputFormat,
+                    mp3Mode: mp3Mode,
+                    vbrQuality: vbrQuality,
+                    cbrBitrateKbps: cbrBitrateKbps,
+                    abrBitrateKbps: abrBitrateKbps,
+                    oggMode: oggMode,
+                    oggQuality: oggQuality,
+                    oggBitrateKbps: oggBitrateKbps,
+                    opusRateMode: opusRateMode,
+                    opusBitrateKbps: opusBitrateKbps,
+                    flacCompressionLevel: flacCompressionLevel,
+                    splitOversizedMultichannel: splitOversizedMultichannel
+                ),
+                createdAt: createdAt,
+                updatedAt: now
+            )
+        case .video:
+            return EncodingPreset(
+                id: id,
+                name: name,
+                workflow: .video,
+                video: VideoEncodingPresetSettings(
+                    outputContainer: videoOutputContainer,
+                    hevcPreset: hevcPreset,
+                    customBitrateKbps: customVideoBitrateKbps,
+                    scaleMode: videoScaleMode,
+                    audioMode: videoAudioMode,
+                    hardwareDecodeMode: videoHardwareDecodeMode
+                ),
+                createdAt: createdAt,
+                updatedAt: now
+            )
+        }
+    }
+
+    private func applyEncodingPreset(_ preset: EncodingPreset) {
+        guard !isEncoding else { return }
+
+        encodingWorkflow = preset.workflow
+        switch preset.workflow {
+        case .audio:
+            guard let audio = preset.audio else {
+                statusMessage = "Preset \(preset.name) has no audio settings."
+                return
+            }
+            outputFormat = audio.outputFormat
+            mp3Mode = audio.mp3Mode
+            vbrQuality = audio.vbrQuality
+            cbrBitrateKbps = audio.cbrBitrateKbps
+            abrBitrateKbps = audio.abrBitrateKbps
+            oggMode = audio.oggMode
+            oggQuality = audio.oggQuality
+            oggBitrateKbps = audio.oggBitrateKbps
+            opusRateMode = audio.opusRateMode
+            opusBitrateKbps = audio.opusBitrateKbps
+            flacCompressionLevel = audio.flacCompressionLevel
+            splitOversizedMultichannel = audio.splitOversizedMultichannel
+            selectedAudioEncodingPresetID = preset.id
+        case .video:
+            guard let video = preset.video else {
+                statusMessage = "Preset \(preset.name) has no video settings."
+                return
+            }
+            videoOutputContainer = video.outputContainer
+            hevcPreset = video.hevcPreset
+            customVideoBitrateKbps = max(500, min(video.customBitrateKbps, 100_000))
+            videoScaleMode = video.scaleMode
+            videoAudioMode = video.audioMode
+            videoHardwareDecodeMode = video.hardwareDecodeMode
+            selectedVideoEncodingPresetID = preset.id
+        }
+
+        statusMessage = "Loaded \(preset.workflow.title.lowercased()) preset \(preset.name)."
+    }
+
+    private func defaultEncodingPresetName() -> String {
+        switch encodingWorkflow {
+        case .audio:
+            return currentEncodingPreset(named: "Preset").summary
+        case .video:
+            return hevcPreset.title + " " + videoOutputContainer.title
+        }
+    }
+
+    private func promptEncodingPresetName(
+        title: String,
+        message: String,
+        defaultName: String
+    ) -> String? {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+
+        let textField = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
+        textField.stringValue = defaultName
+        textField.selectText(nil)
+        alert.accessoryView = textField
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let trimmed = textField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return trimmed
+    }
+
+    private func confirmDeleteEncodingPreset(_ preset: EncodingPreset) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "Delete encoding preset?"
+        alert.informativeText = "This will delete \(preset.name)."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     private func queueInput(from item: AudioInputItem) -> QueueInput {
@@ -3978,8 +4430,17 @@ final class EncoderViewModel: ObservableObject {
             exportFolder = nil
         }
 
+        if let rawValue = settings.encodingWorkflow,
+            let value = EncodingWorkflow(rawValue: rawValue)
+        {
+            encodingWorkflow = value
+        }
+
         if let selectedInputExtensions = settings.selectedInputExtensions {
             setSelectedInputExtensions(Set(selectedInputExtensions))
+        }
+        if let selectedVideoInputExtensions = settings.selectedVideoInputExtensions {
+            setSelectedVideoInputExtensions(Set(selectedVideoInputExtensions))
         }
 
         if let value = settings.preserveSubfolders {
@@ -3992,6 +4453,34 @@ final class EncoderViewModel: ObservableObject {
             let value = AudioOutputFormat(rawValue: rawValue)
         {
             outputFormat = value
+        }
+        if let rawValue = settings.videoOutputContainer,
+            let value = VideoOutputContainer(rawValue: rawValue)
+        {
+            videoOutputContainer = value
+        }
+        if let rawValue = settings.hevcPreset,
+            let value = HEVCVideoPreset(rawValue: rawValue)
+        {
+            hevcPreset = value
+        }
+        if let value = settings.customVideoBitrateKbps {
+            customVideoBitrateKbps = max(500, min(value, 100_000))
+        }
+        if let rawValue = settings.videoScaleMode,
+            let value = VideoScaleMode(rawValue: rawValue)
+        {
+            videoScaleMode = value
+        }
+        if let rawValue = settings.videoAudioMode,
+            let value = VideoAudioMode(rawValue: rawValue)
+        {
+            videoAudioMode = value
+        }
+        if let rawValue = settings.videoHardwareDecodeMode,
+            let value = VideoHardwareDecodeMode(rawValue: rawValue)
+        {
+            videoHardwareDecodeMode = value
         }
         if let rawValue = settings.mp3Mode,
             let value = MP3EncodingMode(rawValue: rawValue)
@@ -4076,7 +4565,7 @@ final class EncoderViewModel: ObservableObject {
                 continue
             }
 
-            guard isSupportedAudio(url) else {
+            guard isSupportedInput(url) else {
                 result.unsupported += 1
                 continue
             }
@@ -4145,6 +4634,7 @@ final class EncoderViewModel: ObservableObject {
             mediaRenameRedoStack = Array(document.redoStack.suffix(Self.mediaRenameHistoryLimit))
         }
         loadMediaRenameSettings(from: defaults)
+        loadEncodingPresets(from: defaults)
         loadPendingTrashSourceRecords()
 
         if let rawValue = defaults.string(forKey: DefaultsKey.ffmpegSourcePreference),
@@ -4168,6 +4658,12 @@ final class EncoderViewModel: ObservableObject {
             let persistedOutputMode = OutputMode(rawValue: rawValue)
         {
             outputMode = persistedOutputMode
+        }
+
+        if let rawValue = defaults.string(forKey: DefaultsKey.encodingWorkflow),
+            let persistedWorkflow = EncodingWorkflow(rawValue: rawValue)
+        {
+            encodingWorkflow = persistedWorkflow
         }
 
         exportFolder = persistedDirectoryURL(forKey: DefaultsKey.exportFolderPath)
@@ -4209,6 +4705,11 @@ final class EncoderViewModel: ObservableObject {
         {
             setSelectedInputExtensions(Set(selectedInputExtensions))
         }
+        if let selectedVideoInputExtensions = defaults.array(
+            forKey: DefaultsKey.selectedVideoInputExtensions
+        ) as? [String] {
+            setSelectedVideoInputExtensions(Set(selectedVideoInputExtensions))
+        }
 
         if let value = persistedBool(forKey: DefaultsKey.preserveSubfolders) {
             preserveSubfolders = value
@@ -4222,6 +4723,42 @@ final class EncoderViewModel: ObservableObject {
             let persistedOutputFormat = AudioOutputFormat(rawValue: rawValue)
         {
             outputFormat = persistedOutputFormat
+        }
+
+        if let rawValue = defaults.string(forKey: DefaultsKey.videoOutputContainer),
+            let persistedVideoContainer = VideoOutputContainer(rawValue: rawValue)
+        {
+            videoOutputContainer = persistedVideoContainer
+        }
+
+        if let rawValue = defaults.string(forKey: DefaultsKey.hevcPreset),
+            let persistedHEVCPreset = HEVCVideoPreset(rawValue: rawValue)
+        {
+            hevcPreset = persistedHEVCPreset
+        }
+
+        if let value = persistedInt(forKey: DefaultsKey.customVideoBitrateKbps) {
+            customVideoBitrateKbps = max(500, min(value, 100_000))
+        }
+
+        if let rawValue = defaults.string(forKey: DefaultsKey.videoScaleMode),
+            let persistedVideoScaleMode = VideoScaleMode(rawValue: rawValue)
+        {
+            videoScaleMode = persistedVideoScaleMode
+        } else {
+            videoScaleMode = hevcPreset.defaultScaleMode
+        }
+
+        if let rawValue = defaults.string(forKey: DefaultsKey.videoAudioMode),
+            let persistedVideoAudioMode = VideoAudioMode(rawValue: rawValue)
+        {
+            videoAudioMode = persistedVideoAudioMode
+        }
+
+        if let rawValue = defaults.string(forKey: DefaultsKey.videoHardwareDecodeMode),
+            let persistedVideoHardwareDecodeMode = VideoHardwareDecodeMode(rawValue: rawValue)
+        {
+            videoHardwareDecodeMode = persistedVideoHardwareDecodeMode
         }
 
         if let rawValue = defaults.string(forKey: DefaultsKey.mp3Mode),
@@ -4348,6 +4885,20 @@ final class EncoderViewModel: ObservableObject {
         )
     }
 
+    private func persistedUUID(forKey key: String) -> UUID? {
+        guard let value = UserDefaults.standard.string(forKey: key) else { return nil }
+        return UUID(uuidString: value)
+    }
+
+    private func persistOptionalUUID(_ id: UUID?, forKey key: String) {
+        guard !isLoadingPersistedSettings else { return }
+        guard let id else {
+            UserDefaults.standard.removeObject(forKey: key)
+            return
+        }
+        UserDefaults.standard.set(id.uuidString, forKey: key)
+    }
+
     private func persistMediaCopySourceRoots() {
         let paths = mediaCopySourceRoots.map {
             $0.standardizedFileURL.path(percentEncoded: false)
@@ -4370,6 +4921,24 @@ final class EncoderViewModel: ObservableObject {
             mediaCopyAudioExtensions
         case .video:
             mediaCopyVideoExtensions
+        }
+    }
+
+    private var currentSupportedInputExtensions: Set<String> {
+        switch encodingWorkflow {
+        case .audio:
+            AudioFormat.inputExtensions
+        case .video:
+            VideoFormat.inputExtensions
+        }
+    }
+
+    private var currentSelectedInputExtensions: Set<String> {
+        switch encodingWorkflow {
+        case .audio:
+            selectedInputExtensions
+        case .video:
+            selectedVideoInputExtensions
         }
     }
 
@@ -4577,6 +5146,44 @@ final class EncoderViewModel: ObservableObject {
         }
     }
 
+    private func persistEncodingPresets() {
+        let document = EncodingPresetDocument(presets: encodingPresets)
+        if let data = try? JSONEncoder().encode(document) {
+            UserDefaults.standard.set(data, forKey: DefaultsKey.encodingPresets)
+        }
+    }
+
+    private func loadEncodingPresets(from defaults: UserDefaults) {
+        if let data = defaults.data(forKey: DefaultsKey.encodingPresets),
+            let document = try? JSONDecoder().decode(EncodingPresetDocument.self, from: data),
+            document.version == EncodingPresetDocument.currentVersion
+        {
+            encodingPresets = document.presets
+        }
+
+        selectedAudioEncodingPresetID = persistedUUID(forKey: DefaultsKey.selectedAudioEncodingPresetID)
+        selectedVideoEncodingPresetID = persistedUUID(forKey: DefaultsKey.selectedVideoEncodingPresetID)
+        normalizeSelectedEncodingPresetIDs()
+    }
+
+    private func normalizeSelectedEncodingPresetIDs() {
+        if let selectedAudioEncodingPresetID,
+            !encodingPresets.contains(where: {
+                $0.id == selectedAudioEncodingPresetID && $0.workflow == .audio
+            })
+        {
+            self.selectedAudioEncodingPresetID = nil
+        }
+
+        if let selectedVideoEncodingPresetID,
+            !encodingPresets.contains(where: {
+                $0.id == selectedVideoEncodingPresetID && $0.workflow == .video
+            })
+        {
+            self.selectedVideoEncodingPresetID = nil
+        }
+    }
+
     private func loadMediaRenameSettings(from defaults: UserDefaults) {
         guard let data = defaults.data(forKey: DefaultsKey.mediaRenameSettings),
             let settings = try? JSONDecoder().decode(MediaRenameSettings.self, from: data)
@@ -4712,6 +5319,13 @@ final class EncoderViewModel: ObservableObject {
         jobStateFilter = nil
     }
 
+    private func setSelectedVideoInputExtensions(_ extensions: Set<String>) {
+        let supported = extensions.intersection(VideoFormat.inputExtensions)
+        selectedVideoInputExtensions = supported
+        jobs.removeAll()
+        jobStateFilter = nil
+    }
+
     private func moveItemToTrashAndRecord(
         _ item: TrashableFileItem,
         pendingRecord: PendingTrashSourceRecord
@@ -4738,7 +5352,7 @@ final class EncoderViewModel: ObservableObject {
     }
 
     private func appendRestoredInput(from record: TrashedSourceRecord, restoredURL: URL) {
-        guard isSupportedAudio(restoredURL) else { return }
+        guard isAnySupportedInput(restoredURL) else { return }
 
         let key = restoredURL.standardizedFileURL.path
         guard !inputs.contains(where: { $0.url.standardizedFileURL.path == key }) else { return }
@@ -4772,7 +5386,7 @@ final class EncoderViewModel: ObservableObject {
         let sourceRoot = restoreDestinationRoot
         var additions: [AudioInputItem] = []
 
-        for url in urls where isSupportedAudio(url) {
+        for url in urls where isAnySupportedInput(url) {
             let key = url.standardizedFileURL.path
             guard !existing.contains(key) else { continue }
             additions.append(inputItem(for: url, sourceRoot: sourceRoot))
@@ -4802,7 +5416,7 @@ final class EncoderViewModel: ObservableObject {
         var additions: [AudioInputItem] = []
 
         for url in urls {
-            guard isSupportedAudio(url) else {
+            guard isSupportedInput(url) else {
                 summary.unsupported += 1
                 continue
             }
@@ -4847,7 +5461,7 @@ final class EncoderViewModel: ObservableObject {
             let values = try? url.resourceValues(forKeys: [.isRegularFileKey])
             guard values?.isRegularFile == true else { continue }
 
-            guard isSupportedAudio(url) else {
+            guard isSupportedInput(url) else {
                 summary.unsupported += 1
                 continue
             }
@@ -4903,8 +5517,27 @@ final class EncoderViewModel: ObservableObject {
         AudioFormat.inputExtensions.contains(url.pathExtension.lowercased())
     }
 
-    private func isSelectedInputAudio(_ url: URL) -> Bool {
-        selectedInputExtensions.contains(url.pathExtension.lowercased())
+    private func isSupportedVideo(_ url: URL) -> Bool {
+        VideoFormat.inputExtensions.contains(url.pathExtension.lowercased())
+    }
+
+    private func isSupportedInput(_ url: URL) -> Bool {
+        switch encodingWorkflow {
+        case .audio:
+            isSupportedAudio(url)
+        case .video:
+            isSupportedVideo(url)
+        }
+    }
+
+    private func isAnySupportedInput(_ url: URL) -> Bool {
+        isSupportedAudio(url) || isSupportedVideo(url)
+    }
+
+    private func isSelectedInput(_ url: URL) -> Bool {
+        let fileExtension = url.pathExtension.lowercased()
+        return currentSupportedInputExtensions.contains(fileExtension)
+            && currentSelectedInputExtensions.contains(fileExtension)
     }
 
     nonisolated private static func mediaCopyScanStatusMessage(for plan: MediaCopyPlan) -> String {
@@ -5096,7 +5729,14 @@ final class EncoderViewModel: ObservableObject {
             }
         }
 
-        return outputDirectory.appendingPathComponent(item.outputFileName(for: outputFormat))
+        switch encodingWorkflow {
+        case .audio:
+            return outputDirectory.appendingPathComponent(item.outputFileName(for: outputFormat))
+        case .video:
+            return outputDirectory.appendingPathComponent(
+                item.outputFileName(for: videoOutputContainer)
+            )
+        }
     }
 
     private func runJobs(settings: EncodingSettingsSnapshot) async {
@@ -5106,8 +5746,9 @@ final class EncoderViewModel: ObservableObject {
 
             while nextIndex < initialCount {
                 let job = markJobRunning(at: nextIndex)
+                let reporter = EncodingProgressReporter(model: self, jobID: job.id)
                 group.addTask {
-                    await Self.encode(job: job, settings: settings)
+                    await Self.encode(job: job, settings: settings, progressReporter: reporter)
                 }
                 nextIndex += 1
             }
@@ -5121,8 +5762,9 @@ final class EncoderViewModel: ObservableObject {
 
                 if nextIndex < jobs.count {
                     let job = markJobRunning(at: nextIndex)
+                    let reporter = EncodingProgressReporter(model: self, jobID: job.id)
                     group.addTask {
-                        await Self.encode(job: job, settings: settings)
+                        await Self.encode(job: job, settings: settings, progressReporter: reporter)
                     }
                     nextIndex += 1
                 }
@@ -5158,7 +5800,7 @@ final class EncoderViewModel: ObservableObject {
         } else if completedCount > 0 {
             completionTitle = "Encoding finished"
             completionMessage =
-                "Finished \(completedCount) \(settings.outputFormat.title) export\(completedCount == 1 ? "" : "s")."
+                "Finished \(completedCount) \(settings.encodingWorkflow.title.lowercased()) export\(completedCount == 1 ? "" : "s")."
         } else {
             completionTitle = "Encoding finished"
             completionMessage = "No files were encoded."
@@ -5179,11 +5821,26 @@ final class EncoderViewModel: ObservableObject {
     private static func encode(job: EncodeJob, settings: EncodingSettingsSnapshot) async
         -> JobResult
     {
+        await encode(job: job, settings: settings, progressReporter: nil)
+    }
+
+    private static func encode(
+        job: EncodeJob,
+        settings: EncodingSettingsSnapshot,
+        progressReporter: EncodingProgressReporter?
+    ) async
+        -> JobResult
+    {
         let encoder = FFmpegEncoder(ffmpegURL: settings.ffmpegURL)
 
         do {
             let output = try await encoder.encode(
-                input: job.item.url, output: job.outputURL, settings: settings)
+                input: job.item.url,
+                output: job.outputURL,
+                settings: settings
+            ) { progress in
+                progressReporter?.report(progress)
+            }
             return .success(job.id, output)
         } catch EncodeSkipError.outputExists {
             return .skipped(job.id, "Output already exists.")
@@ -5240,6 +5897,15 @@ final class EncoderViewModel: ObservableObject {
         }
     }
 
+    func updateJobProgress(jobID: UUID, progress: FFmpegProgressSnapshot) {
+        guard let index = jobs.firstIndex(where: { $0.id == jobID }),
+            jobs[index].state == .running
+        else {
+            return
+        }
+        jobs[index].message = progress.message
+    }
+
     private func summarizeFFmpegOutput(_ output: String) -> String {
         let lines =
             output
@@ -5249,6 +5915,22 @@ final class EncoderViewModel: ObservableObject {
 
         return lines.last(where: { $0.contains("audio:") || $0.contains("video:") })
             ?? "Output written."
+    }
+}
+
+private final class EncodingProgressReporter: @unchecked Sendable {
+    weak var model: EncoderViewModel?
+    let jobID: UUID
+
+    init(model: EncoderViewModel, jobID: UUID) {
+        self.model = model
+        self.jobID = jobID
+    }
+
+    func report(_ progress: FFmpegProgressSnapshot) {
+        Task { @MainActor [weak model] in
+            model?.updateJobProgress(jobID: jobID, progress: progress)
+        }
     }
 }
 

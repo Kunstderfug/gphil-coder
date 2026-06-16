@@ -30,7 +30,7 @@ enum FileManagementMode: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-enum EncodingWorkflow: String, CaseIterable, Identifiable {
+enum EncodingWorkflow: String, CaseIterable, Codable, Identifiable {
     case audio
     case video
 
@@ -202,7 +202,7 @@ enum InputVideoFormat: String, CaseIterable, Identifiable {
     }
 }
 
-enum AudioOutputFormat: String, CaseIterable, Identifiable {
+enum AudioOutputFormat: String, CaseIterable, Codable, Identifiable {
     case mp3
     case ogg
     case opus
@@ -281,7 +281,7 @@ enum AudioOutputFormat: String, CaseIterable, Identifiable {
     }
 }
 
-enum VideoOutputContainer: String, CaseIterable, Identifiable {
+enum VideoOutputContainer: String, CaseIterable, Codable, Identifiable {
     case mp4
     case mov
 
@@ -308,7 +308,7 @@ enum VideoOutputContainer: String, CaseIterable, Identifiable {
     }
 }
 
-enum HEVCVideoPreset: String, CaseIterable, Identifiable {
+enum HEVCVideoPreset: String, CaseIterable, Codable, Identifiable {
     case compact1080p
     case balanced1080p
     case compact4k
@@ -338,13 +338,13 @@ enum HEVCVideoPreset: String, CaseIterable, Identifiable {
     var detail: String {
         switch self {
         case .compact1080p:
-            "Lower bitrate 8-bit HEVC for small 1080p exports."
+            "Lower bitrate 8-bit HEVC capped at 1080p for smaller exports."
         case .balanced1080p:
-            "General-purpose 8-bit HEVC for 1080p video."
+            "General-purpose 8-bit HEVC capped at 1080p."
         case .compact4k:
-            "Smaller 8-bit HEVC exports for 4K sources."
+            "Smaller 8-bit HEVC capped at 4K."
         case .balanced4k:
-            "Higher-bitrate 8-bit HEVC for cleaner 4K exports."
+            "Higher-bitrate 8-bit HEVC capped at 4K."
         case .main10:
             "10-bit HEVC Main10 using p010 output for sources that benefit from extra precision."
         case .custom:
@@ -377,9 +377,20 @@ enum HEVCVideoPreset: String, CaseIterable, Identifiable {
             8
         }
     }
+
+    var defaultScaleMode: VideoScaleMode {
+        switch self {
+        case .compact1080p, .balanced1080p:
+            .max1080p
+        case .compact4k, .balanced4k:
+            .max4k
+        case .main10, .custom:
+            .source
+        }
+    }
 }
 
-enum VideoAudioMode: String, CaseIterable, Identifiable {
+enum VideoAudioMode: String, CaseIterable, Codable, Identifiable {
     case copy
     case aac192
     case aac320
@@ -409,6 +420,90 @@ enum VideoAudioMode: String, CaseIterable, Identifiable {
     }
 }
 
+enum VideoScaleMode: String, CaseIterable, Codable, Identifiable {
+    case source
+    case max1080p
+    case max4k
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .source:
+            "Source"
+        case .max1080p:
+            "1080p max"
+        case .max4k:
+            "4K max"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .source:
+            "Keep the source pixel dimensions."
+        case .max1080p:
+            "Downscale larger sources to fit within 1920x1080. Smaller sources are not upscaled."
+        case .max4k:
+            "Downscale larger sources to fit within 3840x2160. Smaller sources are not upscaled."
+        }
+    }
+
+    var maxSize: (width: Int, height: Int)? {
+        switch self {
+        case .source:
+            nil
+        case .max1080p:
+            (width: 1_920, height: 1_080)
+        case .max4k:
+            (width: 3_840, height: 2_160)
+        }
+    }
+
+    var usesSoftwareScale: Bool {
+        maxSize != nil
+    }
+}
+
+enum VideoHardwareDecodeMode: String, CaseIterable, Codable, Identifiable {
+    case auto
+    case on
+    case off
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .auto:
+            "Auto"
+        case .on:
+            "Prefer"
+        case .off:
+            "Off"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .auto:
+            "Ask FFmpeg to use VideoToolbox hardware decode for supported sources."
+        case .on:
+            "Prefer VideoToolbox hardware decode for this job."
+        case .off:
+            "Use FFmpeg's normal decoder path."
+        }
+    }
+
+    var usesVideoToolbox: Bool {
+        switch self {
+        case .auto, .on:
+            true
+        case .off:
+            false
+        }
+    }
+}
+
 enum OutputMode: String, CaseIterable, Identifiable {
     case sourceFolders
     case exportFolder
@@ -425,7 +520,7 @@ enum OutputMode: String, CaseIterable, Identifiable {
     }
 }
 
-enum MP3EncodingMode: String, CaseIterable, Identifiable {
+enum MP3EncodingMode: String, CaseIterable, Codable, Identifiable {
     case vbr
     case cbr
     case abr
@@ -486,7 +581,7 @@ enum MP3EncodingOptions {
 }
 
 enum OggEncodingOptions {
-    enum Mode: String, CaseIterable, Identifiable {
+    enum Mode: String, CaseIterable, Codable, Identifiable {
         case bitrate
         case quality
 
@@ -543,7 +638,7 @@ enum OggEncodingOptions {
 }
 
 enum OpusEncodingOptions {
-    enum RateMode: String, CaseIterable, Identifiable {
+    enum RateMode: String, CaseIterable, Codable, Identifiable {
         case vbr
         case constrained
         case cbr
@@ -744,7 +839,9 @@ struct EncodingSettingsSnapshot {
     let videoOutputContainer: VideoOutputContainer
     let hevcPreset: HEVCVideoPreset
     let customVideoBitrateKbps: Int
+    let videoScaleMode: VideoScaleMode
     let videoAudioMode: VideoAudioMode
+    let videoHardwareDecodeMode: VideoHardwareDecodeMode
     let mp3Mode: MP3EncodingMode
     let vbrQuality: Int
     let cbrBitrateKbps: Int
@@ -766,10 +863,10 @@ struct EncodingSettingsSnapshot {
 
     var summary: String {
         if encodingWorkflow == .video {
-            return "\(hevcPreset.title) HEVC \(videoBitrateKbps) kbps \(videoOutputContainer.title), audio \(videoAudioMode.title)"
+            return "\(hevcPreset.title) HEVC \(videoBitrateKbps) kbps \(videoOutputContainer.title), \(videoScaleMode.title), audio \(videoAudioMode.title)"
         }
 
-        switch outputFormat {
+        return switch outputFormat {
         case .mp3:
             switch mp3Mode {
             case .vbr:
@@ -821,7 +918,9 @@ struct QueueSettings: Codable {
     var videoOutputContainer: String?
     var hevcPreset: String?
     var customVideoBitrateKbps: Int?
+    var videoScaleMode: String?
     var videoAudioMode: String?
+    var videoHardwareDecodeMode: String?
     var mp3Mode: String?
     var vbrQuality: Int?
     var cbrBitrateKbps: Int?
@@ -835,6 +934,148 @@ struct QueueSettings: Codable {
     var splitOversizedMultichannel: Bool?
     var parallelJobs: Int?
     var ffmpegThreads: Int?
+}
+
+struct AudioEncodingPresetSettings: Codable, Hashable {
+    var outputFormat: AudioOutputFormat
+    var mp3Mode: MP3EncodingMode
+    var vbrQuality: Int
+    var cbrBitrateKbps: Int
+    var abrBitrateKbps: Int
+    var oggMode: OggEncodingOptions.Mode
+    var oggQuality: Int
+    var oggBitrateKbps: Int
+    var opusRateMode: OpusEncodingOptions.RateMode
+    var opusBitrateKbps: Int
+    var flacCompressionLevel: Int
+    var splitOversizedMultichannel: Bool
+
+    var summary: String {
+        let snapshot = EncodingSettingsSnapshot(
+            ffmpegURL: URL(fileURLWithPath: "/usr/bin/false"),
+            useLibVorbis: true,
+            encodingWorkflow: .audio,
+            outputFormat: outputFormat,
+            videoOutputContainer: .mp4,
+            hevcPreset: .balanced1080p,
+            customVideoBitrateKbps: HEVCVideoPreset.balanced1080p.defaultBitrateKbps,
+            videoScaleMode: .max1080p,
+            videoAudioMode: .copy,
+            videoHardwareDecodeMode: .auto,
+            mp3Mode: mp3Mode,
+            vbrQuality: vbrQuality,
+            cbrBitrateKbps: cbrBitrateKbps,
+            abrBitrateKbps: abrBitrateKbps,
+            oggMode: oggMode,
+            oggQuality: oggQuality,
+            oggBitrateKbps: oggBitrateKbps,
+            opusRateMode: opusRateMode,
+            opusBitrateKbps: opusBitrateKbps,
+            flacCompressionLevel: flacCompressionLevel,
+            splitOversizedMultichannel: splitOversizedMultichannel,
+            ffmpegThreads: 0,
+            overwriteExisting: false,
+            parallelJobs: 1
+        )
+        return snapshot.summary
+    }
+}
+
+struct VideoEncodingPresetSettings: Codable, Hashable {
+    var outputContainer: VideoOutputContainer
+    var hevcPreset: HEVCVideoPreset
+    var customBitrateKbps: Int
+    var scaleMode: VideoScaleMode
+    var audioMode: VideoAudioMode
+    var hardwareDecodeMode: VideoHardwareDecodeMode
+
+    init(
+        outputContainer: VideoOutputContainer,
+        hevcPreset: HEVCVideoPreset,
+        customBitrateKbps: Int,
+        scaleMode: VideoScaleMode? = nil,
+        audioMode: VideoAudioMode,
+        hardwareDecodeMode: VideoHardwareDecodeMode = .auto
+    ) {
+        self.outputContainer = outputContainer
+        self.hevcPreset = hevcPreset
+        self.customBitrateKbps = customBitrateKbps
+        self.scaleMode = scaleMode ?? hevcPreset.defaultScaleMode
+        self.audioMode = audioMode
+        self.hardwareDecodeMode = hardwareDecodeMode
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case outputContainer
+        case hevcPreset
+        case customBitrateKbps
+        case scaleMode
+        case audioMode
+        case hardwareDecodeMode
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        outputContainer = try container.decode(VideoOutputContainer.self, forKey: .outputContainer)
+        hevcPreset = try container.decode(HEVCVideoPreset.self, forKey: .hevcPreset)
+        customBitrateKbps = try container.decode(Int.self, forKey: .customBitrateKbps)
+        scaleMode =
+            try container.decodeIfPresent(VideoScaleMode.self, forKey: .scaleMode)
+            ?? hevcPreset.defaultScaleMode
+        audioMode = try container.decode(VideoAudioMode.self, forKey: .audioMode)
+        hardwareDecodeMode =
+            try container.decodeIfPresent(VideoHardwareDecodeMode.self, forKey: .hardwareDecodeMode)
+            ?? .auto
+    }
+
+    var summary: String {
+        let bitrate = hevcPreset == .custom ? customBitrateKbps : hevcPreset.defaultBitrateKbps
+        return "\(hevcPreset.title) HEVC \(bitrate) kbps \(outputContainer.title), \(scaleMode.title), audio \(audioMode.title), decode \(hardwareDecodeMode.title)"
+    }
+}
+
+struct EncodingPreset: Codable, Identifiable, Hashable {
+    var id: UUID
+    var name: String
+    var workflow: EncodingWorkflow
+    var audio: AudioEncodingPresetSettings?
+    var video: VideoEncodingPresetSettings?
+    var createdAt: Date
+    var updatedAt: Date
+
+    init(
+        id: UUID = UUID(),
+        name: String,
+        workflow: EncodingWorkflow,
+        audio: AudioEncodingPresetSettings? = nil,
+        video: VideoEncodingPresetSettings? = nil,
+        createdAt: Date = Date(),
+        updatedAt: Date = Date()
+    ) {
+        self.id = id
+        self.name = name
+        self.workflow = workflow
+        self.audio = audio
+        self.video = video
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+
+    var summary: String {
+        switch workflow {
+        case .audio:
+            audio?.summary ?? "Audio preset"
+        case .video:
+            video?.summary ?? "Video preset"
+        }
+    }
+}
+
+struct EncodingPresetDocument: Codable {
+    static let currentVersion = 1
+
+    var version = Self.currentVersion
+    var presets: [EncodingPreset]
 }
 
 struct QueueInput: Codable {

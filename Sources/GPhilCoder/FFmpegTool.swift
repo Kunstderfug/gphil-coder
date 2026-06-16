@@ -60,6 +60,52 @@ struct FFmpegCapabilities {
     }
 }
 
+struct FFmpegProgressSnapshot: Sendable {
+    let fps: String?
+    let speed: String?
+
+    var message: String {
+        var parts: [String] = []
+        if let fps, !fps.isEmpty {
+            parts.append("\(fps) fps")
+        }
+        if let speed, !speed.isEmpty {
+            parts.append("\(speed) realtime")
+        }
+        return parts.isEmpty ? "Encoding..." : "Encoding... " + parts.joined(separator: ", ")
+    }
+
+    static func parse(from text: String) -> FFmpegProgressSnapshot? {
+        let normalized = text.replacingOccurrences(of: "\r", with: "\n")
+        let lines = normalized
+            .split(separator: "\n")
+            .map(String.init)
+            .reversed()
+
+        for line in lines where line.contains("fps=") || line.contains("speed=") {
+            let fps = firstRegexValue(in: line, pattern: #"fps=\s*([0-9.]+)"#)
+            let speed = firstRegexValue(in: line, pattern: #"speed=\s*([0-9.]+x)"#)
+            if fps != nil || speed != nil {
+                return FFmpegProgressSnapshot(fps: fps, speed: speed)
+            }
+        }
+
+        return nil
+    }
+
+    private static func firstRegexValue(in text: String, pattern: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        guard let match = regex.firstMatch(in: text, range: range),
+            match.numberOfRanges > 1,
+            let valueRange = Range(match.range(at: 1), in: text)
+        else {
+            return nil
+        }
+        return String(text[valueRange])
+    }
+}
+
 struct FFmpegLocator {
     static func locate(preference: FFmpegSourcePreference) -> URL? {
         #if APP_STORE
@@ -137,9 +183,19 @@ struct FFmpegLocator {
 struct FFmpegEncoder {
     let ffmpegURL: URL
 
-    func encode(input: URL, output: URL, settings: EncodingSettingsSnapshot) async throws -> String {
+    func encode(
+        input: URL,
+        output: URL,
+        settings: EncodingSettingsSnapshot,
+        progressHandler: (@Sendable (FFmpegProgressSnapshot) -> Void)? = nil
+    ) async throws -> String {
         if settings.encodingWorkflow == .video {
-            return try await encodeVideo(input: input, output: output, settings: settings)
+            return try await encodeVideo(
+                input: input,
+                output: output,
+                settings: settings,
+                progressHandler: progressHandler
+            )
         }
 
         try FileManager.default.createDirectory(
@@ -206,7 +262,8 @@ struct FFmpegEncoder {
     private func encodeVideo(
         input: URL,
         output: URL,
-        settings: EncodingSettingsSnapshot
+        settings: EncodingSettingsSnapshot,
+        progressHandler: (@Sendable (FFmpegProgressSnapshot) -> Void)?
     ) async throws -> String {
         try FileManager.default.createDirectory(
             at: output.deletingLastPathComponent(),
@@ -226,11 +283,18 @@ struct FFmpegEncoder {
         var arguments = [
             "-hide_banner",
             "-nostdin",
-            settings.overwriteExisting ? "-y" : "-n",
+            settings.overwriteExisting ? "-y" : "-n"
+        ]
+
+        if settings.videoHardwareDecodeMode.usesVideoToolbox {
+            arguments.append(contentsOf: ["-hwaccel", "videotoolbox"])
+        }
+
+        arguments.append(contentsOf: [
             "-i", input.path,
             "-map", "0:v:0",
             "-map", "0:a?"
-        ]
+        ])
 
         arguments.append(contentsOf: videoCodecArguments(for: settings))
 
@@ -249,18 +313,33 @@ struct FFmpegEncoder {
 
         arguments.append(output.path)
 
-        return try await ProcessRunner.run(executableURL: ffmpegURL, arguments: arguments)
+        return try await ProcessRunner.run(
+            executableURL: ffmpegURL,
+            arguments: arguments
+        ) { chunk in
+            guard let progress = FFmpegProgressSnapshot.parse(from: chunk) else { return }
+            progressHandler?(progress)
+        }
     }
 
     private func videoCodecArguments(for settings: EncodingSettingsSnapshot) -> [String] {
-        var arguments = [
+        var arguments: [String] = []
+
+        if let scaleFilter = videoScaleFilter(for: settings.videoScaleMode) {
+            arguments.append(contentsOf: ["-vf", scaleFilter])
+        }
+
+        arguments.append(contentsOf: [
             "-c:v", "hevc_videotoolbox",
             "-b:v", "\(settings.videoBitrateKbps)k",
             "-maxrate", "\(settings.videoBitrateKbps)k",
             "-bufsize", "\(settings.videoBitrateKbps * 2)k",
             "-tag:v", "hvc1",
-            "-allow_sw", "0"
-        ]
+            "-allow_sw", "0",
+            "-prio_speed", "1",
+            "-realtime", "1",
+            "-power_efficient", "0"
+        ])
 
         if settings.hevcPreset.bitDepth == 10 {
             arguments.append(contentsOf: ["-pix_fmt", "p010le", "-profile:v", "main10"])
@@ -269,6 +348,12 @@ struct FFmpegEncoder {
         }
 
         return arguments
+    }
+
+    private func videoScaleFilter(for scaleMode: VideoScaleMode) -> String? {
+        guard let maxSize = scaleMode.maxSize else { return nil }
+        return
+            "scale=w=min(\(maxSize.width)\\,iw):h=min(\(maxSize.height)\\,ih):force_original_aspect_ratio=decrease:force_divisible_by=2"
     }
 
     private func encodeSplitMultichannel(
@@ -602,7 +687,11 @@ private final class OutputBuffer: @unchecked Sendable {
 }
 
 enum ProcessRunner {
-    static func run(executableURL: URL, arguments: [String]) async throws -> String {
+    static func run(
+        executableURL: URL,
+        arguments: [String],
+        outputHandler: (@Sendable (String) -> Void)? = nil
+    ) async throws -> String {
         let processBox = ProcessBox()
 
         return try await withTaskCancellationHandler {
@@ -621,10 +710,24 @@ enum ProcessRunner {
                 let errorBuffer = OutputBuffer()
 
                 outputPipe.fileHandleForReading.readabilityHandler = { handle in
-                    outputBuffer.append(handle.availableData)
+                    let data = handle.availableData
+                    outputBuffer.append(data)
+                    if let outputHandler,
+                        let text = String(data: data, encoding: .utf8),
+                        !text.isEmpty
+                    {
+                        outputHandler(text)
+                    }
                 }
                 errorPipe.fileHandleForReading.readabilityHandler = { handle in
-                    errorBuffer.append(handle.availableData)
+                    let data = handle.availableData
+                    errorBuffer.append(data)
+                    if let outputHandler,
+                        let text = String(data: data, encoding: .utf8),
+                        !text.isEmpty
+                    {
+                        outputHandler(text)
+                    }
                 }
 
                 process.standardOutput = outputPipe
@@ -644,8 +747,23 @@ enum ProcessRunner {
                 outputPipe.fileHandleForReading.readabilityHandler = nil
                 errorPipe.fileHandleForReading.readabilityHandler = nil
 
-                outputBuffer.append(outputPipe.fileHandleForReading.readDataToEndOfFile())
-                errorBuffer.append(errorPipe.fileHandleForReading.readDataToEndOfFile())
+                let remainingOutput = outputPipe.fileHandleForReading.readDataToEndOfFile()
+                outputBuffer.append(remainingOutput)
+                if let outputHandler,
+                    let text = String(data: remainingOutput, encoding: .utf8),
+                    !text.isEmpty
+                {
+                    outputHandler(text)
+                }
+
+                let remainingError = errorPipe.fileHandleForReading.readDataToEndOfFile()
+                errorBuffer.append(remainingError)
+                if let outputHandler,
+                    let text = String(data: remainingError, encoding: .utf8),
+                    !text.isEmpty
+                {
+                    outputHandler(text)
+                }
 
                 let combinedOutput = [outputBuffer.string, errorBuffer.string]
                     .filter { !$0.isEmpty }
