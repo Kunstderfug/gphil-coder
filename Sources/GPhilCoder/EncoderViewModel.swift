@@ -948,6 +948,21 @@ final class EncoderViewModel: ObservableObject {
         selectedEncodingPreset != nil && !isEncoding
     }
 
+    /// True when the working settings differ from the active preset's stored
+    /// settings. Encoding reads the live settings, not the preset, so this tells
+    /// the user that the selected preset no longer describes what will run.
+    /// No preset selected, or a preset missing settings for its own workflow,
+    /// counts as not dirty.
+    var isLoadedPresetDirty: Bool {
+        guard let preset = selectedEncodingPreset else { return false }
+        switch preset.workflow {
+        case .audio:
+            return makeAudioPresetSettings() != preset.audio
+        case .video:
+            return makeVideoPresetSettings() != preset.video
+        }
+    }
+
     var canRestoreTrashedSources: Bool {
         !isEncoding && !isMediaCopyBusy && !trashedSourceRecords.isEmpty
     }
@@ -4290,20 +4305,7 @@ final class EncoderViewModel: ObservableObject {
                 id: id,
                 name: name,
                 workflow: .audio,
-                audio: AudioEncodingPresetSettings(
-                    outputFormat: outputFormat,
-                    mp3Mode: mp3Mode,
-                    vbrQuality: vbrQuality,
-                    cbrBitrateKbps: cbrBitrateKbps,
-                    abrBitrateKbps: abrBitrateKbps,
-                    oggMode: oggMode,
-                    oggQuality: oggQuality,
-                    oggBitrateKbps: oggBitrateKbps,
-                    opusRateMode: opusRateMode,
-                    opusBitrateKbps: opusBitrateKbps,
-                    flacCompressionLevel: flacCompressionLevel,
-                    splitOversizedMultichannel: splitOversizedMultichannel
-                ),
+                audio: makeAudioPresetSettings(),
                 createdAt: createdAt,
                 updatedAt: now
             )
@@ -4312,22 +4314,62 @@ final class EncoderViewModel: ObservableObject {
                 id: id,
                 name: name,
                 workflow: .video,
-                video: VideoEncodingPresetSettings(
-                    outputContainer: videoOutputContainer,
-                    hevcPreset: hevcPreset,
-                    customBitrateKbps: customVideoBitrateKbps,
-                    scaleMode: videoScaleMode,
-                    audioMode: videoAudioMode,
-                    hardwareDecodeMode: videoHardwareDecodeMode
-                ),
+                video: makeVideoPresetSettings(),
                 createdAt: createdAt,
                 updatedAt: now
             )
         }
     }
 
+    private func makeAudioPresetSettings() -> AudioEncodingPresetSettings {
+        AudioEncodingPresetSettings(
+            outputFormat: outputFormat,
+            mp3Mode: mp3Mode,
+            vbrQuality: vbrQuality,
+            cbrBitrateKbps: cbrBitrateKbps,
+            abrBitrateKbps: abrBitrateKbps,
+            oggMode: oggMode,
+            oggQuality: oggQuality,
+            oggBitrateKbps: oggBitrateKbps,
+            opusRateMode: opusRateMode,
+            opusBitrateKbps: opusBitrateKbps,
+            flacCompressionLevel: flacCompressionLevel,
+            splitOversizedMultichannel: splitOversizedMultichannel
+        )
+    }
+
+    private func makeVideoPresetSettings() -> VideoEncodingPresetSettings {
+        VideoEncodingPresetSettings(
+            outputContainer: videoOutputContainer,
+            hevcPreset: hevcPreset,
+            customBitrateKbps: customVideoBitrateKbps,
+            scaleMode: videoScaleMode,
+            audioMode: videoAudioMode,
+            hardwareDecodeMode: videoHardwareDecodeMode
+        )
+    }
+
     private func applyEncodingPreset(_ preset: EncodingPreset) {
         guard !isEncoding else { return }
+
+        // Guard against silently dropping a populated queue when loading a preset
+        // of a different workflow. The workflow assignment below would otherwise
+        // trigger encodingWorkflow.didSet, which clears jobs unconditionally.
+        if preset.workflow != encodingWorkflow, !jobs.isEmpty {
+            guard confirmSwitchWorkflow(target: preset.workflow, queuedCount: jobs.count) else {
+                statusMessage = "Load cancelled."
+                return
+            }
+        }
+
+        // Warn before loading a preset the active FFmpeg can't actually encode.
+        // Mirrors the capability checks that gate startEncoding().
+        if let reason = unsupportedEncoderReason(for: preset) {
+            guard confirmLoadWithUnsupportedEncoder(reason) else {
+                statusMessage = "Load cancelled."
+                return
+            }
+        }
 
         encodingWorkflow = preset.workflow
         switch preset.workflow {
@@ -4406,6 +4448,51 @@ final class EncoderViewModel: ObservableObject {
         alert.addButton(withTitle: "Delete")
         alert.addButton(withTitle: "Cancel")
         return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    private func confirmSwitchWorkflow(
+        target: EncodingWorkflow,
+        queuedCount: Int
+    ) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "Switch to \(target.title)?"
+        alert.informativeText =
+            "Switching to the \(target.title.lowercased()) workflow will remove \(queuedCount) queued \(encodingWorkflow.queueNoun)\(queuedCount == 1 ? "" : "s") from the current queue."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Switch")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    private func confirmLoadWithUnsupportedEncoder(_ reason: String) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "Load this preset anyway?"
+        alert.informativeText = reason
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Load Anyway")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    /// The user-facing reason a preset can't be encoded with the active FFmpeg,
+    /// or nil if it is encodable. Mirrors the capability checks in startEncoding().
+    private func unsupportedEncoderReason(for preset: EncodingPreset) -> String? {
+        switch preset.workflow {
+        case .audio:
+            if let audio = preset.audio,
+                audio.outputFormat == .ogg,
+                audio.oggMode == .bitrate,
+                !supportsOggBitrate
+            {
+                return "This FFmpeg build lacks libvorbis, so the preset's Ogg bitrate mode may fail. Load it anyway?"
+            }
+            return nil
+        case .video:
+            if !supportsHEVCVideoToolbox {
+                return "This FFmpeg build does not include hevc_videotoolbox, so HEVC video encoding is unavailable. Load it anyway?"
+            }
+            return nil
+        }
     }
 
     private func queueInput(from item: AudioInputItem) -> QueueInput {
@@ -5154,11 +5241,19 @@ final class EncoderViewModel: ObservableObject {
     }
 
     private func loadEncodingPresets(from defaults: UserDefaults) {
-        if let data = defaults.data(forKey: DefaultsKey.encodingPresets),
-            let document = try? JSONDecoder().decode(EncodingPresetDocument.self, from: data),
-            document.version == EncodingPresetDocument.currentVersion
-        {
-            encodingPresets = document.presets
+        if let data = defaults.data(forKey: DefaultsKey.encodingPresets) {
+            switch EncodingPresetDocument.decode(from: data) {
+            case .success(let presets):
+                encodingPresets = presets
+            case .failure(.versionMismatch):
+                // Non-destructive: leave the blob on disk so a newer build can
+                // still read it. Surface the problem instead of silently emptying.
+                encodingPresets = []
+                statusMessage = "Could not read saved presets — they were saved by a newer version and were kept on disk."
+            case .failure(.corrupt):
+                encodingPresets = []
+                statusMessage = "Could not read saved presets — the saved data appears damaged and was kept on disk."
+            }
         }
 
         selectedAudioEncodingPresetID = persistedUUID(forKey: DefaultsKey.selectedAudioEncodingPresetID)
@@ -5167,20 +5262,24 @@ final class EncoderViewModel: ObservableObject {
     }
 
     private func normalizeSelectedEncodingPresetIDs() {
-        if let selectedAudioEncodingPresetID,
-            !encodingPresets.contains(where: {
-                $0.id == selectedAudioEncodingPresetID && $0.workflow == .audio
-            })
-        {
-            self.selectedAudioEncodingPresetID = nil
-        }
+        let normalized = EncodingPreset.normalize(
+            selectedAudioID: selectedAudioEncodingPresetID,
+            selectedVideoID: selectedVideoEncodingPresetID,
+            in: encodingPresets
+        )
+        selectedAudioEncodingPresetID = normalized.audioID
+        selectedVideoEncodingPresetID = normalized.videoID
+        // Persist even during the loading window so stale IDs don't linger in
+        // the plist and get re-cleared on every launch.
+        forcePersistOptionalUUID(normalized.audioID, forKey: DefaultsKey.selectedAudioEncodingPresetID)
+        forcePersistOptionalUUID(normalized.videoID, forKey: DefaultsKey.selectedVideoEncodingPresetID)
+    }
 
-        if let selectedVideoEncodingPresetID,
-            !encodingPresets.contains(where: {
-                $0.id == selectedVideoEncodingPresetID && $0.workflow == .video
-            })
-        {
-            self.selectedVideoEncodingPresetID = nil
+    private func forcePersistOptionalUUID(_ id: UUID?, forKey key: String) {
+        if let id {
+            UserDefaults.standard.set(id.uuidString, forKey: key)
+        } else {
+            UserDefaults.standard.removeObject(forKey: key)
         }
     }
 

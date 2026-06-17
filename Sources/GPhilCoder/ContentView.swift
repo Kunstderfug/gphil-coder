@@ -1443,6 +1443,12 @@ struct ContentView: View {
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
 
+                if model.isLoadedPresetDirty {
+                    Text("● modified")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.orange)
+                        .help("Working settings differ from the selected preset. Use Update to save them back, or Load to reset.")
+                }
                 HStack(spacing: 8) {
                     Button {
                         model.loadSelectedEncodingPreset()

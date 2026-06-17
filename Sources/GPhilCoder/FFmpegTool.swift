@@ -1,4 +1,5 @@
 import Foundation
+import GPhilCoderCore
 
 enum FFmpegToolError: LocalizedError {
     case notFound

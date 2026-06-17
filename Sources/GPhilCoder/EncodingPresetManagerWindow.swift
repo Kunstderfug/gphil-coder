@@ -1,3 +1,4 @@
+import GPhilCoderCore
 import SwiftUI
 
 struct EncodingPresetManagerWindow: View {
@@ -34,13 +35,10 @@ struct EncodingPresetManagerWindow: View {
         .frame(minWidth: 560, minHeight: 440)
         .onAppear {
             selectedWorkflow = model.encodingWorkflow
-            selectedPresetID = model.selectedEncodingPresetID
+            selectedPresetID = selectedPresetID(for: selectedWorkflow)
         }
         .onChange(of: selectedWorkflow) { _, workflow in
             selectedPresetID = selectedPresetID(for: workflow)
-        }
-        .onChange(of: selectedPresetID) { _, id in
-            model.setSelectedEncodingPresetID(id, for: selectedWorkflow)
         }
         .onChange(of: model.encodingPresets) { _, presets in
             guard let selectedPresetID,
@@ -90,9 +88,17 @@ struct EncodingPresetManagerWindow: View {
                 List(selection: $selectedPresetID) {
                     ForEach(presets) { preset in
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(preset.name)
-                                .font(.callout.weight(.semibold))
-                                .lineLimit(1)
+                            HStack(spacing: 6) {
+                                Text(preset.name)
+                                    .font(.callout.weight(.semibold))
+                                    .lineLimit(1)
+                                if isActivePreset(preset) {
+                                    Text("Active")
+                                        .font(.caption2.weight(.semibold))
+                                        .foregroundStyle(.teal)
+                                        .help("This preset is loaded into the current workflow.")
+                                }
+                            }
                             Text(preset.summary)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
@@ -198,6 +204,10 @@ struct EncodingPresetManagerWindow: View {
         case .video:
             return model.selectedVideoEncodingPresetID
         }
+    }
+
+    private func isActivePreset(_ preset: EncodingPreset) -> Bool {
+        selectedPresetID(for: preset.workflow) == preset.id
     }
 }
 
