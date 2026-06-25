@@ -14,6 +14,7 @@ final class EncoderViewModel: ObservableObject {
         static let selectedVideoInputExtensions = "selectedVideoInputExtensions"
         static let preserveSubfolders = "preserveSubfolders"
         static let overwriteExisting = "overwriteExisting"
+        static let confirmBeforeEncoding = "confirmBeforeEncoding"
         static let outputFormat = "outputFormat"
         static let videoOutputContainer = "videoOutputContainer"
         static let hevcPreset = "hevcPreset"
@@ -550,6 +551,12 @@ final class EncoderViewModel: ObservableObject {
         }
     }
 
+    @Published var confirmBeforeEncoding = true {
+        didSet {
+            UserDefaults.standard.set(confirmBeforeEncoding, forKey: DefaultsKey.confirmBeforeEncoding)
+        }
+    }
+
     @Published var outputFormat: AudioOutputFormat = .mp3 {
         didSet {
             UserDefaults.standard.set(outputFormat.rawValue, forKey: DefaultsKey.outputFormat)
@@ -684,6 +691,7 @@ final class EncoderViewModel: ObservableObject {
     private var mediaCopyTask: Task<Void, Never>?
     private var mediaFileNameFilterRefreshTask: Task<Void, Never>?
     private var isLoadingPersistedSettings = false
+    private var activeEncodingSecurityScopedURLs: [URL] = []
     private var mediaFileInventory: [MediaFileInventoryRecord] = []
     private var mediaFileInventorySourceRootPaths: [String] = []
 
@@ -867,6 +875,15 @@ final class EncoderViewModel: ObservableObject {
             "No resize filter; source dimensions are preserved"
         case .max1080p, .max4k:
             "\(videoScaleMode.detail) FFmpeg performs this scale filter in software before VideoToolbox encode."
+        }
+    }
+
+    var startConfirmationContext: String {
+        switch encodingWorkflow {
+        case .audio:
+            "When enabled, Start shows the planned output route, overwrite conflicts, FFmpeg thread count, and audio-specific warnings before running."
+        case .video:
+            "When enabled, Start shows the planned output route, overwrite conflicts, HEVC preset/container, scale mode, audio handling, and pipeline settings before running."
         }
     }
 
@@ -1701,6 +1718,40 @@ final class EncoderViewModel: ObservableObject {
             combined.unsupported += summary.unsupported
         }
         statusMessage = queueAddStatusMessage(for: combined)
+    }
+
+    func addDroppedItems(_ providers: [NSItemProvider]) {
+        guard !isEncoding else { return }
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let urls = await Self.fileURLs(from: providers)
+            guard !urls.isEmpty else {
+                self.statusMessage = "Drop files or folders to add them to the queue."
+                return
+            }
+
+            self.rememberInputDirectory(fromFiles: urls)
+            var combined = AddSummary()
+            for url in urls {
+                var isDirectory: ObjCBool = false
+                if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+                    isDirectory.boolValue
+                {
+                    let summary = self.addFolderURL(url)
+                    combined.added += summary.added
+                    combined.duplicates += summary.duplicates
+                    combined.unsupported += summary.unsupported
+                } else {
+                    let summary = self.addFileURLs([url])
+                    combined.added += summary.added
+                    combined.duplicates += summary.duplicates
+                    combined.unsupported += summary.unsupported
+                }
+            }
+
+            self.statusMessage = self.queueAddStatusMessage(for: combined)
+        }
     }
 
     func toggleInputFormat(_ format: InputAudioFormat) {
@@ -4119,10 +4170,14 @@ final class EncoderViewModel: ObservableObject {
             parallelJobs: max(1, min(parallelJobs, processorLimit))
         )
 
-        guard confirmEncodingPreflight(plannedJobs: plannedJobs, settings: settings) else {
-            statusMessage = "Encoding cancelled before starting."
-            return
+        if confirmBeforeEncoding {
+            guard confirmEncodingPreflight(plannedJobs: plannedJobs, settings: settings) else {
+                statusMessage = "Encoding cancelled before starting."
+                return
+            }
         }
+
+        guard prepareEncodingFileAccess(for: plannedJobs) else { return }
 
         jobs = plannedJobs
         jobStateFilter = nil
@@ -4203,6 +4258,114 @@ final class EncoderViewModel: ObservableObject {
         alert.addButton(withTitle: "Cancel")
 
         return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    private func prepareEncodingFileAccess(for plannedJobs: [EncodeJob]) -> Bool {
+        stopActiveEncodingSecurityScopes()
+
+        let initialRoots = securityScopedRoots(for: plannedJobs)
+        startEncodingSecurityScopes(initialRoots)
+
+        let outputDirectories = uniqueURLs(plannedJobs.map { $0.outputURL.deletingLastPathComponent() })
+        let deniedDirectories = outputDirectories.filter { !canWriteTemporaryFile(in: $0) }
+        guard !deniedDirectories.isEmpty else { return true }
+
+        guard let grantedRoots = requestWriteAccess(for: deniedDirectories) else {
+            stopActiveEncodingSecurityScopes()
+            statusMessage = "Encoding cancelled because GPhilCoder does not have permission to write to the output folder."
+            return false
+        }
+
+        startEncodingSecurityScopes(grantedRoots)
+        let stillDenied = outputDirectories.filter { !canWriteTemporaryFile(in: $0) }
+        guard stillDenied.isEmpty else {
+            stopActiveEncodingSecurityScopes()
+            let names = stillDenied.prefix(3).map { $0.path(percentEncoded: false) }.joined(separator: "\n")
+            statusMessage = "GPhilCoder still cannot write to:\n\(names)"
+            return false
+        }
+
+        return true
+    }
+
+    private func securityScopedRoots(for plannedJobs: [EncodeJob]) -> [URL] {
+        var urls = plannedJobs.flatMap { job in
+            [job.item.url, job.item.sourceRoot, job.outputURL.deletingLastPathComponent()].compactMap { $0 }
+        }
+
+        if let exportFolder {
+            urls.append(exportFolder)
+        }
+
+        return uniqueURLs(urls)
+    }
+
+    private func startEncodingSecurityScopes(_ urls: [URL]) {
+        for url in urls where !activeEncodingSecurityScopedURLs.contains(where: { sameFileURL($0, url) }) {
+            if url.startAccessingSecurityScopedResource() {
+                activeEncodingSecurityScopedURLs.append(url)
+            }
+        }
+    }
+
+    private func stopActiveEncodingSecurityScopes() {
+        for url in activeEncodingSecurityScopedURLs {
+            url.stopAccessingSecurityScopedResource()
+        }
+        activeEncodingSecurityScopedURLs.removeAll()
+    }
+
+    private func canWriteTemporaryFile(in directory: URL) -> Bool {
+        do {
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true
+            )
+            let probeURL = directory.appendingPathComponent(
+                ".gphilcoder-write-test-\(UUID().uuidString)",
+                isDirectory: false
+            )
+            try Data().write(to: probeURL, options: .withoutOverwriting)
+            try? FileManager.default.removeItem(at: probeURL)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func requestWriteAccess(for directories: [URL]) -> [URL]? {
+        let panel = NSOpenPanel()
+        panel.title = "Authorize Output Folder Access"
+        panel.prompt = "Authorize"
+        panel.message =
+            "GPhilCoder needs permission to write encoded files to the selected output folder. Choose the source/output folder, or a parent folder that contains all planned outputs."
+        panel.allowsMultipleSelection = true
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = false
+        panel.directoryURL = directories.first
+
+        guard panel.runModal() == .OK else { return nil }
+        return panel.urls
+    }
+
+    private func uniqueURLs(_ urls: [URL]) -> [URL] {
+        var seen: Set<String> = []
+        var result: [URL] = []
+
+        for url in urls {
+            let standardized = url.standardizedFileURL
+            let key = standardized.path
+            guard !seen.contains(key) else { continue }
+            seen.insert(key)
+            result.append(standardized)
+        }
+
+        return result
+    }
+
+    private func sameFileURL(_ lhs: URL, _ rhs: URL) -> Bool {
+        lhs.standardizedFileURL.path == rhs.standardizedFileURL.path
     }
 
     private func defaultQueueFileName() -> String {
@@ -4804,6 +4967,10 @@ final class EncoderViewModel: ObservableObject {
 
         if let value = persistedBool(forKey: DefaultsKey.overwriteExisting) {
             overwriteExisting = value
+        }
+
+        if let value = persistedBool(forKey: DefaultsKey.confirmBeforeEncoding) {
+            confirmBeforeEncoding = value
         }
 
         if let rawValue = defaults.string(forKey: DefaultsKey.outputFormat),
@@ -5501,6 +5668,48 @@ final class EncoderViewModel: ObservableObject {
         rememberInputDirectory(fromFiles: urls)
     }
 
+    private static func fileURLs(from providers: [NSItemProvider]) async -> [URL] {
+        var urls: [URL] = []
+        for provider in providers where provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+            if let url = await fileURL(from: provider) {
+                urls.append(url)
+            }
+        }
+        return urls
+    }
+
+    private static func fileURL(from provider: NSItemProvider) async -> URL? {
+        await withCheckedContinuation { continuation in
+            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                if let url = item as? URL {
+                    continuation.resume(returning: url)
+                    return
+                }
+
+                if let url = item as? NSURL {
+                    continuation.resume(returning: url as URL)
+                    return
+                }
+
+                if let data = item as? Data,
+                    let url = URL(dataRepresentation: data, relativeTo: nil)
+                {
+                    continuation.resume(returning: url)
+                    return
+                }
+
+                if let text = item as? String,
+                    let url = URL(string: text)
+                {
+                    continuation.resume(returning: url)
+                    return
+                }
+
+                continuation.resume(returning: nil)
+            }
+        }
+    }
+
     private func queueAddStatusMessage(for summary: AddSummary) -> String {
         guard summary.added > 0, !inputs.isEmpty else {
             return summary.message
@@ -5881,6 +6090,7 @@ final class EncoderViewModel: ObservableObject {
 
         isEncoding = false
         encodeTask = nil
+        stopActiveEncodingSecurityScopes()
 
         let completionTitle: String
         let completionMessage: String

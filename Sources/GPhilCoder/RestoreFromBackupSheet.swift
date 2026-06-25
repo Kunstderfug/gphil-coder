@@ -49,7 +49,7 @@ struct RestoreFromBackupSheet: View {
                 } label: {
                     Image(systemName: "xmark")
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(.gphilHoverBorderless)
                 .help("Close")
             }
         }
@@ -208,7 +208,7 @@ struct RestoreFromBackupSheet: View {
                     } label: {
                         Label("Copy to Restore root", systemImage: "tray.and.arrow.down")
                     }
-                    .buttonStyle(.borderless)
+                    .buttonStyle(.gphilHoverBorderless)
                     .help("Copy unresolved files into a holding folder inside the restore root")
                 }
 
@@ -218,7 +218,7 @@ struct RestoreFromBackupSheet: View {
                     } label: {
                         Label("Export JSON", systemImage: "square.and.arrow.up")
                     }
-                    .buttonStyle(.borderless)
+                    .buttonStyle(.gphilHoverBorderless)
                     .help("Export unresolved files as JSON")
                 }
 
@@ -372,7 +372,7 @@ private struct RestoreLiveUnresolvedList: View {
                 } label: {
                     Label("Copy to Restore root", systemImage: "tray.and.arrow.down")
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(.gphilHoverBorderless)
                 .help("Copy this unresolved list into a holding folder inside the restore root")
 
                 Button {
@@ -380,7 +380,7 @@ private struct RestoreLiveUnresolvedList: View {
                 } label: {
                     Label("Export JSON", systemImage: "square.and.arrow.up")
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(.gphilHoverBorderless)
                 .help("Export this unresolved file list as JSON")
 
                 Text("\(items.count.formatted()) of \(deletedCount.formatted())")
@@ -578,7 +578,7 @@ private struct RestoreFolderRow: View {
                 } label: {
                     Image(systemName: "folder")
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(.gphilHoverBorderless)
                 .disabled(isDisabled)
                 .help("Choose \(title)")
             }

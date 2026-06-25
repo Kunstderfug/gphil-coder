@@ -1,6 +1,7 @@
 import AppKit
 import GPhilCoderCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 private enum WorkflowTab: Hashable {
     case audioEncoding
@@ -22,6 +23,7 @@ struct ContentView: View {
     @State private var selectedWorkflowTab: WorkflowTab = .audioEncoding
     @State private var selectedMediaCopyPreviewMode: MediaCopyPreviewMode = .plan
     @State private var showingInputFilterSheet = false
+    @State private var isEncodingDropTargeted = false
 
     var body: some View {
         ZStack {
@@ -1211,6 +1213,20 @@ struct ContentView: View {
                 jobList
             }
         }
+        .overlay {
+            if isEncodingDropTargeted && !model.isEncoding {
+                DropTargetOverlay(workflow: model.encodingWorkflow)
+                    .padding(22)
+                    .allowsHitTesting(false)
+            }
+        }
+        .onDrop(
+            of: [UTType.fileURL.identifier],
+            isTargeted: $isEncodingDropTargeted
+        ) { providers in
+            model.addDroppedItems(providers)
+            return true
+        }
     }
 
     private var inputList: some View {
@@ -1336,6 +1352,22 @@ struct ContentView: View {
                                 isOn: $model.overwriteExisting
                             )
                             .disabled(model.isEncoding)
+                        }
+                        .padding(.vertical, 4)
+                    }
+
+                    GroupBox("Start") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Toggle(
+                                "Confirm before starting \(model.encodingWorkflow.title.lowercased()) jobs",
+                                isOn: $model.confirmBeforeEncoding
+                            )
+                            .disabled(model.isEncoding)
+
+                            Text(model.startConfirmationContext)
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                         .padding(.vertical, 4)
                     }
@@ -1954,7 +1986,7 @@ private struct ToolStatusView: View {
             } label: {
                 Image(systemName: "arrow.clockwise")
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(.gphilHoverBorderless)
             .help("Refresh FFmpeg detection")
 
             Divider()
@@ -2062,7 +2094,7 @@ private struct InputFilterSheet: View {
                 } label: {
                     Image(systemName: "xmark")
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(.gphilHoverBorderless)
                 .help("Close")
             }
 
@@ -2228,6 +2260,7 @@ private struct SummaryChip: View {
     let color: Color
     let isSelected: Bool
     let action: () -> Void
+    @State private var isHovering = false
 
     var body: some View {
         Button {
@@ -2246,18 +2279,35 @@ private struct SummaryChip: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 5)
             .background(
-                isSelected
-                    ? color.opacity(0.18) : Color(nsColor: .quaternaryLabelColor).opacity(0.18),
+                summaryChipBackground,
                 in: Capsule()
             )
             .overlay {
                 Capsule()
-                    .stroke(isSelected ? color.opacity(0.7) : Color.clear, lineWidth: 1)
+                    .stroke(
+                        isSelected || isHovering
+                            ? color.opacity(isSelected ? 0.7 : 0.35)
+                            : Color.clear,
+                        lineWidth: 1
+                    )
             }
         }
         .buttonStyle(.plain)
         .disabled(value == 0 && !isSelected)
         .help(isSelected ? "Show all jobs" : "Show only \(title.lowercased()) jobs")
+        .onHover { hovering in
+            isHovering = hovering
+        }
+    }
+
+    private var summaryChipBackground: Color {
+        if isSelected {
+            return color.opacity(0.18)
+        }
+        if isHovering {
+            return color.opacity(0.10)
+        }
+        return Color(nsColor: .quaternaryLabelColor).opacity(0.18)
     }
 }
 
@@ -2277,6 +2327,27 @@ private struct EmptyQueueView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private struct DropTargetOverlay: View {
+    let workflow: EncodingWorkflow
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.teal.opacity(0.14))
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(Color.teal, style: StrokeStyle(lineWidth: 2, dash: [8, 5]))
+
+            VStack(spacing: 10) {
+                Image(systemName: "tray.and.arrow.down.fill")
+                    .font(.system(size: 42, weight: .semibold))
+                Text("Drop \(workflow.title.lowercased()) files or folders")
+                    .font(.headline)
+            }
+            .foregroundStyle(.teal)
+        }
     }
 }
 
@@ -2683,7 +2754,7 @@ private struct MediaCopyWorkflowRow: View {
             } label: {
                 Image(systemName: "xmark")
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(.gphilHoverBorderless)
             .foregroundStyle(.secondary)
             .disabled(!canModify)
             .help("Remove from queue")
@@ -2744,7 +2815,7 @@ private struct InputRow: View {
             } label: {
                 Image(systemName: "trash")
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(.gphilHoverBorderless)
             .foregroundStyle(.red)
             .disabled(!canModify)
             .help("Move source file to Trash")
@@ -2754,7 +2825,7 @@ private struct InputRow: View {
             } label: {
                 Image(systemName: "xmark")
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(.gphilHoverBorderless)
             .foregroundStyle(.secondary)
             .disabled(!canModify)
             .help("Remove from queue")
@@ -2811,7 +2882,7 @@ private struct JobRow: View {
                 } label: {
                     Image(systemName: "magnifyingglass")
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(.gphilHoverBorderless)
                 .help("Reveal output")
             }
 
@@ -2821,7 +2892,7 @@ private struct JobRow: View {
                 } label: {
                     Image(systemName: "doc.on.doc")
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(.gphilHoverBorderless)
                 .foregroundStyle(.red)
                 .help("Copy error log")
             }
