@@ -278,6 +278,38 @@ struct ContentView: View {
                 .padding(.vertical, 4)
             }
 
+            GroupBox("File Types") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Picker("Sync files", selection: $model.syncFileFilter) {
+                        ForEach(model.syncFileFilterOptions) { filter in
+                            Label(filter.title, systemImage: filter.symbolName)
+                                .tag(filter)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .disabled(model.isFolderSyncBusy)
+                    .arrowCursorOnHover()
+
+                    if model.syncFileFilter == .custom {
+                        TextField("wav, flac, mp4", text: $model.syncCustomFileExtensions)
+                            .textFieldStyle(.roundedBorder)
+                            .disabled(model.isFolderSyncBusy)
+                    }
+
+                    Text(model.syncFileFilterDetail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Text(model.syncFileFilterSummary)
+                        .font(.caption)
+                        .foregroundColor(model.syncHasSelectedFileTypes ? .secondary : .orange)
+                        .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.vertical, 4)
+            }
+
             GroupBox("Plan") {
                 VStack(alignment: .leading, spacing: 9) {
                     StatLine(
@@ -2360,10 +2392,23 @@ private struct NotificationStatusControl: View {
                 .lineLimit(1)
 
             if model.notificationPermission == .enabled {
+                Toggle("Alerts", isOn: $model.completionNotificationsEnabled)
+                    .labelsHidden()
+                    .controlSize(.small)
+                    .toggleStyle(.switch)
+
                 Button {
                     model.sendTestNotification()
                 } label: {
                     Text("Test")
+                }
+                .controlSize(.small)
+                .disabled(!model.completionNotificationsEnabled)
+
+                Button {
+                    model.clearDeliveredNotifications()
+                } label: {
+                    Text("Clear")
                 }
                 .controlSize(.small)
             } else {
@@ -2383,7 +2428,11 @@ private struct NotificationStatusControl: View {
     }
 
     private var notificationTitle: String {
-        switch model.notificationPermission {
+        if model.notificationPermission == .enabled, !model.completionNotificationsEnabled {
+            return "Alerts muted"
+        }
+
+        return switch model.notificationPermission {
         case .enabled:
             "Alerts on"
         case .denied:

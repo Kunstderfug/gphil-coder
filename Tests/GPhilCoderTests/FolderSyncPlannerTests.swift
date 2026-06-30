@@ -120,6 +120,70 @@ final class FolderSyncPlannerTests: XCTestCase {
         )
     }
 
+    func testBuildPlanFiltersCopiedAndUpdatedFilesByExtension() throws {
+        let origin = try makeTemporaryDirectory()
+        let destination = try makeTemporaryDirectory()
+        try writeFile("Audio/song.wav", in: origin, contents: "audio")
+        try writeFile("Docs/notes.txt", in: origin, contents: "notes")
+
+        let plan = try FolderSyncPlanner.buildPlan(
+            originRoot: origin,
+            destinationRoot: destination,
+            includedFileExtensions: ["wav"]
+        )
+
+        XCTAssertEqual(plan.copyCount, 1)
+        XCTAssertEqual(plan.createdDirectoryCount, 1)
+        XCTAssertEqual(plan.operations.map(\.relativePath), ["Audio", "Audio/song.wav"])
+
+        for operation in plan.operations {
+            XCTAssertEqual(FolderSyncPlanner.applyOperation(operation), .applied)
+        }
+
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: destination.appendingPathComponent("Audio/song.wav").path
+            )
+        )
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: destination.appendingPathComponent("Docs/notes.txt").path
+            )
+        )
+    }
+
+    func testBuildPlanFilteredDeletesPreserveExcludedDestinationFiles() throws {
+        let origin = try makeTemporaryDirectory()
+        let destination = try makeTemporaryDirectory()
+        try writeFile("keep.txt", in: destination, contents: "excluded")
+        try writeFile("remove.wav", in: destination, contents: "included")
+
+        let plan = try FolderSyncPlanner.buildPlan(
+            originRoot: origin,
+            destinationRoot: destination,
+            includedFileExtensions: ["wav"]
+        )
+
+        XCTAssertEqual(plan.deletedFileCount, 1)
+        XCTAssertEqual(plan.deletedDirectoryCount, 0)
+        XCTAssertEqual(plan.operations.map(\.relativePath), ["remove.wav"])
+
+        for operation in plan.operations {
+            XCTAssertEqual(FolderSyncPlanner.applyOperation(operation), .applied)
+        }
+
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: destination.appendingPathComponent("keep.txt").path
+            )
+        )
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: destination.appendingPathComponent("remove.wav").path
+            )
+        )
+    }
+
     func testMultipleOriginsCanShareDestinationUsingOriginSubfolders() throws {
         let workspace = try makeTemporaryDirectory()
         let originA = workspace.appendingPathComponent("OriginA", isDirectory: true)

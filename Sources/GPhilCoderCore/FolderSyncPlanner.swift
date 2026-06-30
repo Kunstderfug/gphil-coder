@@ -65,10 +65,18 @@ public enum FolderSyncPlanner {
         originRoot: URL,
         destinationRoot: URL,
         syncDeletes: Bool = true,
+        includedFileExtensions: Set<String>? = nil,
         operationLimit: Int? = nil
     ) throws -> FolderSyncPlan {
-        let originInventory = try inventory(at: originRoot)
-        let destinationInventory = try inventory(at: destinationRoot)
+        let normalizedIncludedExtensions = includedFileExtensions.map(normalizedExtensions)
+        let originInventory = try inventory(
+            at: originRoot,
+            includedFileExtensions: normalizedIncludedExtensions
+        )
+        let destinationInventory = try inventory(
+            at: destinationRoot,
+            includedFileExtensions: normalizedIncludedExtensions
+        )
         var operations: [FolderSyncOperation] = []
         var operationCount = 0
         var copyCount = 0
@@ -155,10 +163,12 @@ public enum FolderSyncPlanner {
                     return localizedPathSort(left, right)
                 }
             var deletedDirectoryPrefixes: [String] = []
-            for relativePath in destinationDirectoryPaths {
-                guard !deletedDirectoryPrefixes.contains(where: { isPath(relativePath, below: $0) })
-                else { continue }
-                deletedDirectoryPrefixes.append(relativePath)
+            if normalizedIncludedExtensions == nil {
+                for relativePath in destinationDirectoryPaths {
+                    guard !deletedDirectoryPrefixes.contains(where: { isPath(relativePath, below: $0) })
+                    else { continue }
+                    deletedDirectoryPrefixes.append(relativePath)
+                }
             }
 
             let destinationFilePaths = destinationInventory.files.keys
@@ -270,7 +280,10 @@ public enum FolderSyncPlanner {
         var directories: [String: InventoryItem] = [:]
     }
 
-    private static func inventory(at root: URL) throws -> Inventory {
+    private static func inventory(
+        at root: URL,
+        includedFileExtensions: Set<String>? = nil
+    ) throws -> Inventory {
         let fileManager = FileManager.default
         let keys: [URLResourceKey] = [
             .isDirectoryKey,
@@ -279,6 +292,7 @@ public enum FolderSyncPlanner {
             .contentModificationDateKey
         ]
         var inventory = Inventory()
+        var discoveredDirectories: [String: InventoryItem] = [:]
 
         guard
             let enumerator = fileManager.enumerator(
@@ -296,12 +310,14 @@ public enum FolderSyncPlanner {
             let values = try? url.resourceValues(forKeys: Set(keys))
 
             if values?.isDirectory == true {
-                inventory.directories[relativePath] = InventoryItem(
+                discoveredDirectories[relativePath] = InventoryItem(
                     url: url,
                     fileSizeBytes: 0,
                     modifiedDate: values?.contentModificationDate
                 )
-            } else if values?.isRegularFile == true {
+            } else if values?.isRegularFile == true,
+                fileExtensionIsIncluded(url.pathExtension, in: includedFileExtensions)
+            {
                 inventory.files[relativePath] = InventoryItem(
                     url: url,
                     fileSizeBytes: values?.fileSize.map(Int64.init) ?? 0,
@@ -310,7 +326,36 @@ public enum FolderSyncPlanner {
             }
         }
 
+        if includedFileExtensions == nil {
+            inventory.directories = discoveredDirectories
+        } else {
+            inventory.directories = directoriesContainingIncludedFiles(
+                filePaths: inventory.files.keys,
+                discoveredDirectories: discoveredDirectories
+            )
+        }
+
         return inventory
+    }
+
+    private static func directoriesContainingIncludedFiles(
+        filePaths: Dictionary<String, InventoryItem>.Keys,
+        discoveredDirectories: [String: InventoryItem]
+    ) -> [String: InventoryItem] {
+        var directories: [String: InventoryItem] = [:]
+        for filePath in filePaths {
+            var components = filePath.split(separator: "/").map(String.init)
+            guard components.count > 1 else { continue }
+            components.removeLast()
+            while !components.isEmpty {
+                let relativePath = components.joined(separator: "/")
+                if let directory = discoveredDirectories[relativePath] {
+                    directories[relativePath] = directory
+                }
+                components.removeLast()
+            }
+        }
+        return directories
     }
 
     private static func shouldCopy(source: InventoryItem, destination: InventoryItem) -> Bool {
@@ -394,5 +439,23 @@ public enum FolderSyncPlanner {
 
     private static func isPath(_ path: String, below ancestor: String) -> Bool {
         path.hasPrefix("\(ancestor)/")
+    }
+
+    private static func normalizedExtensions(_ extensions: Set<String>) -> Set<String> {
+        Set(extensions.compactMap { extensionValue in
+            let normalized = extensionValue
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+                .lowercased()
+            return normalized.isEmpty ? nil : normalized
+        })
+    }
+
+    private static func fileExtensionIsIncluded(
+        _ fileExtension: String,
+        in includedFileExtensions: Set<String>?
+    ) -> Bool {
+        guard let includedFileExtensions else { return true }
+        return includedFileExtensions.contains(fileExtension.lowercased())
     }
 }

@@ -58,6 +58,9 @@ final class EncoderViewModel: ObservableObject {
         static let syncDeleteDestinationItems = "syncDeleteDestinationItems"
         static let syncAutoSyncEnabled = "syncAutoSyncEnabled"
         static let syncDestinationLayout = "syncDestinationLayout"
+        static let syncFileFilter = "syncFileFilter"
+        static let syncCustomFileExtensions = "syncCustomFileExtensions"
+        static let completionNotificationsEnabled = "completionNotificationsEnabled"
     }
 
     private static let mediaRenameHistoryLimit = 20
@@ -435,6 +438,14 @@ final class EncoderViewModel: ObservableObject {
     @Published var syncDraftOriginRoot: URL?
     @Published var syncDraftDestinationRoot: URL?
     @Published private(set) var editingSyncPairID: UUID?
+    @Published var completionNotificationsEnabled = true {
+        didSet {
+            UserDefaults.standard.set(
+                completionNotificationsEnabled,
+                forKey: DefaultsKey.completionNotificationsEnabled
+            )
+        }
+    }
     @Published var syncOverwriteExisting = true {
         didSet { UserDefaults.standard.set(syncOverwriteExisting, forKey: DefaultsKey.syncOverwriteExisting) }
     }
@@ -454,6 +465,23 @@ final class EncoderViewModel: ObservableObject {
                 forKey: DefaultsKey.syncDestinationLayout
             )
             resetFolderSyncPlan()
+        }
+    }
+    @Published var syncFileFilter: SyncFileFilter = .all {
+        didSet {
+            UserDefaults.standard.set(syncFileFilter.rawValue, forKey: DefaultsKey.syncFileFilter)
+            resetFolderSyncPlan()
+        }
+    }
+    @Published var syncCustomFileExtensions = "" {
+        didSet {
+            UserDefaults.standard.set(
+                syncCustomFileExtensions,
+                forKey: DefaultsKey.syncCustomFileExtensions
+            )
+            if syncFileFilter == .custom {
+                resetFolderSyncPlan()
+            }
         }
     }
     @Published var syncAutoSyncEnabled = true {
@@ -1119,7 +1147,7 @@ final class EncoderViewModel: ObservableObject {
     }
 
     var canRunFolderSync: Bool {
-        syncFolderPairs.contains { $0.isEnabled } && !isFolderSyncBusy
+        syncFolderPairs.contains { $0.isEnabled } && syncHasSelectedFileTypes && !isFolderSyncBusy
     }
 
     var syncPairCount: Int {
@@ -1154,8 +1182,35 @@ final class EncoderViewModel: ObservableObject {
         SyncDestinationLayout.allCases
     }
 
+    var syncFileFilterOptions: [SyncFileFilter] {
+        SyncFileFilter.allCases
+    }
+
     var syncDestinationLayoutDetail: String {
         syncDestinationLayout.detail
+    }
+
+    var syncFileFilterDetail: String {
+        syncFileFilter.detail
+    }
+
+    var syncFileFilterSummary: String {
+        switch syncFileFilter {
+        case .all:
+            return "All files and folders"
+        case .audio:
+            return MediaFileFilter.audio.readableExtensionList()
+        case .video:
+            return MediaFileFilter.video.readableExtensionList()
+        case .custom:
+            let extensions = syncSelectedFileExtensions ?? []
+            guard !extensions.isEmpty else { return "No extensions selected" }
+            return extensions.sorted().map { ".\($0)" }.joined(separator: ", ")
+        }
+    }
+
+    var syncHasSelectedFileTypes: Bool {
+        syncFileFilter != .custom || !(syncSelectedFileExtensions ?? []).isEmpty
     }
 
     var syncDraftOriginTitle: String {
@@ -1484,6 +1539,19 @@ final class EncoderViewModel: ObservableObject {
         MediaFileNameFilter(query: mediaFileNameFilterQuery)
     }
 
+    private var syncSelectedFileExtensions: Set<String>? {
+        switch syncFileFilter {
+        case .all:
+            return nil
+        case .audio:
+            return MediaFileFilter.audio.fileExtensions
+        case .video:
+            return MediaFileFilter.video.fileExtensions
+        case .custom:
+            return Self.normalizedExtensionSet(from: syncCustomFileExtensions)
+        }
+    }
+
     private var currentMediaDeletePlanMatchesFilters: Bool {
         guard let mediaDeletePlan else { return false }
         return mediaDeletePlan.sourceRoots.map { $0.standardizedFileURL.path }
@@ -1649,11 +1717,22 @@ final class EncoderViewModel: ObservableObject {
         }
     }
 
+    func clearDeliveredNotifications() {
+        AppNotifier.clearGPhilCoderNotifications { [weak self] in
+            self?.statusMessage = "Cleared GPhilCoder notifications."
+        }
+    }
+
     func openNotificationSettings() {
         AppNotifier.openNotificationSettings()
         statusMessage =
             "Opened macOS Notification settings. If GPhilCoder is not selected automatically, choose it there and enable notifications."
         refreshNotificationPermission()
+    }
+
+    private func notifyCompletionIfNeeded(title: String, body: String) {
+        guard completionNotificationsEnabled else { return }
+        AppNotifier.notifyIfAppInactive(title: title, body: body)
     }
 
     func refreshFFmpeg() {
@@ -2612,6 +2691,7 @@ final class EncoderViewModel: ObservableObject {
 
         let deleteDestinationItems = syncDeleteDestinationItems
         let overwriteExisting = syncOverwriteExisting
+        let includedFileExtensions = syncSelectedFileExtensions
         let previewLimit = Self.syncPreviewLimit
 
         folderSyncTask = Task { [weak self] in
@@ -2636,7 +2716,8 @@ final class EncoderViewModel: ObservableObject {
                         try FolderSyncPlanner.buildPlan(
                             originRoot: pair.originURL,
                             destinationRoot: effectiveDestinationRoot,
-                            syncDeletes: deleteDestinationItems
+                            syncDeletes: deleteDestinationItems,
+                            includedFileExtensions: includedFileExtensions
                         )
                     }
                     let fullPlan = try await withTaskCancellationHandler {
@@ -2656,6 +2737,7 @@ final class EncoderViewModel: ObservableObject {
                                 originRoot: pair.originURL,
                                 destinationRoot: effectiveDestinationRoot,
                                 syncDeletes: deleteDestinationItems,
+                                includedFileExtensions: includedFileExtensions,
                                 operationLimit: previewLimit
                             )
                         }
@@ -2697,7 +2779,7 @@ final class EncoderViewModel: ObservableObject {
                     let completionMessage = "All enabled sync pairs are already current."
                     self?.statusMessage = completionMessage
                     if !triggeredAutomatically {
-                        AppNotifier.notifyIfAppInactive(
+                        self?.notifyCompletionIfNeeded(
                             title: "Folder sync finished",
                             body: completionMessage
                         )
@@ -2723,7 +2805,7 @@ final class EncoderViewModel: ObservableObject {
                 self?.folderSyncTask = nil
                 let completionMessage = Self.folderSyncResultStatusMessage(result)
                 self?.statusMessage = completionMessage
-                AppNotifier.notifyIfAppInactive(
+                self?.notifyCompletionIfNeeded(
                     title: "Folder sync finished",
                     body: completionMessage
                 )
@@ -3493,7 +3575,7 @@ final class EncoderViewModel: ObservableObject {
                     let completionMessage =
                         "No \(filter.fileTypeName) files found in \(sourceRoot.lastPathComponent)."
                     self?.statusMessage = completionMessage
-                    AppNotifier.notifyIfAppInactive(
+                    self?.notifyCompletionIfNeeded(
                         title: "File copy finished",
                         body: completionMessage
                     )
@@ -3537,7 +3619,7 @@ final class EncoderViewModel: ObservableObject {
                     destinationRoot: destinationRoot
                 )
                 self?.statusMessage = completionMessage
-                AppNotifier.notifyIfAppInactive(
+                self?.notifyCompletionIfNeeded(
                     title: "File copy finished",
                     body: completionMessage
                 )
@@ -3648,7 +3730,7 @@ final class EncoderViewModel: ObservableObject {
                 fileNameFilter: fullPlan.fileNameFilter
             )
             statusMessage = completionMessage
-            AppNotifier.notifyIfAppInactive(
+            notifyCompletionIfNeeded(
                 title: "Filtered delete finished",
                 body: completionMessage
             )
@@ -3739,7 +3821,7 @@ final class EncoderViewModel: ObservableObject {
             }
             let completionMessage = Self.mediaRenameResultStatusMessage(result)
             statusMessage = completionMessage
-            AppNotifier.notifyIfAppInactive(
+            notifyCompletionIfNeeded(
                 title: "Rename finished",
                 body: completionMessage
             )
@@ -3814,7 +3896,7 @@ final class EncoderViewModel: ObservableObject {
                 direction: direction
             )
             statusMessage = completionMessage
-            AppNotifier.notifyIfAppInactive(
+            notifyCompletionIfNeeded(
                 title: direction.notificationTitle,
                 body: completionMessage
             )
@@ -3868,7 +3950,7 @@ final class EncoderViewModel: ObservableObject {
                     self?.currentMediaCopyWorkflowID = nil
                     self?.mediaCopyTask = nil
                     self?.statusMessage = completionMessage
-                    AppNotifier.notifyIfAppInactive(
+                    self?.notifyCompletionIfNeeded(
                         title: "File copy queue finished",
                         body: completionMessage
                     )
@@ -3929,7 +4011,7 @@ final class EncoderViewModel: ObservableObject {
                     workflowCount: nonEmptyWorkflowPlans.count
                 )
                 self?.statusMessage = completionMessage
-                AppNotifier.notifyIfAppInactive(
+                self?.notifyCompletionIfNeeded(
                     title: "File copy queue finished",
                     body: completionMessage
                 )
@@ -5593,6 +5675,16 @@ final class EncoderViewModel: ObservableObject {
         {
             syncDestinationLayout = value
         }
+        if let rawValue = defaults.string(forKey: DefaultsKey.syncFileFilter),
+            let value = SyncFileFilter(rawValue: rawValue)
+        {
+            syncFileFilter = value
+        }
+        syncCustomFileExtensions =
+            defaults.string(forKey: DefaultsKey.syncCustomFileExtensions) ?? ""
+        if let value = persistedBool(forKey: DefaultsKey.completionNotificationsEnabled) {
+            completionNotificationsEnabled = value
+        }
         loadSyncFolderPairs(from: defaults)
 
         if let selectedInputExtensions = defaults.array(forKey: DefaultsKey.selectedInputExtensions)
@@ -6992,7 +7084,7 @@ final class EncoderViewModel: ObservableObject {
         }
 
         statusMessage = completionMessage
-        AppNotifier.notifyIfAppInactive(title: completionTitle, body: completionMessage)
+        notifyCompletionIfNeeded(title: completionTitle, body: completionMessage)
     }
 
     private func markJobRunning(at index: Int) -> EncodeJob {
@@ -7100,6 +7192,20 @@ final class EncoderViewModel: ObservableObject {
 
         return lines.last(where: { $0.contains("audio:") || $0.contains("video:") })
             ?? "Output written."
+    }
+
+    private static func normalizedExtensionSet(from text: String) -> Set<String> {
+        let separators = CharacterSet(charactersIn: ",; \n\t")
+        return Set(
+            text.components(separatedBy: separators)
+                .compactMap { token in
+                    let normalized = token
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                        .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+                        .lowercased()
+                    return normalized.isEmpty ? nil : normalized
+                }
+        )
     }
 }
 

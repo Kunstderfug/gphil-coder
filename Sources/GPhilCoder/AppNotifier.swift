@@ -106,6 +106,31 @@ enum AppNotifier {
         }
     }
 
+    static func clearGPhilCoderNotifications(completion: @escaping @MainActor () -> Void) {
+        guard configure() else {
+            completion()
+            return
+        }
+
+        let center = UNUserNotificationCenter.current()
+        center.getPendingNotificationRequests { requests in
+            let identifiers = requests
+                .map(\.identifier)
+                .filter { $0.hasPrefix("gphilcoder-") }
+            center.removePendingNotificationRequests(withIdentifiers: identifiers)
+
+            center.getDeliveredNotifications { notifications in
+                let deliveredIdentifiers = notifications
+                    .map(\.request.identifier)
+                    .filter { $0.hasPrefix("gphilcoder-") }
+                center.removeDeliveredNotifications(withIdentifiers: deliveredIdentifiers)
+                Task { @MainActor in
+                    completion()
+                }
+            }
+        }
+    }
+
     static func openNotificationSettings() {
         let bundleID = Bundle.main.bundleIdentifier ?? "com.gphil.coder"
         let urlStrings = [

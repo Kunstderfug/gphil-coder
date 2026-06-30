@@ -500,6 +500,54 @@ enum SyncDestinationLayout: String, CaseIterable, Identifiable, Codable, Sendabl
     }
 }
 
+enum SyncFileFilter: String, CaseIterable, Identifiable, Codable, Sendable {
+    case all
+    case audio
+    case video
+    case custom
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all:
+            "All"
+        case .audio:
+            "Audio"
+        case .video:
+            "Video"
+        case .custom:
+            "Custom"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .all:
+            "Sync every regular file and folder from the origin."
+        case .audio:
+            "Sync only common audio file extensions."
+        case .video:
+            "Sync only common video file extensions."
+        case .custom:
+            "Sync only the extensions entered below."
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .all:
+            "folder"
+        case .audio:
+            "music.note"
+        case .video:
+            "film"
+        case .custom:
+            "line.3.horizontal.decrease.circle"
+        }
+    }
+}
+
 struct SyncFolderPair: Codable, Identifiable, Equatable {
     let id: UUID
     var originPath: String
