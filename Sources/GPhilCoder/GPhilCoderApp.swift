@@ -64,12 +64,14 @@ struct GPhilCoderApp: App {
                 Button("Cancel Active Operation") {
                     if encoder.isEncoding {
                         encoder.cancelEncoding()
+                    } else if encoder.isFolderSyncBusy {
+                        encoder.cancelFolderSync()
                     } else {
                         encoder.cancelMediaCopy()
                     }
                 }
                 .keyboardShortcut(".", modifiers: [.command])
-                .disabled(!encoder.isEncoding && !encoder.isMediaCopyBusy)
+                .disabled(!encoder.isEncoding && !encoder.isMediaCopyBusy && !encoder.isFolderSyncBusy)
 
                 Divider()
 

@@ -432,6 +432,128 @@ struct AddSummary {
     }
 }
 
+enum SyncPairState: String, Codable, Sendable {
+    case idle
+    case watching
+    case syncing
+    case succeeded
+    case failed
+    case disabled
+
+    var title: String {
+        switch self {
+        case .idle:
+            "Ready"
+        case .watching:
+            "Watching"
+        case .syncing:
+            "Syncing"
+        case .succeeded:
+            "Synced"
+        case .failed:
+            "Needs attention"
+        case .disabled:
+            "Paused"
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .idle:
+            "clock"
+        case .watching:
+            "eye"
+        case .syncing:
+            "arrow.triangle.2.circlepath"
+        case .succeeded:
+            "checkmark.circle.fill"
+        case .failed:
+            "exclamationmark.triangle.fill"
+        case .disabled:
+            "pause.circle"
+        }
+    }
+}
+
+struct SyncFolderPair: Codable, Identifiable, Equatable {
+    let id: UUID
+    var originPath: String
+    var destinationPath: String
+    var isEnabled: Bool
+    var addedAt: Date
+    var lastSyncedAt: Date?
+    var lastMessage: String
+    var state: SyncPairState
+
+    init(
+        id: UUID = UUID(),
+        originPath: String,
+        destinationPath: String,
+        isEnabled: Bool = true,
+        addedAt: Date = Date(),
+        lastSyncedAt: Date? = nil,
+        lastMessage: String = "Ready to sync.",
+        state: SyncPairState = .idle
+    ) {
+        self.id = id
+        self.originPath = originPath
+        self.destinationPath = destinationPath
+        self.isEnabled = isEnabled
+        self.addedAt = addedAt
+        self.lastSyncedAt = lastSyncedAt
+        self.lastMessage = lastMessage
+        self.state = state
+    }
+
+    var originURL: URL {
+        URL(fileURLWithPath: originPath, isDirectory: true)
+    }
+
+    var destinationURL: URL {
+        URL(fileURLWithPath: destinationPath, isDirectory: true)
+    }
+
+    var displayTitle: String {
+        "\(originURL.lastPathComponent) -> \(destinationURL.lastPathComponent)"
+    }
+}
+
+struct FolderSyncProgress: Equatable {
+    let completed: Int
+    let total: Int
+    let copied: Int
+    let deleted: Int
+    let skipped: Int
+    let failed: Int
+    let copiedBytes: Int64
+    let totalBytes: Int64
+    let startedAt: Date
+    let updatedAt: Date
+    let currentPath: String?
+
+    var fractionCompleted: Double {
+        guard total > 0 else { return 0 }
+        return min(1, max(0, Double(completed) / Double(total)))
+    }
+
+    var bytesPerSecond: Double? {
+        let elapsed = updatedAt.timeIntervalSince(startedAt)
+        guard elapsed > 0, copiedBytes > 0 else { return nil }
+        return Double(copiedBytes) / elapsed
+    }
+}
+
+struct FolderSyncRunResult: Sendable {
+    var pairs = 0
+    var operations = 0
+    var copied = 0
+    var deleted = 0
+    var skipped = 0
+    var failed = 0
+    var failedPaths: [String] = []
+    var cancelled = false
+}
+
 extension Int64 {
     var formattedFileSize: String {
         ByteCountFormatter.string(fromByteCount: self, countStyle: .file)
