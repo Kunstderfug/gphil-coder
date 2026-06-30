@@ -541,9 +541,14 @@ struct SyncFolderPair: Codable, Identifiable, Equatable {
     func effectiveDestinationURL(layout: SyncDestinationLayout) -> URL {
         switch layout {
         case .destinationRoot:
-            destinationURL
+            return destinationURL
         case .originSubfolder:
-            destinationURL.appendingPathComponent(originURL.lastPathComponent, isDirectory: true)
+            let originFolderName = originURL.lastPathComponent
+            guard !originFolderName.isEmpty else { return destinationURL }
+            if destinationURL.lastPathComponent == originFolderName {
+                return destinationURL
+            }
+            return destinationURL.appendingPathComponent(originURL.lastPathComponent, isDirectory: true)
         }
     }
 
