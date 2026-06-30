@@ -6037,6 +6037,7 @@ final class EncoderViewModel: ObservableObject {
             encoder.dateEncodingStrategy = .iso8601
             let data = try encoder.encode(syncFolderPairs)
             UserDefaults.standard.set(data, forKey: DefaultsKey.syncFolderPairs)
+            UserDefaults.standard.synchronize()
         } catch {
             statusMessage = "Could not save sync pairs: \(error.localizedDescription)"
         }
