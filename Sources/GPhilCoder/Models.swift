@@ -557,6 +557,20 @@ struct SyncFolderPair: Codable, Identifiable, Equatable {
     }
 }
 
+enum SyncFolderPairPersistence {
+    static func encode(_ pairs: [SyncFolderPair]) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        return try encoder.encode(pairs)
+    }
+
+    static func decode(_ data: Data) throws -> [SyncFolderPair] {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode([SyncFolderPair].self, from: data)
+    }
+}
+
 struct FolderSyncProgress: Equatable {
     let completed: Int
     let total: Int

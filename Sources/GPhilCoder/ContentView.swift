@@ -486,9 +486,14 @@ struct ContentView: View {
                     detail: model.mediaCopySourceDetail,
                     systemImage: "folder.badge.plus",
                     buttonTitle: "Choose sources",
-                    disabled: model.isMediaCopyBusy
+                    disabled: model.isMediaCopyBusy,
+                    secondaryButtonTitle: "Clear",
+                    secondarySystemImage: "xmark.circle",
+                    secondaryDisabled: !model.canClearMediaCopySources
                 ) {
                     model.chooseMediaCopySourceRoot()
+                } secondaryAction: {
+                    model.clearMediaCopySources()
                 }
                 .padding(.vertical, 4)
             }
@@ -2731,7 +2736,35 @@ private struct FolderPickerControl: View {
     let systemImage: String
     let buttonTitle: String
     let disabled: Bool
+    let secondaryButtonTitle: String?
+    let secondarySystemImage: String
+    let secondaryDisabled: Bool
     let action: () -> Void
+    let secondaryAction: (() -> Void)?
+
+    init(
+        title: String,
+        detail: String?,
+        systemImage: String,
+        buttonTitle: String,
+        disabled: Bool,
+        secondaryButtonTitle: String? = nil,
+        secondarySystemImage: String = "xmark.circle",
+        secondaryDisabled: Bool = true,
+        action: @escaping () -> Void,
+        secondaryAction: (() -> Void)? = nil
+    ) {
+        self.title = title
+        self.detail = detail
+        self.systemImage = systemImage
+        self.buttonTitle = buttonTitle
+        self.disabled = disabled
+        self.secondaryButtonTitle = secondaryButtonTitle
+        self.secondarySystemImage = secondarySystemImage
+        self.secondaryDisabled = secondaryDisabled
+        self.action = action
+        self.secondaryAction = secondaryAction
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -2758,12 +2791,24 @@ private struct FolderPickerControl: View {
                 }
             }
 
-            Button {
-                action()
-            } label: {
-                Label(buttonTitle, systemImage: "folder")
+            HStack(spacing: 8) {
+                Button {
+                    action()
+                } label: {
+                    Label(buttonTitle, systemImage: "folder")
+                }
+                .disabled(disabled)
+
+                if let secondaryButtonTitle, let secondaryAction {
+                    Button(role: .destructive) {
+                        secondaryAction()
+                    } label: {
+                        Label(secondaryButtonTitle, systemImage: secondarySystemImage)
+                    }
+                    .disabled(secondaryDisabled)
+                    .help("Clear the selected source folder view")
+                }
             }
-            .disabled(disabled)
         }
     }
 }

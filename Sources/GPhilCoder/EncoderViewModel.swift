@@ -1102,6 +1102,10 @@ final class EncoderViewModel: ObservableObject {
             && mediaCopyHasSelectedExtensionsForCurrentFilter && !isMediaCopyBusy
     }
 
+    var canClearMediaCopySources: Bool {
+        !mediaCopySourceRoots.isEmpty && !isMediaCopyBusy
+    }
+
     var canAddSyncFolderPair: Bool {
         syncDraftOriginRoot != nil && syncDraftDestinationRoot != nil && !isFolderSyncBusy
     }
@@ -2329,6 +2333,20 @@ final class EncoderViewModel: ObservableObject {
             mediaCopyDestinationRoot = url
             statusMessage = "Media copy destination set to \(url.path(percentEncoded: false))."
         }
+    }
+
+    func clearMediaCopySources() {
+        guard canClearMediaCopySources else { return }
+        mediaFileNameFilterRefreshTask?.cancel()
+        mediaCopySourceRoots = []
+        mediaFileInventory = []
+        mediaFileInventorySourceRootPaths = []
+        mediaCopyPlan = nil
+        mediaDeletePlan = nil
+        mediaRenamePlan = nil
+        mediaCopyProgress = nil
+        isMediaRenamePreviewStale = false
+        statusMessage = "Cleared file-management source folders."
     }
 
     func chooseSyncOriginRoot() {
@@ -6033,9 +6051,7 @@ final class EncoderViewModel: ObservableObject {
     private func persistSyncFolderPairs() {
         guard !isLoadingPersistedSettings else { return }
         do {
-            let encoder = JSONEncoder()
-            encoder.dateEncodingStrategy = .iso8601
-            let data = try encoder.encode(syncFolderPairs)
+            let data = try SyncFolderPairPersistence.encode(syncFolderPairs)
             UserDefaults.standard.set(data, forKey: DefaultsKey.syncFolderPairs)
             UserDefaults.standard.synchronize()
         } catch {
@@ -6044,9 +6060,15 @@ final class EncoderViewModel: ObservableObject {
     }
 
     private func loadSyncFolderPairs(from defaults: UserDefaults) {
-        guard let data = defaults.data(forKey: DefaultsKey.syncFolderPairs),
-            let pairs = try? JSONDecoder().decode([SyncFolderPair].self, from: data)
-        else {
+        guard let data = defaults.data(forKey: DefaultsKey.syncFolderPairs) else {
+            return
+        }
+
+        let pairs: [SyncFolderPair]
+        do {
+            pairs = try SyncFolderPairPersistence.decode(data)
+        } catch {
+            statusMessage = "Could not read saved sync pairs: \(error.localizedDescription)"
             return
         }
 
