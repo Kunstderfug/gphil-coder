@@ -226,16 +226,43 @@ struct ContentView: View {
                     Button {
                         model.addSyncFolderPair()
                     } label: {
-                        Label("Add pair", systemImage: "plus.circle")
+                        Label(
+                            model.syncFolderPairSubmitTitle,
+                            systemImage: model.isEditingSyncFolderPair ? "checkmark.circle" : "plus.circle"
+                        )
                             .frame(maxWidth: .infinity)
                     }
                     .disabled(!model.canAddSyncFolderPair)
+
+                    if model.isEditingSyncFolderPair {
+                        Button {
+                            model.cancelEditingSyncFolderPair()
+                        } label: {
+                            Label("Cancel edit", systemImage: "xmark.circle")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .disabled(model.isFolderSyncBusy)
+                    }
                 }
                 .padding(.vertical, 4)
             }
 
             GroupBox("Behavior") {
                 VStack(alignment: .leading, spacing: 11) {
+                    Picker("Destination layout", selection: $model.syncDestinationLayout) {
+                        ForEach(model.syncDestinationLayoutOptions) { layout in
+                            Text(layout.title).tag(layout)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .disabled(model.isFolderSyncBusy)
+                    .arrowCursorOnHover()
+
+                    Text(model.syncDestinationLayoutDetail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
                     Toggle("Overwrite destination files", isOn: $model.syncOverwriteExisting)
                         .disabled(model.isFolderSyncBusy)
                     Toggle("Sync deletions", isOn: $model.syncDeleteDestinationItems)
@@ -413,10 +440,14 @@ struct ContentView: View {
                     ForEach(model.syncFolderPairs) { pair in
                         SyncFolderPairRow(
                             pair: pair,
+                            targetPath: model.effectiveSyncDestinationPath(for: pair),
                             isCurrent: model.currentSyncPairID == pair.id,
                             isBusy: model.isFolderSyncBusy,
                             setEnabled: { enabled in
                                 model.setSyncFolderPair(pair, enabled: enabled)
+                            },
+                            edit: {
+                                model.editSyncFolderPair(pair)
                             },
                             remove: {
                                 model.removeSyncFolderPair(pair)
@@ -2765,9 +2796,11 @@ private struct CenteredStatusView: View {
 
 private struct SyncFolderPairRow: View {
     let pair: SyncFolderPair
+    let targetPath: String
     let isCurrent: Bool
     let isBusy: Bool
     let setEnabled: (Bool) -> Void
+    let edit: () -> Void
     let remove: () -> Void
 
     private var stateColor: Color {
@@ -2828,6 +2861,15 @@ private struct SyncFolderPairRow: View {
                         .controlSize(.small)
                         .disabled(isBusy)
 
+                    Button {
+                        edit()
+                    } label: {
+                        Image(systemName: "pencil")
+                    }
+                    .buttonStyle(.gphilHoverBorderless)
+                    .disabled(isBusy)
+                    .help("Edit sync pair")
+
                     Button(role: .destructive) {
                         remove()
                     } label: {
@@ -2844,6 +2886,11 @@ private struct SyncFolderPairRow: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Text(pair.destinationPath)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text("Target: \(targetPath)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)

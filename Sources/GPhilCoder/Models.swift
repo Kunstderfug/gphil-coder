@@ -475,6 +475,31 @@ enum SyncPairState: String, Codable, Sendable {
     }
 }
 
+enum SyncDestinationLayout: String, CaseIterable, Identifiable, Codable, Sendable {
+    case originSubfolder
+    case destinationRoot
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .originSubfolder:
+            "Origin folder"
+        case .destinationRoot:
+            "Root"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .originSubfolder:
+            "Each origin syncs into its own folder inside the selected destination."
+        case .destinationRoot:
+            "Each origin mirrors directly into the selected destination folder."
+        }
+    }
+}
+
 struct SyncFolderPair: Codable, Identifiable, Equatable {
     let id: UUID
     var originPath: String
@@ -511,6 +536,15 @@ struct SyncFolderPair: Codable, Identifiable, Equatable {
 
     var destinationURL: URL {
         URL(fileURLWithPath: destinationPath, isDirectory: true)
+    }
+
+    func effectiveDestinationURL(layout: SyncDestinationLayout) -> URL {
+        switch layout {
+        case .destinationRoot:
+            destinationURL
+        case .originSubfolder:
+            destinationURL.appendingPathComponent(originURL.lastPathComponent, isDirectory: true)
+        }
     }
 
     var displayTitle: String {

@@ -120,6 +120,58 @@ final class FolderSyncPlannerTests: XCTestCase {
         )
     }
 
+    func testMultipleOriginsCanShareDestinationUsingOriginSubfolders() throws {
+        let workspace = try makeTemporaryDirectory()
+        let originA = workspace.appendingPathComponent("OriginA", isDirectory: true)
+        let originB = workspace.appendingPathComponent("OriginB", isDirectory: true)
+        let sharedDestination = try makeTemporaryDirectory()
+        try FileManager.default.createDirectory(at: originA, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: originB, withIntermediateDirectories: true)
+        try writeFile("one.txt", in: originA, contents: "one")
+        try writeFile("two.txt", in: originB, contents: "two")
+
+        let targetA = sharedDestination.appendingPathComponent(originA.lastPathComponent, isDirectory: true)
+        let targetB = sharedDestination.appendingPathComponent(originB.lastPathComponent, isDirectory: true)
+
+        let firstPlan = try FolderSyncPlanner.buildPlan(
+            originRoot: originA,
+            destinationRoot: targetA
+        )
+        let secondPlan = try FolderSyncPlanner.buildPlan(
+            originRoot: originB,
+            destinationRoot: targetB
+        )
+
+        for operation in firstPlan.operations + secondPlan.operations {
+            XCTAssertEqual(FolderSyncPlanner.applyOperation(operation), .applied)
+        }
+
+        XCTAssertEqual(
+            try String(contentsOf: targetA.appendingPathComponent("one.txt"), encoding: .utf8),
+            "one"
+        )
+        XCTAssertEqual(
+            try String(contentsOf: targetB.appendingPathComponent("two.txt"), encoding: .utf8),
+            "two"
+        )
+
+        try FileManager.default.removeItem(at: originB.appendingPathComponent("two.txt"))
+        let deletePlan = try FolderSyncPlanner.buildPlan(
+            originRoot: originB,
+            destinationRoot: targetB
+        )
+        for operation in deletePlan.operations {
+            XCTAssertEqual(FolderSyncPlanner.applyOperation(operation), .applied)
+        }
+
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: targetA.appendingPathComponent("one.txt").path)
+        )
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: targetB.appendingPathComponent("two.txt").path)
+        )
+    }
+
     func testApplyOperationSkipsExistingFilesWhenOverwriteIsOff() throws {
         let origin = try makeTemporaryDirectory()
         let destination = try makeTemporaryDirectory()
