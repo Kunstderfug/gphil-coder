@@ -90,6 +90,14 @@ final class EncoderViewModel: ObservableObject {
         }
     }
 
+    private enum SyncFolderPairListFile {
+        static let fileExtension = "gphilcodersync"
+
+        static var contentType: UTType {
+            UTType(filenameExtension: fileExtension) ?? .json
+        }
+    }
+
     private enum TrashEmergencyJournal {
         static let directoryName = "GPhilCoder"
         static let fileName = "trash-emergency-journal.json"
@@ -1136,6 +1144,14 @@ final class EncoderViewModel: ObservableObject {
 
     var canAddSyncFolderPair: Bool {
         syncDraftOriginRoot != nil && syncDraftDestinationRoot != nil && !isFolderSyncBusy
+    }
+
+    var canSaveSyncFolderPairs: Bool {
+        !syncFolderPairs.isEmpty && !isFolderSyncBusy
+    }
+
+    var canLoadSyncFolderPairs: Bool {
+        !isFolderSyncBusy
     }
 
     var isEditingSyncFolderPair: Bool {
@@ -2588,6 +2604,67 @@ final class EncoderViewModel: ObservableObject {
             ? "Ready to sync."
             : "Paused. Automatic sync is disabled for this pair."
         statusMessage = enabled ? "Sync pair enabled." : "Sync pair paused."
+    }
+
+    func saveSyncFolderPairs() {
+        guard canSaveSyncFolderPairs else {
+            statusMessage = "Add at least one sync pair before saving a pair list."
+            return
+        }
+
+        let panel = NSSavePanel()
+        panel.title = "Save Sync Pair List"
+        panel.prompt = "Save Pair List"
+        panel.allowedContentTypes = [SyncFolderPairListFile.contentType]
+        panel.canCreateDirectories = true
+        panel.directoryURL = syncDraftDestinationRoot ?? syncFolderPairs.first?.destinationURL ?? lastInputDirectoryURL()
+        panel.nameFieldStringValue = defaultSyncFolderPairListFileName()
+
+        guard panel.runModal() == .OK, let selectedURL = panel.url else { return }
+
+        let url = normalizedSyncFolderPairListFileURL(selectedURL)
+
+        do {
+            let data = try SyncFolderPairPersistence.encode(syncFolderPairs)
+            try data.write(to: url, options: .atomic)
+            statusMessage =
+                "Saved \(syncFolderPairs.count) sync pair\(syncFolderPairs.count == 1 ? "" : "s") to \(url.lastPathComponent)."
+        } catch {
+            statusMessage = "Could not save sync pair list: \(error.localizedDescription)"
+        }
+    }
+
+    func loadSyncFolderPairsFromFile() {
+        guard canLoadSyncFolderPairs else { return }
+
+        let panel = NSOpenPanel()
+        panel.title = "Load Sync Pair List"
+        panel.prompt = "Load Pair List"
+        panel.allowsMultipleSelection = false
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.canCreateDirectories = false
+        panel.allowedContentTypes = [SyncFolderPairListFile.contentType, .json]
+        panel.directoryURL = syncDraftDestinationRoot ?? syncFolderPairs.first?.destinationURL ?? lastInputDirectoryURL()
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        do {
+            let data = try Data(contentsOf: url)
+            let loadedPairs = try normalizedLoadedSyncFolderPairs(from: data)
+            guard validateLoadedSyncFolderPairs(loadedPairs) else { return }
+            guard confirmReplacingSyncFolderPairs(withCount: loadedPairs.count) else { return }
+
+            syncFolderPairs = loadedPairs
+            editingSyncPairID = nil
+            syncDraftOriginRoot = nil
+            syncDraftDestinationRoot = nil
+            resetFolderSyncPlan()
+            statusMessage =
+                "Loaded \(syncFolderPairs.count) sync pair\(syncFolderPairs.count == 1 ? "" : "s") from \(url.lastPathComponent)."
+        } catch {
+            statusMessage = "Could not load sync pair list: \(error.localizedDescription)"
+        }
     }
 
     func scanFolderSyncPlan() {
@@ -5091,6 +5168,12 @@ final class EncoderViewModel: ObservableObject {
         return "GPhilCoder File Copy \(formatter.string(from: Date())).\(MediaCopyJobFile.fileExtension)"
     }
 
+    private func defaultSyncFolderPairListFileName() -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH.mm"
+        return "GPhilCoder Sync Pairs \(formatter.string(from: Date())).\(SyncFolderPairListFile.fileExtension)"
+    }
+
     private func defaultRestoreUnresolvedFileName() -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH.mm"
@@ -5103,6 +5186,10 @@ final class EncoderViewModel: ObservableObject {
 
     private func normalizedMediaCopyJobFileURL(_ url: URL) -> URL {
         url.pathExtension.isEmpty ? url.appendingPathExtension(MediaCopyJobFile.fileExtension) : url
+    }
+
+    private func normalizedSyncFolderPairListFileURL(_ url: URL) -> URL {
+        url.pathExtension.isEmpty ? url.appendingPathExtension(SyncFolderPairListFile.fileExtension) : url
     }
 
     private func normalizedJSONFileURL(_ url: URL) -> URL {
@@ -5996,7 +6083,8 @@ final class EncoderViewModel: ObservableObject {
     private func validateSyncFolders(
         originRoot: URL,
         destinationRoot: URL,
-        showsAlert: Bool = true
+        showsAlert: Bool = true,
+        createsDestinationDirectory: Bool = true
     ) -> Bool {
         let originComponents = originRoot.standardizedFileURL.resolvingSymlinksInPath().pathComponents
         let destinationComponents =
@@ -6012,19 +6100,21 @@ final class EncoderViewModel: ObservableObject {
             return false
         }
 
-        do {
-            try FileManager.default.createDirectory(
-                at: destinationRoot,
-                withIntermediateDirectories: true
-            )
-        } catch {
-            if showsAlert {
-                showMediaCopyFolderAlert(
-                    message: "Destination folder is unavailable",
-                    detail: "GPhilCoder could not create or open the destination folder: \(error.localizedDescription)"
+        if createsDestinationDirectory {
+            do {
+                try FileManager.default.createDirectory(
+                    at: destinationRoot,
+                    withIntermediateDirectories: true
                 )
+            } catch {
+                if showsAlert {
+                    showMediaCopyFolderAlert(
+                        message: "Destination folder is unavailable",
+                        detail: "GPhilCoder could not create or open the destination folder: \(error.localizedDescription)"
+                    )
+                }
+                return false
             }
-            return false
         }
 
         if originComponents == destinationComponents {
@@ -6065,6 +6155,49 @@ final class EncoderViewModel: ObservableObject {
         }
 
         return true
+    }
+
+    private func validateLoadedSyncFolderPairs(_ pairs: [SyncFolderPair]) -> Bool {
+        var seenPairs = Set<String>()
+        for pair in pairs {
+            let key = "\(pair.originPath)\n\(pair.destinationPath)"
+            guard seenPairs.insert(key).inserted else {
+                statusMessage =
+                    "Could not load sync pair list: it contains duplicate origin and destination folders."
+                return false
+            }
+
+            guard validateSyncFolders(
+                originRoot: pair.originURL,
+                destinationRoot: effectiveSyncDestinationRoot(for: pair, in: pairs),
+                showsAlert: false,
+                createsDestinationDirectory: false
+            ) else {
+                statusMessage =
+                    "Could not load sync pair list: one or more origin folders are missing or folder paths are nested unsafely."
+                return false
+            }
+        }
+
+        if let collisionMessage = syncDestinationCollisionMessage(for: pairs) {
+            statusMessage = "Could not load sync pair list: \(collisionMessage)"
+            return false
+        }
+
+        return true
+    }
+
+    private func confirmReplacingSyncFolderPairs(withCount newPairCount: Int) -> Bool {
+        guard !syncFolderPairs.isEmpty else { return true }
+
+        let alert = NSAlert()
+        alert.messageText = "Replace current sync pairs?"
+        alert.informativeText =
+            "Loading this file will replace the current \(syncFolderPairs.count) sync pair\(syncFolderPairs.count == 1 ? "" : "s") with \(newPairCount) pair\(newPairCount == 1 ? "" : "s")."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Replace")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     private func effectiveSyncDestinationRoot(
@@ -6184,15 +6317,18 @@ final class EncoderViewModel: ObservableObject {
             return
         }
 
-        let pairs: [SyncFolderPair]
         do {
-            pairs = try SyncFolderPairPersistence.decode(data)
+            syncFolderPairs = try normalizedLoadedSyncFolderPairs(from: data)
         } catch {
             statusMessage = "Could not read saved sync pairs: \(error.localizedDescription)"
-            return
         }
+    }
 
-        syncFolderPairs = pairs.map { pair in
+    private func normalizedLoadedSyncFolderPairs(from data: Data) throws -> [SyncFolderPair] {
+        let pairs: [SyncFolderPair]
+        pairs = try SyncFolderPairPersistence.decode(data)
+
+        return pairs.map { pair in
             var pair = pair
             if !pair.isEnabled {
                 pair.state = .disabled

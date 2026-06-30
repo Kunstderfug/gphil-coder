@@ -24,6 +24,8 @@ Native macOS batch audio/video encoder built with SwiftUI and FFmpeg.
 - Export beside each source file or into a selected export folder.
 - Preserve nested folder structure when exporting to a custom folder.
 - Process files in parallel while optionally passing a thread count to FFmpeg.
+- Mirror sync folder pairs in the Sync tab, including saved and loaded
+  `.gphilcodersync` pair-list files.
 - Encode `.mp4`, `.mov`, and `.m4v` video sources to HEVC using Apple's
   `hevc_videotoolbox` hardware encoder from system FFmpeg.
 - Prefer VideoToolbox hardware decode for supported video sources, with an Off

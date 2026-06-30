@@ -200,6 +200,21 @@ struct ContentView: View {
     }
 
     private var folderSyncSetupPanel: some View {
+        VStack(spacing: 0) {
+            ScrollView {
+                folderSyncSetupContent
+                    .padding(18)
+            }
+
+            Divider()
+
+            folderSyncActionPanel
+                .padding(18)
+        }
+        .background(Color(nsColor: .controlBackgroundColor))
+    }
+
+    private var folderSyncSetupContent: some View {
         VStack(alignment: .leading, spacing: 16) {
             GroupBox("New Pair") {
                 VStack(alignment: .leading, spacing: 12) {
@@ -243,6 +258,34 @@ struct ContentView: View {
                         }
                         .disabled(model.isFolderSyncBusy)
                     }
+                }
+                .padding(.vertical, 4)
+            }
+
+            GroupBox("Pair List") {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 10) {
+                        Button {
+                            model.saveSyncFolderPairs()
+                        } label: {
+                            Label("Save", systemImage: "square.and.arrow.down")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .disabled(!model.canSaveSyncFolderPairs)
+
+                        Button {
+                            model.loadSyncFolderPairsFromFile()
+                        } label: {
+                            Label("Load", systemImage: "square.and.arrow.up")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .disabled(!model.canLoadSyncFolderPairs)
+                    }
+
+                    Text("\(model.syncPairCount) sync pair\(model.syncPairCount == 1 ? "" : "s") in the current list")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 .padding(.vertical, 4)
             }
@@ -377,43 +420,42 @@ struct ContentView: View {
                     }
                 }
             }
+        }
+    }
 
-            Spacer()
-
-            if model.isFolderSyncBusy {
+    @ViewBuilder
+    private var folderSyncActionPanel: some View {
+        if model.isFolderSyncBusy {
+            Button {
+                model.cancelFolderSync()
+            } label: {
+                Label("Cancel", systemImage: "stop.fill")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.red)
+            .controlSize(.large)
+        } else {
+            VStack(spacing: 10) {
                 Button {
-                    model.cancelFolderSync()
+                    model.scanFolderSyncPlan()
                 } label: {
-                    Label("Cancel", systemImage: "stop.fill")
+                    Label("Scan", systemImage: "magnifyingglass")
+                        .frame(maxWidth: .infinity)
+                }
+                .disabled(!model.canRunFolderSync)
+
+                Button {
+                    model.syncFoldersNow()
+                } label: {
+                    Label("Sync", systemImage: "arrow.triangle.2.circlepath")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(.red)
                 .controlSize(.large)
-            } else {
-                VStack(spacing: 10) {
-                    Button {
-                        model.scanFolderSyncPlan()
-                    } label: {
-                        Label("Scan", systemImage: "magnifyingglass")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .disabled(!model.canRunFolderSync)
-
-                    Button {
-                        model.syncFoldersNow()
-                    } label: {
-                        Label("Sync", systemImage: "arrow.triangle.2.circlepath")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-                    .disabled(!model.canRunFolderSync)
-                }
+                .disabled(!model.canRunFolderSync)
             }
         }
-        .padding(18)
-        .background(Color(nsColor: .controlBackgroundColor))
     }
 
     private var folderSyncResultsPanel: some View {
