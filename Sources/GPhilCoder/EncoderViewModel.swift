@@ -2390,13 +2390,6 @@ final class EncoderViewModel: ObservableObject {
             state: syncAutoSyncEnabled ? .watching : .idle
         )
 
-        guard validateSyncFolders(
-            originRoot: candidatePair.originURL,
-            destinationRoot: effectiveSyncDestinationRoot(for: candidatePair)
-        ) else {
-            return
-        }
-
         if let editingSyncPairID {
             guard let index = syncFolderPairs.firstIndex(where: { $0.id == editingSyncPairID }) else {
                 cancelEditingSyncFolderPair()
@@ -2420,6 +2413,12 @@ final class EncoderViewModel: ObservableObject {
 
             var editedPairs = syncFolderPairs
             editedPairs[index] = editedPair
+            guard validateSyncFolders(
+                originRoot: editedPair.originURL,
+                destinationRoot: effectiveSyncDestinationRoot(for: editedPair, in: editedPairs)
+            ) else {
+                return
+            }
             guard syncDestinationCollisionMessage(for: editedPairs) == nil else {
                 statusMessage =
                     "Another enabled sync pair already targets the same destination folder. Rename one origin folder or choose a different destination."
@@ -2435,6 +2434,14 @@ final class EncoderViewModel: ObservableObject {
             return
         }
 
+        let nextPairs = syncFolderPairs + [candidatePair]
+        guard validateSyncFolders(
+            originRoot: candidatePair.originURL,
+            destinationRoot: effectiveSyncDestinationRoot(for: candidatePair, in: nextPairs)
+        ) else {
+            return
+        }
+
         if syncFolderPairs.contains(where: {
             $0.originPath == originPath && $0.destinationPath == destinationPath
         }) {
@@ -2442,7 +2449,7 @@ final class EncoderViewModel: ObservableObject {
             return
         }
 
-        guard syncDestinationCollisionMessage(for: syncFolderPairs + [candidatePair]) == nil else {
+        guard syncDestinationCollisionMessage(for: nextPairs) == nil else {
             statusMessage =
                 "Another enabled sync pair already targets the same destination folder. Rename one origin folder or choose a different destination."
             return
@@ -2572,7 +2579,10 @@ final class EncoderViewModel: ObservableObject {
         let destinationLayout = syncDestinationLayout
 
         for pair in pairs {
-            let effectiveDestinationRoot = pair.effectiveDestinationURL(layout: destinationLayout)
+            let effectiveDestinationRoot = pair.effectiveDestinationURL(
+                layout: destinationLayout,
+                allPairs: pairs
+            )
             guard validateSyncFolders(
                 originRoot: pair.originURL,
                 destinationRoot: effectiveDestinationRoot,
@@ -2617,7 +2627,10 @@ final class EncoderViewModel: ObservableObject {
                     guard !Task.isCancelled else { return }
                     self?.currentSyncPairID = pair.id
                     self?.markSyncPair(pair.id, state: .syncing, message: "Scanning...")
-                    let effectiveDestinationRoot = pair.effectiveDestinationURL(layout: destinationLayout)
+                    let effectiveDestinationRoot = pair.effectiveDestinationURL(
+                        layout: destinationLayout,
+                        allPairs: pairs
+                    )
 
                     let fullWorker = Task.detached(priority: .userInitiated) {
                         try FolderSyncPlanner.buildPlan(
@@ -5962,14 +5975,29 @@ final class EncoderViewModel: ObservableObject {
         return true
     }
 
-    private func effectiveSyncDestinationRoot(for pair: SyncFolderPair) -> URL {
-        pair.effectiveDestinationURL(layout: syncDestinationLayout)
+    private func effectiveSyncDestinationRoot(
+        for pair: SyncFolderPair,
+        in pairs: [SyncFolderPair]? = nil
+    ) -> URL {
+        let resolutionPairs = pairs ?? syncDestinationResolutionPairs(for: pair)
+        return pair.effectiveDestinationURL(
+            layout: syncDestinationLayout,
+            allPairs: resolutionPairs
+        )
+    }
+
+    private func syncDestinationResolutionPairs(for pair: SyncFolderPair) -> [SyncFolderPair] {
+        let enabledPairs = syncFolderPairs.filter(\.isEnabled)
+        if pair.isEnabled {
+            return enabledPairs
+        }
+        return enabledPairs + [pair]
     }
 
     private func syncDestinationCollisionMessage(for pairs: [SyncFolderPair]) -> String? {
         var seenPaths: [String: SyncFolderPair] = [:]
         for pair in pairs where pair.isEnabled {
-            let target = effectiveSyncDestinationRoot(for: pair)
+            let target = effectiveSyncDestinationRoot(for: pair, in: pairs)
                 .standardizedFileURL
                 .resolvingSymlinksInPath()
                 .path

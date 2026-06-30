@@ -538,7 +538,10 @@ struct SyncFolderPair: Codable, Identifiable, Equatable {
         URL(fileURLWithPath: destinationPath, isDirectory: true)
     }
 
-    func effectiveDestinationURL(layout: SyncDestinationLayout) -> URL {
+    func effectiveDestinationURL(
+        layout: SyncDestinationLayout,
+        allPairs: [SyncFolderPair] = []
+    ) -> URL {
         switch layout {
         case .destinationRoot:
             return destinationURL
@@ -548,12 +551,61 @@ struct SyncFolderPair: Codable, Identifiable, Equatable {
             if destinationURL.lastPathComponent == originFolderName {
                 return destinationURL
             }
-            return destinationURL.appendingPathComponent(originURL.lastPathComponent, isDirectory: true)
+            return Self.appendingOriginSuffix(
+                to: destinationURL,
+                for: self,
+                allPairs: allPairs
+            )
         }
     }
 
     var displayTitle: String {
         "\(originURL.lastPathComponent) -> \(destinationURL.lastPathComponent)"
+    }
+
+    private static func appendingOriginSuffix(
+        to destinationURL: URL,
+        for pair: SyncFolderPair,
+        allPairs: [SyncFolderPair]
+    ) -> URL {
+        let suffix = uniqueOriginSuffixComponents(for: pair, allPairs: allPairs)
+        return suffix.reduce(destinationURL) { partialURL, component in
+            partialURL.appendingPathComponent(component, isDirectory: true)
+        }
+    }
+
+    private static func uniqueOriginSuffixComponents(
+        for pair: SyncFolderPair,
+        allPairs: [SyncFolderPair]
+    ) -> [String] {
+        let originComponents = suffixComponents(for: pair.originURL)
+        guard !originComponents.isEmpty else { return [] }
+
+        let comparablePairs = allPairs.filter {
+            $0.id != pair.id
+                && normalizedPath($0.destinationURL) == normalizedPath(pair.destinationURL)
+        }
+        guard !comparablePairs.isEmpty else { return [originComponents.last!] }
+
+        for suffixLength in 1...originComponents.count {
+            let candidate = Array(originComponents.suffix(suffixLength))
+            let isUnique = comparablePairs.allSatisfy {
+                Array(suffixComponents(for: $0.originURL).suffix(suffixLength)) != candidate
+            }
+            if isUnique {
+                return candidate
+            }
+        }
+
+        return originComponents
+    }
+
+    private static func suffixComponents(for url: URL) -> [String] {
+        url.standardizedFileURL.pathComponents.filter { $0 != "/" && !$0.isEmpty }
+    }
+
+    private static func normalizedPath(_ url: URL) -> String {
+        url.standardizedFileURL.path
     }
 }
 
