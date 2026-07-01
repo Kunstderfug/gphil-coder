@@ -83,4 +83,28 @@ final class SyncFolderPairTests: XCTestCase {
 
         XCTAssertEqual(decoded, [pair])
     }
+
+    func testPersistenceDecodesLegacyPairsWithoutBookmarks() throws {
+        let data = """
+        [
+          {
+            "id": "2D83B474-A611-4CF7-B050-B0F0E59C4A5A",
+            "originPath": "/Volumes/Origin/parts",
+            "destinationPath": "/Volumes/Backup",
+            "isEnabled": true,
+            "addedAt": "2026-06-30T12:34:56Z",
+            "lastMessage": "Already in sync.",
+            "state": "watching"
+          }
+        ]
+        """.data(using: .utf8)!
+
+        let decoded = try SyncFolderPairPersistence.decode(data)
+
+        XCTAssertEqual(decoded.count, 1)
+        XCTAssertNil(decoded[0].originBookmarkData)
+        XCTAssertNil(decoded[0].destinationBookmarkData)
+        XCTAssertEqual(decoded[0].originPath, "/Volumes/Origin/parts")
+        XCTAssertEqual(decoded[0].destinationPath, "/Volumes/Backup")
+    }
 }

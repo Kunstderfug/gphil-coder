@@ -557,6 +557,8 @@ struct SyncFolderPair: Codable, Identifiable, Equatable {
     var lastSyncedAt: Date?
     var lastMessage: String
     var state: SyncPairState
+    var originBookmarkData: Data?
+    var destinationBookmarkData: Data?
 
     init(
         id: UUID = UUID(),
@@ -566,7 +568,9 @@ struct SyncFolderPair: Codable, Identifiable, Equatable {
         addedAt: Date = Date(),
         lastSyncedAt: Date? = nil,
         lastMessage: String = "Ready to sync.",
-        state: SyncPairState = .idle
+        state: SyncPairState = .idle,
+        originBookmarkData: Data? = nil,
+        destinationBookmarkData: Data? = nil
     ) {
         self.id = id
         self.originPath = originPath
@@ -576,6 +580,8 @@ struct SyncFolderPair: Codable, Identifiable, Equatable {
         self.lastSyncedAt = lastSyncedAt
         self.lastMessage = lastMessage
         self.state = state
+        self.originBookmarkData = originBookmarkData
+        self.destinationBookmarkData = destinationBookmarkData
     }
 
     var originURL: URL {

@@ -786,6 +786,7 @@ final class EncoderViewModel: ObservableObject {
     private var isUpdatingSyncPairStatus = false
     private var isLoadingPersistedSettings = false
     private var activeEncodingSecurityScopedURLs: [URL] = []
+    private var activeFolderSyncSecurityScopedURLs: [URL] = []
     private var mediaFileInventory: [MediaFileInventoryRecord] = []
     private var mediaFileInventorySourceRootPaths: [String] = []
 
@@ -2482,7 +2483,9 @@ final class EncoderViewModel: ObservableObject {
         let candidatePair = SyncFolderPair(
             originPath: originPath,
             destinationPath: destinationPath,
-            state: syncAutoSyncEnabled ? .watching : .idle
+            state: syncAutoSyncEnabled ? .watching : .idle,
+            originBookmarkData: securityScopedBookmarkData(for: originRoot),
+            destinationBookmarkData: securityScopedBookmarkData(for: destinationRoot)
         )
 
         if let editingSyncPairID {
@@ -2505,6 +2508,8 @@ final class EncoderViewModel: ObservableObject {
                 ? (syncAutoSyncEnabled ? .watching : .idle)
                 : .disabled
             editedPair.lastMessage = "Ready to sync."
+            editedPair.originBookmarkData = securityScopedBookmarkData(for: originRoot)
+            editedPair.destinationBookmarkData = securityScopedBookmarkData(for: destinationRoot)
 
             var editedPairs = syncFolderPairs
             editedPairs[index] = editedPair
@@ -2682,6 +2687,7 @@ final class EncoderViewModel: ObservableObject {
         folderSyncTask = nil
         folderSyncAutoTask = nil
         folderSyncPendingAfterCurrentRun = false
+        stopActiveFolderSyncSecurityScopes()
         isSyncScanning = false
         isSyncing = false
         currentSyncPairID = nil
@@ -2714,7 +2720,7 @@ final class EncoderViewModel: ObservableObject {
     }
 
     private func runFolderSync(syncAfterScan: Bool, triggeredAutomatically: Bool) {
-        let pairs = syncFolderPairs.filter(\.isEnabled)
+        var pairs = syncFolderPairs.filter(\.isEnabled)
         guard !pairs.isEmpty else {
             statusMessage = "Add at least one enabled folder pair before syncing."
             return
@@ -2731,6 +2737,14 @@ final class EncoderViewModel: ObservableObject {
             statusMessage = collisionMessage
             return
         }
+
+        guard let authorizedPairs = prepareFolderSyncFileAccess(
+            for: pairs,
+            triggeredAutomatically: triggeredAutomatically
+        ) else {
+            return
+        }
+        pairs = authorizedPairs
 
         let destinationLayout = syncDestinationLayout
 
@@ -2749,6 +2763,7 @@ final class EncoderViewModel: ObservableObject {
                     state: .failed,
                     message: "Origin and destination folders are not valid."
                 )
+                stopActiveFolderSyncSecurityScopes()
                 return
             }
         }
@@ -2843,6 +2858,7 @@ final class EncoderViewModel: ObservableObject {
                 guard syncAfterScan else {
                     self?.currentSyncPairID = nil
                     self?.folderSyncTask = nil
+                    self?.stopActiveFolderSyncSecurityScopes()
                     self?.statusMessage =
                         operationCount == 0
                         ? "All enabled sync pairs are already current."
@@ -2861,6 +2877,7 @@ final class EncoderViewModel: ObservableObject {
                             body: completionMessage
                         )
                     }
+                    self?.stopActiveFolderSyncSecurityScopes()
                     self?.runPendingFolderSyncIfNeeded()
                     return
                 }
@@ -2880,6 +2897,7 @@ final class EncoderViewModel: ObservableObject {
                 self?.isSyncing = false
                 self?.currentSyncPairID = nil
                 self?.folderSyncTask = nil
+                self?.stopActiveFolderSyncSecurityScopes()
                 let completionMessage = Self.folderSyncResultStatusMessage(result)
                 self?.statusMessage = completionMessage
                 self?.notifyCompletionIfNeeded(
@@ -2893,6 +2911,7 @@ final class EncoderViewModel: ObservableObject {
                 self?.isSyncing = false
                 self?.currentSyncPairID = nil
                 self?.folderSyncTask = nil
+                self?.stopActiveFolderSyncSecurityScopes()
                 self?.statusMessage = "Folder sync cancelled."
             } catch {
                 guard !Task.isCancelled else { return }
@@ -2900,6 +2919,7 @@ final class EncoderViewModel: ObservableObject {
                 self?.isSyncing = false
                 self?.currentSyncPairID = nil
                 self?.folderSyncTask = nil
+                self?.stopActiveFolderSyncSecurityScopes()
                 self?.statusMessage = "Could not run folder sync: \(error.localizedDescription)"
             }
         }
@@ -5048,6 +5068,184 @@ final class EncoderViewModel: ObservableObject {
         return alert.runModal() == .alertFirstButtonReturn
     }
 
+    private func prepareFolderSyncFileAccess(
+        for pairs: [SyncFolderPair],
+        triggeredAutomatically: Bool
+    ) -> [SyncFolderPair]? {
+        stopActiveFolderSyncSecurityScopes()
+
+        var preparedPairs = pairs
+        startFolderSyncSecurityScopes(for: preparedPairs)
+
+        let pairsMissingBookmarks = preparedPairs.filter {
+            $0.originBookmarkData == nil || $0.destinationBookmarkData == nil
+        }
+        guard !pairsMissingBookmarks.isEmpty else { return preparedPairs }
+
+        guard !triggeredAutomatically else {
+            stopActiveFolderSyncSecurityScopes()
+            statusMessage = "Auto-sync skipped because loaded sync pairs need folder access authorization."
+            return nil
+        }
+
+        guard let grantedRoots = requestFolderSyncAccess(for: pairsMissingBookmarks) else {
+            stopActiveFolderSyncSecurityScopes()
+            statusMessage = "Folder sync cancelled because folder access was not authorized."
+            return nil
+        }
+
+        startFolderSyncSecurityScopes(grantedRoots)
+        guard selectedSyncAccessRoots(grantedRoots, cover: pairsMissingBookmarks) else {
+            stopActiveFolderSyncSecurityScopes()
+            statusMessage = "Folder sync cancelled because the selected folder does not contain every loaded origin and destination."
+            return nil
+        }
+
+        let grantedBookmarks = grantedRoots.compactMap { root -> (url: URL, data: Data)? in
+            guard let data = securityScopedBookmarkData(for: root) else { return nil }
+            return (root, data)
+        }
+
+        for index in preparedPairs.indices {
+            if preparedPairs[index].originBookmarkData == nil {
+                preparedPairs[index].originBookmarkData = bookmarkData(
+                    for: preparedPairs[index].originURL,
+                    in: grantedBookmarks
+                )
+            }
+            if preparedPairs[index].destinationBookmarkData == nil {
+                preparedPairs[index].destinationBookmarkData = bookmarkData(
+                    for: preparedPairs[index].destinationURL,
+                    in: grantedBookmarks
+                )
+            }
+        }
+
+        let stillMissingBookmarks = preparedPairs.contains {
+            $0.originBookmarkData == nil || $0.destinationBookmarkData == nil
+        }
+        guard !stillMissingBookmarks else {
+            stopActiveFolderSyncSecurityScopes()
+            statusMessage = "Folder sync cancelled because GPhilCoder could not save folder authorization."
+            return nil
+        }
+
+        updateStoredSyncPairs(with: preparedPairs)
+        startFolderSyncSecurityScopes(for: preparedPairs)
+        return preparedPairs
+    }
+
+    private func requestFolderSyncAccess(for pairs: [SyncFolderPair]) -> [URL]? {
+        let panel = NSOpenPanel()
+        panel.title = "Authorize Sync Folder Access"
+        panel.prompt = "Authorize"
+        panel.message =
+            "GPhilCoder needs permission to read and write the folders loaded from this sync pair list. Choose a parent folder that contains all listed origins and destinations, or choose the individual folders."
+        panel.allowsMultipleSelection = true
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = false
+        panel.directoryURL = commonFolderSyncAccessRoot(for: pairs) ?? pairs.first?.originURL
+
+        guard panel.runModal() == .OK else { return nil }
+        return panel.urls
+    }
+
+    private func bookmarkData(
+        for url: URL,
+        in grantedBookmarks: [(url: URL, data: Data)]
+    ) -> Data? {
+        grantedBookmarks.first { containsFileURL(url, in: $0.url) }?.data
+    }
+
+    private func commonFolderSyncAccessRoot(for pairs: [SyncFolderPair]) -> URL? {
+        let paths = pairs.flatMap { pair in
+            [normalizedFilePath(pair.originURL), normalizedFilePath(pair.destinationURL)]
+        }
+        guard let firstPath = paths.first else { return nil }
+
+        var commonComponents = URL(fileURLWithPath: firstPath, isDirectory: true).pathComponents
+        for path in paths.dropFirst() {
+            let components = URL(fileURLWithPath: path, isDirectory: true).pathComponents
+            commonComponents = Array(zip(commonComponents, components).prefix { $0 == $1 }.map(\.0))
+            guard !commonComponents.isEmpty else { return nil }
+        }
+
+        let commonPath = NSString.path(withComponents: commonComponents)
+        return URL(fileURLWithPath: commonPath, isDirectory: true)
+    }
+
+    private func selectedSyncAccessRoots(_ roots: [URL], cover pairs: [SyncFolderPair]) -> Bool {
+        for pair in pairs {
+            guard roots.contains(where: { containsFileURL(pair.originURL, in: $0) }),
+                roots.contains(where: { containsFileURL(pair.destinationURL, in: $0) })
+            else {
+                return false
+            }
+        }
+        return true
+    }
+
+    private func containsFileURL(_ url: URL, in root: URL) -> Bool {
+        let path = normalizedFilePath(url)
+        let rootPath = normalizedFilePath(root)
+        return path == rootPath || path.hasPrefix("\(rootPath)/")
+    }
+
+    private func securityScopedBookmarkData(for url: URL) -> Data? {
+        try? url.bookmarkData(
+            options: .withSecurityScope,
+            includingResourceValuesForKeys: nil,
+            relativeTo: nil
+        )
+    }
+
+    private func startFolderSyncSecurityScopes(for pairs: [SyncFolderPair]) {
+        let urls = pairs.flatMap { pair in
+            [
+                resolveSecurityScopedBookmark(pair.originBookmarkData, fallbackURL: pair.originURL),
+                resolveSecurityScopedBookmark(pair.destinationBookmarkData, fallbackURL: pair.destinationURL)
+            ]
+        }
+        startFolderSyncSecurityScopes(urls)
+    }
+
+    private func resolveSecurityScopedBookmark(_ data: Data?, fallbackURL: URL) -> URL {
+        guard let data else { return fallbackURL }
+        var isStale = false
+        return (try? URL(
+            resolvingBookmarkData: data,
+            options: .withSecurityScope,
+            relativeTo: nil,
+            bookmarkDataIsStale: &isStale
+        )) ?? fallbackURL
+    }
+
+    private func startFolderSyncSecurityScopes(_ urls: [URL]) {
+        for url in uniqueURLs(urls) where !activeFolderSyncSecurityScopedURLs.contains(where: { sameFileURL($0, url) }) {
+            if url.startAccessingSecurityScopedResource() {
+                activeFolderSyncSecurityScopedURLs.append(url)
+            }
+        }
+    }
+
+    private func stopActiveFolderSyncSecurityScopes() {
+        for url in activeFolderSyncSecurityScopedURLs {
+            url.stopAccessingSecurityScopedResource()
+        }
+        activeFolderSyncSecurityScopedURLs.removeAll()
+    }
+
+    private func updateStoredSyncPairs(with preparedPairs: [SyncFolderPair]) {
+        guard !preparedPairs.isEmpty else { return }
+        var updatedPairs = syncFolderPairs
+        for preparedPair in preparedPairs {
+            guard let index = updatedPairs.firstIndex(where: { $0.id == preparedPair.id }) else { continue }
+            updatedPairs[index] = preparedPair
+        }
+        syncFolderPairs = updatedPairs
+    }
+
     private func prepareEncodingFileAccess(for plannedJobs: [EncodeJob]) -> Bool {
         stopActiveEncodingSecurityScopes()
 
@@ -5154,6 +5352,10 @@ final class EncoderViewModel: ObservableObject {
 
     private func sameFileURL(_ lhs: URL, _ rhs: URL) -> Bool {
         lhs.standardizedFileURL.path == rhs.standardizedFileURL.path
+    }
+
+    private func normalizedFilePath(_ url: URL) -> String {
+        url.standardizedFileURL.resolvingSymlinksInPath().path
     }
 
     private func defaultQueueFileName() -> String {
