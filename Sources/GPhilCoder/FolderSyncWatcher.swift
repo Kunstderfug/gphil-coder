@@ -14,6 +14,10 @@ final class FolderSyncWatcher {
     private let queue = DispatchQueue(label: "com.gphilcoder.folder-sync-watcher")
     private var stream: FSEventStreamRef?
 
+    var isWatching: Bool {
+        stream != nil
+    }
+
     init(urls: [URL], latency: TimeInterval = 1.0, onChange: @escaping @Sendable () -> Void) {
         callbackBox = CallbackBox(onChange: onChange)
         let paths = urls.map { $0.standardizedFileURL.path } as CFArray
@@ -38,9 +42,14 @@ final class FolderSyncWatcher {
             flags
         )
 
-        if let stream {
-            FSEventStreamSetDispatchQueue(stream, queue)
-            FSEventStreamStart(stream)
+        guard let createdStream = stream else { return }
+
+        FSEventStreamSetDispatchQueue(createdStream, queue)
+        guard FSEventStreamStart(createdStream) else {
+            FSEventStreamInvalidate(createdStream)
+            FSEventStreamRelease(createdStream)
+            stream = nil
+            return
         }
     }
 

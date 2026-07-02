@@ -58,82 +58,87 @@ struct RestoreFromBackupSheet: View {
     }
 
     private var controls: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            GroupBox("Folders") {
-                VStack(alignment: .leading, spacing: 12) {
-                    RestoreFolderRow(
-                        title: "Deleted files",
-                        path: model.restoreDeletedFolder?.path(percentEncoded: false),
-                        systemImage: "trash",
-                        isDisabled: model.isRestorePlanning || model.isRestoringFromPlan
-                    ) {
-                        model.chooseRestoreDeletedFolder()
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    GroupBox("Folders") {
+                        VStack(alignment: .leading, spacing: 12) {
+                            RestoreFolderRow(
+                                title: "Deleted files",
+                                path: model.restoreDeletedFolder?.path(percentEncoded: false),
+                                systemImage: "trash",
+                                isDisabled: model.isRestorePlanning || model.isRestoringFromPlan
+                            ) {
+                                model.chooseRestoreDeletedFolder()
+                            }
+
+                            RestoreFolderRow(
+                                title: "Backup root",
+                                path: model.restoreBackupRoot?.path(percentEncoded: false),
+                                systemImage: "externaldrive",
+                                isDisabled: model.isRestorePlanning || model.isRestoringFromPlan
+                            ) {
+                                model.chooseRestoreBackupRoot()
+                            }
+
+                            RestoreFolderRow(
+                                title: "Restore root",
+                                path: model.restoreDestinationRoot?.path(percentEncoded: false),
+                                systemImage: "folder.badge.gearshape",
+                                isDisabled: model.isRestorePlanning || model.isRestoringFromPlan
+                            ) {
+                                model.chooseRestoreDestinationRoot()
+                            }
+                        }
+                        .padding(.vertical, 4)
                     }
 
-                    RestoreFolderRow(
-                        title: "Backup root",
-                        path: model.restoreBackupRoot?.path(percentEncoded: false),
-                        systemImage: "externaldrive",
-                        isDisabled: model.isRestorePlanning || model.isRestoringFromPlan
-                    ) {
-                        model.chooseRestoreBackupRoot()
-                    }
+                    GroupBox("Matching") {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Picker("Match by", selection: $model.restoreMatchMode) {
+                                ForEach(RestoreMatchMode.allCases) { mode in
+                                    Text(mode.title).tag(mode)
+                                }
+                            }
+                            .disabled(model.isRestorePlanning || model.isRestoringFromPlan)
 
-                    RestoreFolderRow(
-                        title: "Restore root",
-                        path: model.restoreDestinationRoot?.path(percentEncoded: false),
-                        systemImage: "folder.badge.gearshape",
-                        isDisabled: model.isRestorePlanning || model.isRestoringFromPlan
-                    ) {
-                        model.chooseRestoreDestinationRoot()
+                            Text(model.restoreMatchMode.detail)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            Picker("Hashing", selection: $model.restoreHashMode) {
+                                ForEach(RestoreHashMode.allCases) { mode in
+                                    Text(mode.title).tag(mode)
+                                }
+                            }
+                            .disabled(model.isRestorePlanning || model.isRestoringFromPlan)
+
+                            Text(model.restoreHashMode.detail)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            Picker("Copy from", selection: $model.restoreCopySource) {
+                                ForEach(RestoreCopySource.allCases) { source in
+                                    Text(source.title).tag(source)
+                                }
+                            }
+                            .disabled(model.isRestorePlanning || model.isRestoringFromPlan)
+
+                            Toggle("Include hidden files", isOn: $model.restoreIncludeHidden)
+                                .disabled(model.isRestorePlanning || model.isRestoringFromPlan)
+
+                            Toggle("Overwrite existing restore paths", isOn: $model.restoreOverwriteExisting)
+                                .disabled(model.isRestorePlanning || model.isRestoringFromPlan)
+                        }
+                        .padding(.vertical, 4)
                     }
                 }
-                .padding(.vertical, 4)
+                .padding(18)
             }
 
-            GroupBox("Matching") {
-                VStack(alignment: .leading, spacing: 12) {
-                    Picker("Match by", selection: $model.restoreMatchMode) {
-                        ForEach(RestoreMatchMode.allCases) { mode in
-                            Text(mode.title).tag(mode)
-                        }
-                    }
-                    .disabled(model.isRestorePlanning || model.isRestoringFromPlan)
-
-                    Text(model.restoreMatchMode.detail)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    Picker("Hashing", selection: $model.restoreHashMode) {
-                        ForEach(RestoreHashMode.allCases) { mode in
-                            Text(mode.title).tag(mode)
-                        }
-                    }
-                    .disabled(model.isRestorePlanning || model.isRestoringFromPlan)
-
-                    Text(model.restoreHashMode.detail)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    Picker("Copy from", selection: $model.restoreCopySource) {
-                        ForEach(RestoreCopySource.allCases) { source in
-                            Text(source.title).tag(source)
-                        }
-                    }
-                    .disabled(model.isRestorePlanning || model.isRestoringFromPlan)
-
-                    Toggle("Include hidden files", isOn: $model.restoreIncludeHidden)
-                        .disabled(model.isRestorePlanning || model.isRestoringFromPlan)
-
-                    Toggle("Overwrite existing restore paths", isOn: $model.restoreOverwriteExisting)
-                        .disabled(model.isRestorePlanning || model.isRestoringFromPlan)
-                }
-                .padding(.vertical, 4)
-            }
-
-            Spacer()
+            Divider()
 
             VStack(spacing: 10) {
                 if model.isRestorePlanning {
@@ -166,8 +171,8 @@ struct RestoreFromBackupSheet: View {
                 .disabled(!model.canApplyBackupRestorePlan)
             }
             .controlSize(.large)
+            .padding(18)
         }
-        .padding(18)
         .background(Color(nsColor: .controlBackgroundColor))
     }
 

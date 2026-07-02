@@ -513,6 +513,7 @@ final class EncoderViewModel: ObservableObject {
     @Published private(set) var syncProgress: FolderSyncProgress?
     @Published private(set) var isSyncScanning = false
     @Published private(set) var isSyncing = false
+    @Published private(set) var isFolderSyncWatching = false
     @Published private(set) var currentSyncPairID: UUID?
     @Published private var mediaRenameUndoStack: [MediaRenameHistoryTransaction] = [] {
         didSet { persistMediaRenameHistory() }
@@ -1109,8 +1110,59 @@ final class EncoderViewModel: ObservableObject {
         isSyncScanning || isSyncing
     }
 
+    var isMenuBarActivityActive: Bool {
+        isEncoding || isMediaCopyBusy || isFolderSyncBusy || isRestorePlanning || isRestoringFromPlan
+            || isFolderSyncWatching
+    }
+
+    var menuBarActivityTitle: String {
+        if isEncoding {
+            return "Encoding in progress"
+        }
+
+        if isMediaCopyScanning {
+            return "Scanning files"
+        }
+
+        if isMediaCopying {
+            return "Copying files"
+        }
+
+        if isMediaDeleting {
+            return "Moving files to Trash"
+        }
+
+        if isMediaRenaming {
+            return "Renaming files"
+        }
+
+        if isSyncScanning {
+            return "Scanning sync folders"
+        }
+
+        if isSyncing {
+            return "Syncing folders"
+        }
+
+        if isRestorePlanning {
+            return "Building restore plan"
+        }
+
+        if isRestoringFromPlan {
+            return "Restoring files"
+        }
+
+        if isFolderSyncWatching {
+            let pairCount = syncEnabledPairCount
+            let pairLabel = pairCount == 1 ? "pair" : "pairs"
+            return "Sync watching \(pairCount) \(pairLabel)"
+        }
+
+        return "GPhil Coder active"
+    }
+
     var isQuitBlockedByActiveProcess: Bool {
-        isEncoding || isMediaCopyBusy || isFolderSyncBusy
+        isEncoding || isMediaCopyBusy || isFolderSyncBusy || isRestorePlanning || isRestoringFromPlan
     }
 
     var activeProcessQuitBlockedMessage: String {
@@ -1124,6 +1176,14 @@ final class EncoderViewModel: ObservableObject {
 
         if isFolderSyncBusy {
             return "A folder sync is still running. Cancel it or wait for it to finish before closing GPhil Coder."
+        }
+
+        if isRestorePlanning {
+            return "A restore search is still running. Stop it or wait for it to finish before closing GPhil Coder."
+        }
+
+        if isRestoringFromPlan {
+            return "Files are still being restored. Wait for the restore operation to finish before closing GPhil Coder."
         }
 
         return "An active process is still running. Wait for it to finish before closing GPhil Coder."
@@ -6489,6 +6549,7 @@ final class EncoderViewModel: ObservableObject {
     private func configureFolderSyncWatcher() {
         folderSyncWatcher?.stop()
         folderSyncWatcher = nil
+        isFolderSyncWatching = false
         guard !isLoadingPersistedSettings, syncAutoSyncEnabled else { return }
 
         let origins = syncFolderPairs
@@ -6496,11 +6557,15 @@ final class EncoderViewModel: ObservableObject {
             .compactMap { directoryURLIfExists(atPath: $0.originPath) }
         guard !origins.isEmpty else { return }
 
-        folderSyncWatcher = FolderSyncWatcher(urls: origins) { [weak self] in
+        let watcher = FolderSyncWatcher(urls: origins) { [weak self] in
             DispatchQueue.main.async {
                 self?.scheduleAutomaticFolderSync()
             }
         }
+        guard watcher.isWatching else { return }
+
+        folderSyncWatcher = watcher
+        isFolderSyncWatching = true
     }
 
     private func persistSyncFolderPairs() {

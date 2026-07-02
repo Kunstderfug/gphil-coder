@@ -113,10 +113,29 @@ struct GPhilCoderApp: App {
 
 @MainActor
 private final class AppLifecycleDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
-    weak var encoder: EncoderViewModel?
+    weak var encoder: EncoderViewModel? {
+        didSet {
+            refreshActivityStatusItem()
+        }
+    }
+
+    private weak var mainWindow: NSWindow?
+    private var activityStatusItem: NSStatusItem?
+    private var activityStatusSummaryItem: NSMenuItem?
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
+        false
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        guard !flag else { return true }
+
+        showMainWindow()
+        return false
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        refreshActivityStatusItem()
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -128,7 +147,82 @@ private final class AppLifecycleDelegate: NSObject, NSApplicationDelegate, NSWin
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        canCloseOrTerminate()
+        guard sender === mainWindow else {
+            return true
+        }
+
+        guard canCloseOrTerminate() else {
+            return false
+        }
+
+        if encoder?.isMenuBarActivityActive == true {
+            hideMainWindowToStatusItem()
+            return false
+        }
+
+        DispatchQueue.main.async {
+            NSApp.terminate(nil)
+        }
+        return false
+    }
+
+    func windowDidMiniaturize(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow,
+            window === mainWindow
+        else {
+            return
+        }
+
+        if encoder?.isMenuBarActivityActive == true {
+            hideMainWindowToStatusItem()
+        } else {
+            refreshActivityStatusItem()
+        }
+    }
+
+    func windowDidDeminiaturize(_ notification: Notification) {
+        refreshStatusItemIfMainWindow(notification.object)
+    }
+
+    func windowDidBecomeMain(_ notification: Notification) {
+        refreshStatusItemIfMainWindow(notification.object)
+    }
+
+    func windowDidResignMain(_ notification: Notification) {
+        refreshStatusItemIfMainWindow(notification.object)
+    }
+
+    func configureMainWindow(_ window: NSWindow) {
+        mainWindow = window
+        window.minSize = MainWindowConfiguration.contentSafeSize
+        _ = window.setFrameAutosaveName(MainWindowConfiguration.frameAutosaveName)
+        if window.delegate !== self {
+            window.delegate = self
+        }
+        if let miniaturizeButton = window.standardWindowButton(.miniaturizeButton) {
+            miniaturizeButton.target = self
+            miniaturizeButton.action = #selector(handleMiniaturizeButton(_:))
+        }
+    }
+
+    func refreshActivityStatusItem() {
+        guard let encoder,
+            encoder.isMenuBarActivityActive,
+            shouldShowActivityStatusItem
+        else {
+            removeActivityStatusItem()
+            return
+        }
+
+        let statusItem = activityStatusItem ?? makeActivityStatusItem()
+        activityStatusItem = statusItem
+        statusItem.button?.toolTip = "GPhil Coder: \(encoder.menuBarActivityTitle)."
+        activityStatusSummaryItem?.title = encoder.menuBarActivityTitle
+    }
+
+    private var shouldShowActivityStatusItem: Bool {
+        guard let mainWindow else { return false }
+        return mainWindow.isMiniaturized || !mainWindow.isVisible
     }
 
     private func canCloseOrTerminate() -> Bool {
@@ -148,6 +242,127 @@ private final class AppLifecycleDelegate: NSObject, NSApplicationDelegate, NSWin
         alert.alertStyle = .warning
         alert.addButton(withTitle: "OK")
         alert.runModal()
+    }
+
+    private func makeActivityStatusItem() -> NSStatusItem {
+        let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        if let button = statusItem.button {
+            let image = Self.loadStatusItemAppIcon()
+            button.image = image
+            button.imageScaling = .scaleProportionallyDown
+        }
+
+        let menu = NSMenu()
+        let summaryItem = NSMenuItem(title: "GPhil Coder active", action: nil, keyEquivalent: "")
+        summaryItem.isEnabled = false
+        activityStatusSummaryItem = summaryItem
+        menu.addItem(summaryItem)
+        menu.addItem(.separator())
+
+        let showItem = NSMenuItem(
+            title: "Show GPhil Coder",
+            action: #selector(showGPhilCoderFromStatusItem(_:)),
+            keyEquivalent: ""
+        )
+        showItem.target = self
+        menu.addItem(showItem)
+
+        let quitItem = NSMenuItem(
+            title: "Quit GPhil Coder",
+            action: #selector(quitGPhilCoderFromStatusItem(_:)),
+            keyEquivalent: "q"
+        )
+        quitItem.target = self
+        menu.addItem(quitItem)
+        statusItem.menu = menu
+
+        return statusItem
+    }
+
+    private static func loadStatusItemAppIcon() -> NSImage? {
+        let image =
+            bundledAppIcon()
+            ?? sourceAppIcon()
+            ?? NSApp.applicationIconImage
+        image?.accessibilityDescription = "GPhil Coder activity"
+        image?.isTemplate = false
+        image?.size = NSSize(width: 18, height: 18)
+        return image
+    }
+
+    private static func bundledAppIcon() -> NSImage? {
+        guard let url = Bundle.main.url(forResource: "AppIcon", withExtension: "icns") else {
+            return nil
+        }
+
+        return NSImage(contentsOf: url)
+    }
+
+    private static func sourceAppIcon() -> NSImage? {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("assets/appicon.png")
+        return NSImage(contentsOf: url)
+    }
+
+    private func removeActivityStatusItem() {
+        if let activityStatusItem {
+            NSStatusBar.system.removeStatusItem(activityStatusItem)
+        }
+        activityStatusItem = nil
+        activityStatusSummaryItem = nil
+    }
+
+    @objc private func handleMiniaturizeButton(_ sender: Any?) {
+        guard encoder?.isMenuBarActivityActive == true else {
+            mainWindow?.miniaturize(sender)
+            return
+        }
+
+        hideMainWindowToStatusItem()
+    }
+
+    @objc private func showGPhilCoderFromStatusItem(_ sender: Any?) {
+        showMainWindow()
+    }
+
+    @objc private func quitGPhilCoderFromStatusItem(_ sender: Any?) {
+        NSApp.terminate(sender)
+    }
+
+    private func hideMainWindowToStatusItem() {
+        guard let mainWindow else { return }
+
+        if mainWindow.isMiniaturized {
+            mainWindow.deminiaturize(nil)
+        }
+        mainWindow.orderOut(nil)
+        refreshActivityStatusItem()
+    }
+
+    private func showMainWindow() {
+        guard let mainWindow else {
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        if mainWindow.isMiniaturized {
+            mainWindow.deminiaturize(nil)
+        }
+        mainWindow.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        refreshActivityStatusItem()
+    }
+
+    private func refreshStatusItemIfMainWindow(_ object: Any?) {
+        guard let window = object as? NSWindow,
+            window === mainWindow
+        else {
+            return
+        }
+
+        refreshActivityStatusItem()
     }
 }
 
@@ -170,12 +385,9 @@ private struct WindowLifecycleBridge: NSViewRepresentable {
         DispatchQueue.main.async {
             appDelegate.encoder = encoder
             if let window = view.window {
-                window.minSize = MainWindowConfiguration.contentSafeSize
-                _ = window.setFrameAutosaveName(MainWindowConfiguration.frameAutosaveName)
-                if window.delegate !== appDelegate {
-                    window.delegate = appDelegate
-                }
+                appDelegate.configureMainWindow(window)
             }
+            appDelegate.refreshActivityStatusItem()
         }
     }
 }

@@ -3,7 +3,7 @@ import GPhilCoderCore
 import SwiftUI
 import UniformTypeIdentifiers
 
-private enum WorkflowTab: Hashable {
+private enum WorkflowTab: CaseIterable, Hashable, Identifiable {
     case audioEncoding
     case videoEncoding
     case mediaCopy
@@ -11,6 +11,65 @@ private enum WorkflowTab: Hashable {
     case mediaDelete
     case folderSync
     case backupRestore
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .audioEncoding:
+            "Audio"
+        case .videoEncoding:
+            "Video"
+        case .mediaCopy:
+            "Copy"
+        case .mediaRename:
+            "Rename"
+        case .mediaDelete:
+            "Delete"
+        case .folderSync:
+            "Sync"
+        case .backupRestore:
+            "Restore"
+        }
+    }
+
+    var accessibilityTitle: String {
+        switch self {
+        case .audioEncoding:
+            "Audio Encoding"
+        case .videoEncoding:
+            "Video Encoding"
+        case .mediaCopy:
+            "Copy"
+        case .mediaRename:
+            "Rename"
+        case .mediaDelete:
+            "Delete"
+        case .folderSync:
+            "Sync"
+        case .backupRestore:
+            "Restore"
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .audioEncoding:
+            "waveform"
+        case .videoEncoding:
+            "film"
+        case .mediaCopy:
+            "doc.on.doc"
+        case .mediaRename:
+            "pencil"
+        case .mediaDelete:
+            "trash"
+        case .folderSync:
+            "arrow.triangle.2.circlepath"
+        case .backupRestore:
+            "externaldrive.badge.icloud"
+        }
+    }
 }
 
 private enum MediaCopyPreviewMode: Hashable {
@@ -35,50 +94,7 @@ struct ContentView: View {
                 titlebarSpacer
                 topBar
                 Divider()
-                TabView(selection: $selectedWorkflowTab) {
-                    audioEncodingWorkflow
-                        .tabItem {
-                            Label("Audio Encoding", systemImage: "waveform")
-                        }
-                        .tag(WorkflowTab.audioEncoding)
-
-                    audioEncodingWorkflow
-                        .tabItem {
-                            Label("Video Encoding", systemImage: "film")
-                        }
-                        .tag(WorkflowTab.videoEncoding)
-
-                    fileManagementWorkflow(for: .copy)
-                        .tabItem {
-                            Label("Copy", systemImage: "doc.on.doc")
-                        }
-                        .tag(WorkflowTab.mediaCopy)
-
-                    fileManagementWorkflow(for: .rename)
-                        .tabItem {
-                            Label("Rename", systemImage: "pencil")
-                        }
-                        .tag(WorkflowTab.mediaRename)
-
-                    fileManagementWorkflow(for: .delete)
-                        .tabItem {
-                            Label("Delete", systemImage: "trash")
-                        }
-                        .tag(WorkflowTab.mediaDelete)
-
-                    folderSyncWorkflow
-                        .tabItem {
-                            Label("Sync", systemImage: "arrow.triangle.2.circlepath")
-                        }
-                        .tag(WorkflowTab.folderSync)
-
-                    backupRestoreWorkflow
-                        .tabItem {
-                            Label("Restore", systemImage: "externaldrive.badge.icloud")
-                        }
-                        .tag(WorkflowTab.backupRestore)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                workflowContentContainer
                 Divider()
                 footer
             }
@@ -94,6 +110,49 @@ struct ContentView: View {
         .onChange(of: selectedWorkflowTab) { _, tab in
             syncWorkflowSelection(tab)
         }
+    }
+
+    private var workflowTabBar: some View {
+        HStack(spacing: 6) {
+            ForEach(WorkflowTab.allCases) { tab in
+                WorkflowTabButton(
+                    tab: tab,
+                    isSelected: selectedWorkflowTab == tab
+                ) {
+                    selectedWorkflowTab = tab
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    @ViewBuilder
+    private var selectedWorkflowContent: some View {
+        switch selectedWorkflowTab {
+        case .audioEncoding:
+            audioEncodingWorkflow
+        case .videoEncoding:
+            audioEncodingWorkflow
+        case .mediaCopy:
+            fileManagementWorkflow(for: .copy)
+        case .mediaRename:
+            fileManagementWorkflow(for: .rename)
+        case .mediaDelete:
+            fileManagementWorkflow(for: .delete)
+        case .folderSync:
+            folderSyncWorkflow
+        case .backupRestore:
+            backupRestoreWorkflow
+        }
+    }
+
+    private var workflowContentContainer: some View {
+        GeometryReader { proxy in
+            selectedWorkflowContent
+                .frame(width: proxy.size.width, height: proxy.size.height)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .layoutPriority(1)
     }
 
     private var titlebarSpacer: some View {
@@ -123,26 +182,29 @@ struct ContentView: View {
     }
 
     private var topBar: some View {
-        HStack(spacing: 14) {
-            HeaderAppIcon()
+        VStack(spacing: 12) {
+            HStack(spacing: 14) {
+                HeaderAppIcon()
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text("GPhil Coder")
-                    .font(.system(size: 24, weight: .bold, design: .rounded))
-                Text(
-                    "Batch audio/video encoding and filtered media workflows"
-                )
-                .font(.callout)
-                .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("GPhil Coder")
+                        .font(.system(size: 24, weight: .bold, design: .rounded))
+                    Text(
+                        "Batch audio/video encoding and filtered media workflows"
+                    )
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                ToolStatusView()
             }
 
-            Spacer()
-
-            ToolStatusView()
+            workflowTabBar
         }
         .padding(.horizontal, 22)
-        // .padding(.top, 4)
-        .padding(.bottom, 14)
+        .padding(.bottom, 12)
         .background(.bar)
     }
 
@@ -553,415 +615,150 @@ struct ContentView: View {
     }
 
     private var mediaCopySetupPanel: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            GroupBox("Source") {
-                FolderPickerControl(
-                    title: model.mediaCopySourceSummary,
-                    detail: model.mediaCopySourceDetail,
-                    systemImage: "folder.badge.plus",
-                    buttonTitle: "Choose sources",
-                    disabled: model.isMediaCopyBusy,
-                    secondaryButtonTitle: "Clear",
-                    secondarySystemImage: "xmark.circle",
-                    secondaryDisabled: !model.canClearMediaCopySources
-                ) {
-                    model.chooseMediaCopySourceRoot()
-                } secondaryAction: {
-                    model.clearMediaCopySources()
-                }
-                .padding(.vertical, 4)
-            }
-
-            if model.fileManagementMode == .copy {
-                GroupBox("Destination") {
-                    FolderPickerControl(
-                        title: model.mediaCopyDestinationRoot?.path(percentEncoded: false)
-                            ?? "No destination folder selected",
-                        detail: nil,
-                        systemImage: "externaldrive",
-                        buttonTitle: "Choose destination",
-                        disabled: model.isMediaCopyBusy
-                    ) {
-                        model.chooseMediaCopyDestinationRoot()
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    GroupBox("Source") {
+                        FolderPickerControl(
+                            title: model.mediaCopySourceSummary,
+                            detail: model.mediaCopySourceDetail,
+                            systemImage: "folder.badge.plus",
+                            buttonTitle: "Choose sources",
+                            disabled: model.isMediaCopyBusy,
+                            secondaryButtonTitle: "Clear",
+                            secondarySystemImage: "xmark.circle",
+                            secondaryDisabled: !model.canClearMediaCopySources
+                        ) {
+                            model.chooseMediaCopySourceRoot()
+                        } secondaryAction: {
+                            model.clearMediaCopySources()
+                        }
+                        .padding(.vertical, 4)
                     }
-                    .padding(.vertical, 4)
-                }
-            }
 
-            GroupBox("Filter") {
-                VStack(alignment: .leading, spacing: 10) {
-                    Picker("Media type", selection: $model.mediaCopyFilter) {
-                        ForEach(model.availableMediaFileFilters) { filter in
-                            Label(filter.title, systemImage: filter.symbolName)
-                                .tag(filter)
+                    if model.fileManagementMode == .copy {
+                        GroupBox("Destination") {
+                            FolderPickerControl(
+                                title: model.mediaCopyDestinationRoot?.path(percentEncoded: false)
+                                    ?? "No destination folder selected",
+                                detail: nil,
+                                systemImage: "externaldrive",
+                                buttonTitle: "Choose destination",
+                                disabled: model.isMediaCopyBusy
+                            ) {
+                                model.chooseMediaCopyDestinationRoot()
+                            }
+                            .padding(.vertical, 4)
                         }
                     }
-                    .pickerStyle(.segmented)
-                    .disabled(model.isMediaCopyBusy)
-                    .arrowCursorOnHover()
 
-                    if model.mediaCopyFilter.supportsExtensionSelection {
-                        Menu {
-                            Button {
-                                model.selectAllMediaCopyExtensions()
-                            } label: {
-                                Label("Select all", systemImage: "checklist.checked")
+                    GroupBox("Filter") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Picker("Media type", selection: $model.mediaCopyFilter) {
+                                ForEach(model.availableMediaFileFilters) { filter in
+                                    Label(filter.title, systemImage: filter.symbolName)
+                                        .tag(filter)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            .disabled(model.isMediaCopyBusy)
+                            .arrowCursorOnHover()
+
+                            if model.mediaCopyFilter.supportsExtensionSelection {
+                                Menu {
+                                    Button {
+                                        model.selectAllMediaCopyExtensions()
+                                    } label: {
+                                        Label("Select all", systemImage: "checklist.checked")
+                                    }
+
+                                    Button {
+                                        model.deselectAllMediaCopyExtensions()
+                                    } label: {
+                                        Label("Deselect all", systemImage: "checklist.unchecked")
+                                    }
+
+                                    Divider()
+
+                                    ForEach(model.mediaCopyExtensionOptions, id: \.self) { fileExtension in
+                                        Toggle(
+                                            ".\(fileExtension)",
+                                            isOn: Binding(
+                                                get: { model.isMediaCopyExtensionEnabled(fileExtension) },
+                                                set: { model.setMediaCopyExtension(fileExtension, enabled: $0) }
+                                            )
+                                        )
+                                    }
+                                } label: {
+                                    HStack(spacing: 8) {
+                                        Text(model.mediaCopyExtensionMenuTitle)
+                                            .lineLimit(1)
+                                            .truncationMode(.tail)
+                                        Spacer()
+                                        Image(systemName: "chevron.down")
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    .frame(maxWidth: .infinity)
+                                }
+                                .disabled(model.isMediaCopyBusy)
+                                .help("Choose the exact file extensions for this filter")
                             }
 
-                            Button {
-                                model.deselectAllMediaCopyExtensions()
-                            } label: {
-                                Label("Deselect all", systemImage: "checklist.unchecked")
-                            }
-
-                            Divider()
-
-                            ForEach(model.mediaCopyExtensionOptions, id: \.self) { fileExtension in
-                                Toggle(
-                                    ".\(fileExtension)",
-                                    isOn: Binding(
-                                        get: { model.isMediaCopyExtensionEnabled(fileExtension) },
-                                        set: { model.setMediaCopyExtension(fileExtension, enabled: $0) }
-                                    )
-                                )
-                            }
-                        } label: {
-                            HStack(spacing: 8) {
-                                Text(model.mediaCopyExtensionMenuTitle)
-                                    .lineLimit(1)
-                                    .truncationMode(.tail)
-                                Spacer()
-                                Image(systemName: "chevron.down")
+                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                Text("Name")
                                     .font(.caption.weight(.semibold))
                                     .foregroundStyle(.secondary)
+                                    .frame(width: 46, alignment: .trailing)
+
+                                TextField("Any file name", text: $model.mediaFileNameFilterQuery)
+                                    .textFieldStyle(.roundedBorder)
+                                    .disabled(model.isMediaCopyBusy)
+                                    .help("Match files whose names contain this text")
                             }
-                            .frame(maxWidth: .infinity)
+
+                            Text(model.mediaCopySelectedExtensionSummary)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(3)
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            Text(model.mediaFileNameFilterSummary)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
-                        .disabled(model.isMediaCopyBusy)
-                        .help("Choose the exact file extensions for this filter")
+                        .padding(.vertical, 4)
                     }
 
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text("Name")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 46, alignment: .trailing)
-
-                        TextField("Any file name", text: $model.mediaFileNameFilterQuery)
-                            .textFieldStyle(.roundedBorder)
-                            .disabled(model.isMediaCopyBusy)
-                            .help("Match files whose names contain this text")
-                    }
-
-                    Text(model.mediaCopySelectedExtensionSummary)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(3)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    Text(model.mediaFileNameFilterSummary)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .padding(.vertical, 4)
-            }
-
-            if model.fileManagementMode == .rename {
-                mediaRenameSummaryGroup
-            }
-
-            GroupBox("Plan") {
-                VStack(alignment: .leading, spacing: 9) {
-                    StatLine(
-                        title: "Matched",
-                        value: "\(model.activeMediaMatchedCount)",
-                        symbol: model.activeMediaPreviewSymbolName,
-                        color: .teal
-                    )
-                    if model.fileManagementMode == .copy {
-                        StatLine(
-                            title: "Existing",
-                            value: "\(model.mediaCopyConflictCount)",
-                            symbol: "exclamationmark.triangle",
-                            color: model.mediaCopyConflictCount > 0 ? .orange : .secondary
-                        )
-                    }
                     if model.fileManagementMode == .rename {
-                        StatLine(
-                            title: "Ready",
-                            value: "\(model.mediaRenameReadyCount)",
-                            symbol: "checkmark.circle",
-                            color: .teal
-                        )
-                        StatLine(
-                            title: "Blocked",
-                            value: "\(model.mediaRenameBlockedCount)",
-                            symbol: "exclamationmark.triangle",
-                            color: model.mediaRenameBlockedCount > 0 ? .orange : .secondary
-                        )
-                        StatLine(
-                            title: "Unchanged",
-                            value: "\(model.mediaRenameUnchangedCount)",
-                            symbol: "equal",
-                            color: .secondary
-                        )
-                    }
-                    StatLine(
-                        title: "Total size",
-                        value: model.activeMediaTotalSize.formattedFileSize,
-                        symbol: "externaldrive",
-                        color: .indigo
-                    )
-
-                    if model.fileManagementMode == .copy,
-                        let plan = model.mediaCopyPlan,
-                        plan.directoryCount > 0
-                    {
-                        StatLine(
-                            title: "Folders",
-                            value: "\(plan.directoryCount)",
-                            symbol: "folder",
-                            color: .teal
-                        )
+                        mediaRenameSummaryGroup
                     }
 
-                    if model.fileManagementMode == .copy,
-                        let plan = model.mediaCopyPlan,
-                        plan.conflictCount > 0
-                    {
-                        Text(
-                            "\(plan.copyableWithoutOverwriteCount) file\(plan.copyableWithoutOverwriteCount == 1 ? "" : "s") can be copied without replacing existing destination files."
-                        )
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    GroupBox("Plan") {
+                        VStack(alignment: .leading, spacing: 9) {
+                            mediaPlanSummaryLines
+                        }
+                        .padding(.vertical, 4)
+                    }
+
+                    if let progress = model.mediaCopyProgress {
+                        mediaProgressPanel(progress)
+                    }
+
+                    if model.fileManagementMode == .copy {
+                        mediaCopyQueueGroup
                     }
                 }
-                .padding(.vertical, 4)
+                .padding(18)
             }
 
-            if let progress = model.mediaCopyProgress {
-                VStack(alignment: .leading, spacing: 8) {
-                    ProgressView(value: progress.fractionCompleted)
-                    HStack {
-                        Text("\(progress.completed) of \(progress.total)")
-                            .monospacedDigit()
-                        Spacer()
-                        Text("\(progress.copied) \(mediaProgressVerb)")
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            Divider()
 
-                    HStack {
-                        Text("\(progress.copiedBytes.formattedFileSize) \(mediaProgressVerb)")
-                            .monospacedDigit()
-                        Spacer()
-                        Text(mediaCopySpeedText(for: progress))
-                            .monospacedDigit()
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                    if let currentName = progress.currentName {
-                        Text(currentName)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-                }
-            }
-
-            Spacer()
-
-            if model.isMediaCopyBusy {
-                Button {
-                    model.cancelMediaCopy()
-                } label: {
-                    Label("Cancel", systemImage: "stop.fill")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(.red)
-                .controlSize(.large)
-            } else {
-                VStack(spacing: 10) {
-                    switch model.fileManagementMode {
-                    case .copy:
-                        Button {
-                            model.scanMediaCopyFiles()
-                            selectedMediaCopyPreviewMode = .plan
-                        } label: {
-                            Label("Scan", systemImage: "magnifyingglass")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .disabled(!model.canPrepareMediaCopy)
-
-                        Button {
-                            model.copyFilteredMediaFiles()
-                            selectedMediaCopyPreviewMode = .plan
-                        } label: {
-                            Label("Copy now", systemImage: "doc.on.doc")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.large)
-                        .disabled(!model.canPrepareMediaCopy)
-
-                        Button {
-                            model.addCurrentMediaCopyWorkflowToQueue()
-                            selectedMediaCopyPreviewMode = .queue
-                        } label: {
-                            Label("Add to queue", systemImage: "text.badge.plus")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .disabled(!model.canAddMediaCopyWorkflowToQueue)
-                    case .delete:
-                        Button {
-                            model.refreshMediaDeletePreview()
-                            selectedMediaCopyPreviewMode = .plan
-                        } label: {
-                            Label("Refresh preview", systemImage: "arrow.clockwise")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .disabled(!model.canRefreshMediaDeletePreview)
-
-                        Button(role: .destructive) {
-                            model.deleteFilteredMediaFiles()
-                            selectedMediaCopyPreviewMode = .plan
-                        } label: {
-                            Label("Delete filtered files", systemImage: "trash")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(.red)
-                        .controlSize(.large)
-                        .disabled(!model.canDeleteFilteredMediaFiles)
-                        .help("Move files from source folders to the macOS Trash using the selected filter")
-                    case .rename:
-                        Button {
-                            model.refreshMediaRenamePreview()
-                            selectedMediaCopyPreviewMode = .plan
-                        } label: {
-                            Label("Refresh preview", systemImage: "arrow.clockwise")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .disabled(!model.canRefreshMediaRenamePreview)
-
-                        Button {
-                            model.renameFilteredMediaFiles()
-                            selectedMediaCopyPreviewMode = .plan
-                        } label: {
-                            Label("Rename files", systemImage: "pencil")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.large)
-                        .disabled(!model.canRenameFilteredMediaFiles)
-
-                        HStack(spacing: 8) {
-                            Button {
-                                model.undoLastMediaRename()
-                                selectedMediaCopyPreviewMode = .plan
-                            } label: {
-                                Label(model.mediaRenameUndoButtonTitle, systemImage: "arrow.uturn.backward")
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .disabled(!model.canUndoMediaRename)
-                            .help(model.mediaRenameUndoHelp)
-
-                            Button {
-                                model.redoLastMediaRename()
-                                selectedMediaCopyPreviewMode = .plan
-                            } label: {
-                                Label(model.mediaRenameRedoButtonTitle, systemImage: "arrow.uturn.forward")
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .disabled(!model.canRedoMediaRename)
-                            .help(model.mediaRenameRedoHelp)
-                        }
-                        .controlSize(.small)
-                    }
-
-                    HStack(spacing: 8) {
-                        Button {
-                            model.restoreTrashedSources()
-                        } label: {
-                            Label("Restore", systemImage: "arrow.uturn.backward.circle")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .disabled(!model.canRestoreTrashedSources)
-                        .help("Restore files moved to Trash by GPhilCoder")
-
-                        Button(role: .destructive) {
-                            model.clearTrashedSourceRecords()
-                        } label: {
-                            Label("Clear records", systemImage: "trash.slash")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .disabled(!model.canClearTrashedSourceRecords)
-                        .help("Forget saved restore records without changing any files")
-                    }
-                    .controlSize(.small)
-                }
-            }
-
-            if model.fileManagementMode == .copy {
-                GroupBox("Queue") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        StatLine(
-                            title: "Workflows",
-                            value: "\(model.mediaCopyQueueTotalCount)",
-                            symbol: "list.bullet.rectangle",
-                            color: .indigo
-                        )
-
-                        HStack(spacing: 8) {
-                            Button {
-                                model.loadMediaCopyJob()
-                                selectedMediaCopyPreviewMode = .queue
-                            } label: {
-                                Label("Load", systemImage: "square.and.arrow.up")
-                                    .frame(maxWidth: .infinity)
-                            }
-
-                            Button {
-                                model.saveMediaCopyJob()
-                            } label: {
-                                Label("Save", systemImage: "square.and.arrow.down")
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .disabled(!model.canSaveMediaCopyJob)
-                        }
-                        .controlSize(.small)
-
-                        HStack(spacing: 8) {
-                            Button(role: .destructive) {
-                                model.clearMediaCopyQueue()
-                            } label: {
-                                Label("Clear", systemImage: "trash")
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .disabled(model.mediaCopyQueueTotalCount == 0 || model.isMediaCopyBusy)
-
-                            Button {
-                                model.runMediaCopyQueue()
-                                selectedMediaCopyPreviewMode = .queue
-                            } label: {
-                                Label("Run", systemImage: "play.fill")
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(!model.canRunMediaCopyQueue)
-                        }
-                    }
-                    .padding(.vertical, 4)
-                }
-            }
+            mediaManagementActions
+                .padding(18)
         }
-        .padding(18)
         .background(Color(nsColor: .controlBackgroundColor))
     }
 
@@ -1264,6 +1061,294 @@ struct ContentView: View {
         }
     }
 
+    @ViewBuilder
+    private var mediaPlanSummaryLines: some View {
+        StatLine(
+            title: "Matched",
+            value: "\(model.activeMediaMatchedCount)",
+            symbol: model.activeMediaPreviewSymbolName,
+            color: .teal
+        )
+        if model.fileManagementMode == .copy {
+            StatLine(
+                title: "Existing",
+                value: "\(model.mediaCopyConflictCount)",
+                symbol: "exclamationmark.triangle",
+                color: model.mediaCopyConflictCount > 0 ? .orange : .secondary
+            )
+        }
+        if model.fileManagementMode == .rename {
+            StatLine(
+                title: "Ready",
+                value: "\(model.mediaRenameReadyCount)",
+                symbol: "checkmark.circle",
+                color: .teal
+            )
+            StatLine(
+                title: "Blocked",
+                value: "\(model.mediaRenameBlockedCount)",
+                symbol: "exclamationmark.triangle",
+                color: model.mediaRenameBlockedCount > 0 ? .orange : .secondary
+            )
+            StatLine(
+                title: "Unchanged",
+                value: "\(model.mediaRenameUnchangedCount)",
+                symbol: "equal",
+                color: .secondary
+            )
+        }
+        StatLine(
+            title: "Total size",
+            value: model.activeMediaTotalSize.formattedFileSize,
+            symbol: "externaldrive",
+            color: .indigo
+        )
+
+        if model.fileManagementMode == .copy,
+            let plan = model.mediaCopyPlan,
+            plan.directoryCount > 0
+        {
+            StatLine(
+                title: "Folders",
+                value: "\(plan.directoryCount)",
+                symbol: "folder",
+                color: .teal
+            )
+        }
+
+        if model.fileManagementMode == .copy,
+            let plan = model.mediaCopyPlan,
+            plan.conflictCount > 0
+        {
+            Text(
+                "\(plan.copyableWithoutOverwriteCount) file\(plan.copyableWithoutOverwriteCount == 1 ? "" : "s") can be copied without replacing existing destination files."
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func mediaProgressPanel(_ progress: MediaCopyProgress) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ProgressView(value: progress.fractionCompleted)
+            HStack {
+                Text("\(progress.completed) of \(progress.total)")
+                    .monospacedDigit()
+                Spacer()
+                Text("\(progress.copied) \(mediaProgressVerb)")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+            HStack {
+                Text("\(progress.copiedBytes.formattedFileSize) \(mediaProgressVerb)")
+                    .monospacedDigit()
+                Spacer()
+                Text(mediaCopySpeedText(for: progress))
+                    .monospacedDigit()
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+            if let currentName = progress.currentName {
+                Text(currentName)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var mediaManagementActions: some View {
+        if model.isMediaCopyBusy {
+            Button {
+                model.cancelMediaCopy()
+            } label: {
+                Label("Cancel", systemImage: "stop.fill")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.red)
+            .controlSize(.large)
+        } else {
+            VStack(spacing: 10) {
+                switch model.fileManagementMode {
+                case .copy:
+                    Button {
+                        model.scanMediaCopyFiles()
+                        selectedMediaCopyPreviewMode = .plan
+                    } label: {
+                        Label("Scan", systemImage: "magnifyingglass")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .disabled(!model.canPrepareMediaCopy)
+
+                    Button {
+                        model.copyFilteredMediaFiles()
+                        selectedMediaCopyPreviewMode = .plan
+                    } label: {
+                        Label("Copy now", systemImage: "doc.on.doc")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .disabled(!model.canPrepareMediaCopy)
+
+                    Button {
+                        model.addCurrentMediaCopyWorkflowToQueue()
+                        selectedMediaCopyPreviewMode = .queue
+                    } label: {
+                        Label("Add to queue", systemImage: "text.badge.plus")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .disabled(!model.canAddMediaCopyWorkflowToQueue)
+                case .delete:
+                    Button {
+                        model.refreshMediaDeletePreview()
+                        selectedMediaCopyPreviewMode = .plan
+                    } label: {
+                        Label("Refresh preview", systemImage: "arrow.clockwise")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .disabled(!model.canRefreshMediaDeletePreview)
+
+                    Button(role: .destructive) {
+                        model.deleteFilteredMediaFiles()
+                        selectedMediaCopyPreviewMode = .plan
+                    } label: {
+                        Label("Delete filtered files", systemImage: "trash")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.red)
+                    .controlSize(.large)
+                    .disabled(!model.canDeleteFilteredMediaFiles)
+                    .help("Move files from source folders to the macOS Trash using the selected filter")
+                case .rename:
+                    Button {
+                        model.refreshMediaRenamePreview()
+                        selectedMediaCopyPreviewMode = .plan
+                    } label: {
+                        Label("Refresh preview", systemImage: "arrow.clockwise")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .disabled(!model.canRefreshMediaRenamePreview)
+
+                    Button {
+                        model.renameFilteredMediaFiles()
+                        selectedMediaCopyPreviewMode = .plan
+                    } label: {
+                        Label("Rename files", systemImage: "pencil")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .disabled(!model.canRenameFilteredMediaFiles)
+
+                    HStack(spacing: 8) {
+                        Button {
+                            model.undoLastMediaRename()
+                            selectedMediaCopyPreviewMode = .plan
+                        } label: {
+                            Label(model.mediaRenameUndoButtonTitle, systemImage: "arrow.uturn.backward")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .disabled(!model.canUndoMediaRename)
+                        .help(model.mediaRenameUndoHelp)
+
+                        Button {
+                            model.redoLastMediaRename()
+                            selectedMediaCopyPreviewMode = .plan
+                        } label: {
+                            Label(model.mediaRenameRedoButtonTitle, systemImage: "arrow.uturn.forward")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .disabled(!model.canRedoMediaRename)
+                        .help(model.mediaRenameRedoHelp)
+                    }
+                    .controlSize(.small)
+                }
+
+                HStack(spacing: 8) {
+                    Button {
+                        model.restoreTrashedSources()
+                    } label: {
+                        Label("Restore", systemImage: "arrow.uturn.backward.circle")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .disabled(!model.canRestoreTrashedSources)
+                    .help("Restore files moved to Trash by GPhilCoder")
+
+                    Button(role: .destructive) {
+                        model.clearTrashedSourceRecords()
+                    } label: {
+                        Label("Clear records", systemImage: "trash.slash")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .disabled(!model.canClearTrashedSourceRecords)
+                    .help("Forget saved restore records without changing any files")
+                }
+                .controlSize(.small)
+            }
+        }
+    }
+
+    private var mediaCopyQueueGroup: some View {
+        GroupBox("Queue") {
+            VStack(alignment: .leading, spacing: 10) {
+                StatLine(
+                    title: "Workflows",
+                    value: "\(model.mediaCopyQueueTotalCount)",
+                    symbol: "list.bullet.rectangle",
+                    color: .indigo
+                )
+
+                HStack(spacing: 8) {
+                    Button {
+                        model.loadMediaCopyJob()
+                        selectedMediaCopyPreviewMode = .queue
+                    } label: {
+                        Label("Load", systemImage: "square.and.arrow.up")
+                            .frame(maxWidth: .infinity)
+                    }
+
+                    Button {
+                        model.saveMediaCopyJob()
+                    } label: {
+                        Label("Save", systemImage: "square.and.arrow.down")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .disabled(!model.canSaveMediaCopyJob)
+                }
+                .controlSize(.small)
+
+                HStack(spacing: 8) {
+                    Button(role: .destructive) {
+                        model.clearMediaCopyQueue()
+                    } label: {
+                        Label("Clear", systemImage: "trash")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .disabled(model.mediaCopyQueueTotalCount == 0 || model.isMediaCopyBusy)
+
+                    Button {
+                        model.runMediaCopyQueue()
+                        selectedMediaCopyPreviewMode = .queue
+                    } label: {
+                        Label("Run", systemImage: "play.fill")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!model.canRunMediaCopyQueue)
+                }
+            }
+            .padding(.vertical, 4)
+        }
+    }
+
     private var mediaCopySubtitle: String {
         if model.fileManagementMode == .rename {
             if model.isMediaCopyScanning {
@@ -1434,80 +1519,85 @@ struct ContentView: View {
     }
 
     private var libraryPanel: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Input")
-                    .font(.headline)
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Input")
+                            .font(.headline)
 
-                HStack(spacing: 10) {
-                    Button {
-                        model.addFiles()
-                    } label: {
-                        Label("Files", systemImage: "doc.badge.plus")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(model.isEncoding)
+                        HStack(spacing: 10) {
+                            Button {
+                                model.addFiles()
+                            } label: {
+                                Label("Files", systemImage: "doc.badge.plus")
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(model.isEncoding)
 
-                    Button {
-                        model.addFolder()
-                    } label: {
-                        Label("Folder", systemImage: "folder.badge.plus")
+                            Button {
+                                model.addFolder()
+                            } label: {
+                                Label("Folder", systemImage: "folder.badge.plus")
+                            }
+                            .disabled(model.isEncoding)
+                        }
+
+                        HStack(spacing: 8) {
+                            Button {
+                                model.saveQueue()
+                            } label: {
+                                Label("Save queue", systemImage: "square.and.arrow.down")
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.85)
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .disabled(!model.canSaveQueue)
+
+                            Button {
+                                model.loadQueue()
+                            } label: {
+                                Label("Load queue", systemImage: "square.and.arrow.up")
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.85)
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .disabled(model.isEncoding)
+                        }
+                        .controlSize(.small)
                     }
-                    .disabled(model.isEncoding)
+
+                    inputFilterControls
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        StatLine(
+                            title: "Active", value: "\(model.activeInputs.count)",
+                            symbol: model.encodingWorkflow.symbolName,
+                            color: .teal)
+                        StatLine(
+                            title: "Active size", value: model.activeInputSize.formattedFileSize,
+                            symbol: "externaldrive", color: .indigo)
+                        StatLine(
+                            title: "Filter", value: model.selectedInputReadableList,
+                            symbol: "line.3.horizontal.decrease.circle", color: .orange)
+                    }
+                    .padding(12)
+                    .background(
+                        .quaternary.opacity(0.8), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("Current route", systemImage: "arrow.triangle.branch")
+                            .font(.subheadline.weight(.semibold))
+                        Text(outputRouteDescription)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
-
-                HStack(spacing: 8) {
-                    Button {
-                        model.saveQueue()
-                    } label: {
-                        Label("Save queue", systemImage: "square.and.arrow.down")
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.85)
-                            .frame(maxWidth: .infinity)
-                    }
-                    .disabled(!model.canSaveQueue)
-
-                    Button {
-                        model.loadQueue()
-                    } label: {
-                        Label("Load queue", systemImage: "square.and.arrow.up")
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.85)
-                            .frame(maxWidth: .infinity)
-                    }
-                    .disabled(model.isEncoding)
-                }
-                .controlSize(.small)
+                .padding(18)
             }
 
-            inputFilterControls
-
-            VStack(alignment: .leading, spacing: 10) {
-                StatLine(
-                    title: "Active", value: "\(model.activeInputs.count)",
-                    symbol: model.encodingWorkflow.symbolName,
-                    color: .teal)
-                StatLine(
-                    title: "Active size", value: model.activeInputSize.formattedFileSize,
-                    symbol: "externaldrive", color: .indigo)
-                StatLine(
-                    title: "Filter", value: model.selectedInputReadableList,
-                    symbol: "line.3.horizontal.decrease.circle", color: .orange)
-            }
-            .padding(12)
-            .background(
-                .quaternary.opacity(0.8), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-
-            VStack(alignment: .leading, spacing: 8) {
-                Label("Current route", systemImage: "arrow.triangle.branch")
-                    .font(.subheadline.weight(.semibold))
-                Text(outputRouteDescription)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Spacer()
+            Divider()
 
             VStack(alignment: .leading, spacing: 8) {
                 Button(role: .destructive) {
@@ -1560,8 +1650,8 @@ struct ContentView: View {
                 .disabled(!model.canClearTrashedSourceRecords)
                 .help("Forget saved restore records without changing any files")
             }
+            .padding(18)
         }
-        .padding(18)
         .background(Color(nsColor: .controlBackgroundColor))
     }
 
@@ -2364,17 +2454,15 @@ private struct ToolStatusView: View {
                     .truncationMode(.middle)
                     .frame(maxWidth: 260, alignment: .leading)
 
-                if model.encodingWorkflow == .video {
-                    Text("\(model.videoDecodeModeTitle) | \(model.videoScaleModeTitle) | \(model.videoEncodeModeTitle)")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .frame(maxWidth: 260, alignment: .leading)
-                        .help(
-                            "\(model.videoDecodeModeDetail). \(model.videoScaleModeDetail). \(model.videoEncodeModeDetail)."
-                        )
-                }
+                Text(videoStatusLine)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: 260, alignment: .leading)
+                    .opacity(model.encodingWorkflow == .video ? 1 : 0)
+                    .help(videoStatusHelp)
+                    .accessibilityHidden(model.encodingWorkflow != .video)
             }
 
             Picker("FFmpeg", selection: $model.ffmpegSourcePreference) {
@@ -2418,6 +2506,16 @@ private struct ToolStatusView: View {
             return source.title
         }
         return "\(source.title) missing"
+    }
+
+    private var videoStatusLine: String {
+        guard model.encodingWorkflow == .video else { return "Reserved video pipeline status" }
+        return "\(model.videoDecodeModeTitle) | \(model.videoScaleModeTitle) | \(model.videoEncodeModeTitle)"
+    }
+
+    private var videoStatusHelp: String {
+        guard model.encodingWorkflow == .video else { return "" }
+        return "\(model.videoDecodeModeDetail). \(model.videoScaleModeDetail). \(model.videoEncodeModeDetail)."
     }
 }
 
@@ -3696,6 +3794,43 @@ struct FormatPill: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
             .background(.quaternary, in: Capsule())
+    }
+}
+
+private struct WorkflowTabButton: View {
+    let tab: WorkflowTab
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Label {
+                Text(tab.title)
+                    .font(.callout.weight(isSelected ? .semibold : .medium))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+            } icon: {
+                Image(systemName: tab.symbolName)
+                    .font(.system(size: 14, weight: .semibold))
+                    .frame(width: 18, height: 18)
+            }
+            .labelStyle(.titleAndIcon)
+            .frame(maxWidth: .infinity, minHeight: 34)
+            .padding(.horizontal, 10)
+            .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(isSelected ? Color.accentColor.opacity(0.14) : Color.clear)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .stroke(isSelected ? Color.accentColor.opacity(0.35) : Color.clear)
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(tab.accessibilityTitle)
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 }
 
