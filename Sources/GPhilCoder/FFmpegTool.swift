@@ -107,6 +107,12 @@ struct FFmpegLocator {
 
 struct FFmpegEncoder {
     let ffmpegURL: URL
+    let processRegistry: ProcessRegistry?
+
+    init(ffmpegURL: URL, processRegistry: ProcessRegistry? = nil) {
+        self.ffmpegURL = ffmpegURL
+        self.processRegistry = processRegistry
+    }
 
     func encode(
         input: URL,
@@ -136,7 +142,8 @@ struct FFmpegEncoder {
 
         let channelCount = try await FFmpegProbe.audioChannelCount(
             ffmpegURL: ffmpegURL,
-            input: input
+            input: input,
+            processRegistry: processRegistry
         )
         if let channelCount, ffmpegShouldSplitMultichannel(channelCount, settings: settings) {
             return try await encodeSplitMultichannel(
@@ -186,7 +193,11 @@ struct FFmpegEncoder {
         arguments.append(tempOutput.path)
 
         return try await runInstallingTemp(temp: tempOutput, output: output) {
-            try await ProcessRunner.run(executableURL: ffmpegURL, arguments: arguments)
+            try await ProcessRunner.run(
+                executableURL: ffmpegURL,
+                arguments: arguments,
+                processRegistry: processRegistry
+            )
         }
     }
 
@@ -251,7 +262,8 @@ struct FFmpegEncoder {
         return try await runInstallingTemp(temp: tempOutput, output: output) {
             try await ProcessRunner.run(
                 executableURL: ffmpegURL,
-                arguments: arguments
+                arguments: arguments,
+                processRegistry: processRegistry
             ) { chunk in
                 guard let progress = FFmpegProgressSnapshot.parse(from: chunk) else { return }
                 progressHandler?(progress)
@@ -303,7 +315,11 @@ struct FFmpegEncoder {
             arguments.append(tempOutput.path)
 
             let output = try await runInstallingTemp(temp: tempOutput, output: outputURL) {
-                try await ProcessRunner.run(executableURL: ffmpegURL, arguments: arguments)
+                try await ProcessRunner.run(
+                    executableURL: ffmpegURL,
+                    arguments: arguments,
+                    processRegistry: processRegistry
+                )
             }
             let summary = output
                 .split(separator: "\n")
@@ -376,18 +392,66 @@ struct FFmpegEncoder {
 enum FFmpegProbe {
     /// Runs `ffmpeg -i <input>` (which exits non-zero but prints stream info
     /// to stderr) and parses the audio channel count via the Core helper.
-    static func audioChannelCount(ffmpegURL: URL, input: URL) async throws -> Int? {
+    static func audioChannelCount(
+        ffmpegURL: URL,
+        input: URL,
+        processRegistry: ProcessRegistry? = nil
+    ) async throws -> Int? {
         let output: String
         do {
             output = try await ProcessRunner.run(
                 executableURL: ffmpegURL,
-                arguments: ["-hide_banner", "-i", input.path]
+                arguments: ["-hide_banner", "-i", input.path],
+                processRegistry: processRegistry
             )
         } catch FFmpegToolError.processFailed(_, let probeOutput) {
             output = probeOutput
         }
 
         return parseAudioChannelCount(from: output)
+    }
+}
+
+final class ProcessRegistry: @unchecked Sendable {
+    private let lock = NSLock()
+    private var processes: [ObjectIdentifier: Process] = [:]
+    private var shouldTerminateNewProcesses = false
+
+    func insert(_ process: Process) {
+        lock.lock()
+        let shouldTerminate = shouldTerminateNewProcesses
+        if !shouldTerminate {
+            processes[ObjectIdentifier(process)] = process
+        }
+        lock.unlock()
+
+        if shouldTerminate {
+            process.terminate()
+        }
+    }
+
+    func remove(_ process: Process) {
+        lock.lock()
+        processes[ObjectIdentifier(process)] = nil
+        lock.unlock()
+    }
+
+    func reset() {
+        lock.lock()
+        shouldTerminateNewProcesses = false
+        processes.removeAll()
+        lock.unlock()
+    }
+
+    func terminateAll() {
+        lock.lock()
+        shouldTerminateNewProcesses = true
+        let activeProcesses = Array(processes.values)
+        lock.unlock()
+
+        for process in activeProcesses {
+            process.terminate()
+        }
     }
 }
 
@@ -432,6 +496,7 @@ enum ProcessRunner {
     static func run(
         executableURL: URL,
         arguments: [String],
+        processRegistry: ProcessRegistry? = nil,
         outputHandler: (@Sendable (String) -> Void)? = nil
     ) async throws -> String {
         let processBox = ProcessBox()
@@ -478,10 +543,14 @@ enum ProcessRunner {
 
                 do {
                     try process.run()
+                    processRegistry?.insert(process)
                 } catch {
                     outputPipe.fileHandleForReading.readabilityHandler = nil
                     errorPipe.fileHandleForReading.readabilityHandler = nil
                     throw FFmpegToolError.couldNotStart(error.localizedDescription)
+                }
+                defer {
+                    processRegistry?.remove(process)
                 }
 
                 process.waitUntilExit()

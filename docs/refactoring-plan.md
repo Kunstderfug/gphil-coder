@@ -1,6 +1,7 @@
 # Refactoring plan: EncoderViewModel decomposition
 
-> **Status as of commit `65bb2fd`.** Update this file as each step lands.
+> **Status as of commit `77e9f40` plus Step 1 implementation.** Update this
+> file as each step lands.
 > This document records what the 2026-07 code-review-driven refactor
 > accomplished and what remains, so the next maintainer doesn't have to
 > re-derive the sequencing decisions.
@@ -8,7 +9,7 @@
 ## Current status
 
 - **Branch:** `main`, 6 commits ahead of `origin/main`.
-- **Build:** clean. **Tests:** 124 pass (baseline before the refactor was 51).
+- **Build:** clean. **Tests:** 129 pass (baseline before the refactor was 51).
 - **No open correctness bugs** — all three Critical issues from the code review
   are closed.
 
@@ -19,7 +20,7 @@
 | 1 | Temp-write-then-replace in `FFmpegEncoder` (truncated output on cancel/failure) | Critical | ✅ Done |
 | 2 | Stale security-scoped bookmark fix | Critical | ✅ Done (absorbed into `BookmarkStore`) |
 | 3 | Silent-decode hardening, all 4 persisted payloads | Critical | ✅ Done |
-| 4 | God-Object decomposition of `EncoderViewModel` | Important | 🔶 ~15% done |
+| 4 | God-Object decomposition of `EncoderViewModel` | Important | 🔶 Step 1 done; extraction still pending |
 | 5 | Move `RestorePlanner` to `GPhilCoderCore` | Important | ✅ Done |
 | 6 | Move FFmpeg pure functions to `GPhilCoderCore` | Important | ✅ Done |
 
@@ -46,6 +47,24 @@ New `GPhilCoder` (App) files:
 - `BookmarkStore.swift` — bookmark create/resolve; `resolveSecurityScopedBookmark`
   now surfaces `isStale` via an `onStale` closure so stale bookmarks get
   re-issued instead of silently failing.
+
+Step 1 characterization coverage:
+
+- `Tests/GPhilCoderTests/EncodingCoordinatorTests.swift` — black-box tests for
+  successful audio encoding, existing-output skip behavior with the same-format
+  `-encoded` suffix, and cancellation preserving an existing output file.
+- `Tests/GPhilCoderTests/FolderSyncCoordinatorTests.swift` — black-box tests for
+  scan/sync copy-update-delete counts, no-op reruns, and update detection after
+  an origin file changes.
+- `Tests/GPhilCoderTests/AsyncTestSupport.swift` — shared async polling and
+  `UserDefaults` cleanup for view-model tests.
+
+The cancellation characterization test exposed an extra coordinator bug:
+`cancelEncoding()` cancelled the parent task but did not reliably terminate
+already-starting FFmpeg child processes. `FFmpegTool` now supports a
+run-scoped `ProcessRegistry`, and `EncoderViewModel` resets/terminates that
+registry around each encode run so cancelled encodes do not replace existing
+outputs.
 
 ### Residual
 
@@ -95,7 +114,7 @@ honest path is to **buy down the risk with tests first**, then extract.
 Risk-ordered. Each step is independently revertible. Gate every step with
 `swift build` + the tests named below staying green.
 
-### Step 1 — Characterization tests for the coordinators (keystone)
+### Step 1 — Characterization tests for the coordinators (keystone) — DONE
 
 **Risk:** lowest. **Leverage:** highest — this is what makes Steps 2–3 safe.
 
@@ -104,25 +123,24 @@ treat the view model as a black box against the real filesystem.
 `EncoderViewModel` is instantiable in a test (it's `@MainActor`; the test
 target already depends on `GPhilCoder`).
 
-Add `Tests/GPhilCoderTests/EncodingCoordinatorTests.swift`:
+Added `Tests/GPhilCoderTests/EncodingCoordinatorTests.swift`:
 
-- Build a view model, point it at a temp-dir output, feed it a tiny real
-  `.wav` fixture, run `startEncoding()`, assert job states reach `.succeeded`
-  and the output file exists. Gate on system `ffmpeg` with `XCTSkipUnless` so
-  the suite stays green on ffmpeg-less machines.
-- Assert `cancelEncoding()` mid-run leaves **no truncated output** (validates
-  the Phase-1 temp-replace end-to-end).
-- Assert the `existingOutputURLs` skip path and `-encoded` suffix integration.
+- Builds a view model, points it at a temp-dir output, feeds it a tiny real
+  `.wav` fixture, runs `startEncoding()`, and asserts job state reaches
+  `.succeeded` and the output file exists. Gated on system `ffmpeg` with
+  `XCTSkip`.
+- Asserts `cancelEncoding()` mid-run leaves an existing output untouched
+  (validates the Phase-1 temp-replace end-to-end).
+- Asserts the existing-output skip path and `-encoded` suffix integration.
 
-Add `Tests/GPhilCoderTests/FolderSyncCoordinatorTests.swift`:
+Added `Tests/GPhilCoderTests/FolderSyncCoordinatorTests.swift`:
 
-- Build two temp folder pairs, run `scanFolderSyncPlan()` then
-  `syncFoldersNow()`, assert copied/updated/deleted counts match
+- Builds temp folder pairs, runs `scanFolderSyncPlan()` then
+  `syncFoldersNow()`, and asserts copied/updated/deleted counts match
   `FolderSyncPlanner` expectations.
-- Assert re-running is a no-op; asserting a changed origin file triggers an
-  update.
+- Asserts re-running is a no-op, and a changed origin file triggers an update.
 
-**Gate:** `swift test` green (124 existing tests + new ones).
+**Gate:** `swift test` green (129 tests).
 
 ### Step 2 — Extract `EncodingCoordinator` (medium risk)
 

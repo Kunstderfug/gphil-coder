@@ -796,6 +796,7 @@ final class EncoderViewModel: ObservableObject {
     private var folderSyncPendingAfterCurrentRun = false
     private var isUpdatingSyncPairStatus = false
     private var isLoadingPersistedSettings = false
+    private let encodingProcesses = ProcessRegistry()
     private let securityScopes = SecurityScopeManager()
     private let bookmarks = BookmarkStore()
     private var mediaFileInventory: [MediaFileInventoryRecord] = []
@@ -5005,6 +5006,7 @@ final class EncoderViewModel: ObservableObject {
 
         guard prepareEncodingFileAccess(for: plannedJobs) else { return }
 
+        encodingProcesses.reset()
         jobs = plannedJobs
         jobStateFilter = nil
         isEncoding = true
@@ -5019,6 +5021,7 @@ final class EncoderViewModel: ObservableObject {
 
     func cancelEncoding() {
         encodeTask?.cancel()
+        encodingProcesses.terminateAll()
         statusMessage = "Stopping active encoding jobs..."
     }
 
@@ -7095,7 +7098,7 @@ final class EncoderViewModel: ObservableObject {
         return "\(summary.message) \(activeInputs.count) of \(inputs.count) queued file\(inputs.count == 1 ? "" : "s") active."
     }
 
-    private func addFileURLs(_ urls: [URL]) -> AddSummary {
+    func addFileURLs(_ urls: [URL]) -> AddSummary {
         var summary = AddSummary()
         var existing = Set(inputs.map { $0.url.standardizedFileURL.path })
         var additions: [AudioInputItem] = []
@@ -7425,6 +7428,7 @@ final class EncoderViewModel: ObservableObject {
     }
 
     private func runJobs(settings: EncodingSettingsSnapshot) async {
+        let processRegistry = encodingProcesses
         await withTaskGroup(of: JobResult.self) { group in
             var nextIndex = 0
             let initialCount = min(settings.parallelJobs, jobs.count)
@@ -7433,23 +7437,35 @@ final class EncoderViewModel: ObservableObject {
                 let job = markJobRunning(at: nextIndex)
                 let reporter = EncodingProgressReporter(model: self, jobID: job.id)
                 group.addTask {
-                    await Self.encode(job: job, settings: settings, progressReporter: reporter)
+                    await Self.encode(
+                        job: job,
+                        settings: settings,
+                        progressReporter: reporter,
+                        processRegistry: processRegistry
+                    )
                 }
                 nextIndex += 1
             }
 
             while let result = await group.next() {
-                apply(result)
-
                 if Task.isCancelled {
+                    group.cancelAll()
+                    apply(.cancelled(result.jobID))
                     continue
                 }
+
+                apply(result)
 
                 if nextIndex < jobs.count {
                     let job = markJobRunning(at: nextIndex)
                     let reporter = EncodingProgressReporter(model: self, jobID: job.id)
                     group.addTask {
-                        await Self.encode(job: job, settings: settings, progressReporter: reporter)
+                        await Self.encode(
+                            job: job,
+                            settings: settings,
+                            progressReporter: reporter,
+                            processRegistry: processRegistry
+                        )
                     }
                     nextIndex += 1
                 }
@@ -7507,17 +7523,21 @@ final class EncoderViewModel: ObservableObject {
     private static func encode(job: EncodeJob, settings: EncodingSettingsSnapshot) async
         -> JobResult
     {
-        await encode(job: job, settings: settings, progressReporter: nil)
+        await encode(job: job, settings: settings, progressReporter: nil, processRegistry: nil)
     }
 
     private static func encode(
         job: EncodeJob,
         settings: EncodingSettingsSnapshot,
-        progressReporter: EncodingProgressReporter?
+        progressReporter: EncodingProgressReporter?,
+        processRegistry: ProcessRegistry?
     ) async
         -> JobResult
     {
-        let encoder = FFmpegEncoder(ffmpegURL: settings.ffmpegURL)
+        let encoder = FFmpegEncoder(
+            ffmpegURL: settings.ffmpegURL,
+            processRegistry: processRegistry
+        )
 
         do {
             let output = try await encoder.encode(
