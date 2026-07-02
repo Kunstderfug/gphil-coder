@@ -1,6 +1,6 @@
 # Refactoring plan: EncoderViewModel decomposition
 
-> **Status as of commit `77e9f40` plus Steps 1-3 implementation.** Update this
+> **Status as of commit `77e9f40` plus Steps 1-4 implementation.** Update this
 > file as each step lands.
 > This document records what the 2026-07 code-review-driven refactor
 > accomplished and what remains, so the next maintainer doesn't have to
@@ -8,8 +8,8 @@
 
 ## Current status
 
-- **Branch:** `main`, 11 commits ahead of `origin/main`.
-- **Build:** clean. **Tests:** 134 pass (baseline before the refactor was 51).
+- **Branch:** `main`, 12 commits ahead of `origin/main`.
+- **Build:** clean. **Tests:** 140 pass (baseline before the refactor was 51).
 - **No open correctness bugs** — all three Critical issues from the code review
   are closed.
 
@@ -20,7 +20,7 @@
 | 1 | Temp-write-then-replace in `FFmpegEncoder` (truncated output on cancel/failure) | Critical | ✅ Done |
 | 2 | Stale security-scoped bookmark fix | Critical | ✅ Done (absorbed into `BookmarkStore`) |
 | 3 | Silent-decode hardening, all 4 persisted payloads | Critical | ✅ Done |
-| 4 | God-Object decomposition of `EncoderViewModel` | Important | 🔶 Steps 1-3 done; media/settings extraction deferred |
+| 4 | God-Object decomposition of `EncoderViewModel` | Important | 🔶 Steps 1-4 done; media/settings extraction pending or deferred |
 | 5 | Move `RestorePlanner` to `GPhilCoderCore` | Important | ✅ Done |
 | 6 | Move FFmpeg pure functions to `GPhilCoderCore` | Important | ✅ Done |
 
@@ -66,6 +66,10 @@ Step 1 characterization coverage:
   filtering, filtered deletes, and overwrite-off skips.
 - `Tests/GPhilCoderTests/AsyncTestSupport.swift` — shared async polling and
   `UserDefaults` cleanup for view-model tests.
+- `Tests/GPhilCoderTests/MediaFileManagerCoordinatorTests.swift` — black-box
+  tests for media copy scan filtering, no-conflict copy execution, destination
+  conflict detection, delete preview inventory use across multiple source
+  roots, rename preview rebuilds, and rename conflict blocking.
 
 The cancellation characterization test exposed an extra coordinator bug:
 `cancelEncoding()` cancelled the parent task but did not reliably terminate
@@ -93,7 +97,9 @@ mostly entry/configuration wrappers plus two larger domains:
 - **MediaFileManager** — copy/delete/rename/undo-redo + `MediaFileInventory`
   (the largest remaining domain).
 - **SettingsStore** — the 69 `@Published didSet → UserDefaults.standard`
-  writes plus the `isLoadingPersistedSettings` guard dance.
+  writes plus the `isLoadingPersistedSettings` guard dance. A full state-owning
+  store is still deferred; the safer next move is a persistence-helper
+  extraction that leaves all `@Published` properties on `EncoderViewModel`.
 
 ---
 
@@ -200,12 +206,53 @@ Same shape as Step 2. Added `Sources/GPhilCoder/FolderSyncCoordinator.swift`.
 **Gate:** `swift build` + Step-1 tests green. **Net:** ~300 more lines
 out.
 
-### Step 4 — `SettingsStore` (DEFER)
+### Step 4 — Characterize `MediaFileManager` view-model behavior — DONE
+
+Added `Tests/GPhilCoderTests/MediaFileManagerCoordinatorTests.swift` as a
+black-box safety net before extracting the largest remaining domain.
+
+- Covers media copy scan filtering by selected extension and file-name query.
+- Covers no-conflict filtered copy into nested destination folders without
+  invoking conflict UI.
+- Covers destination conflict detection without mutating existing files.
+- Covers delete preview rebuilding from inventory across multiple source roots.
+- Covers rename preview rebuilding when settings change.
+- Covers rename conflict previews blocking apply.
+
+Headless gaps remain for overwrite/skip conflict application, filtered
+delete-to-Trash, rename apply, undo, and redo because those paths currently
+cross `NSAlert` confirmation and/or macOS Trash behavior.
+
+**Gate:** `swift test --filter MediaFileManagerCoordinatorTests` green, then
+full `swift test` green (140 tests).
+
+### Step 5 — Extract `MediaFileCoordinator` (medium-high risk)
+
+Same no-UI-rewrite shape as Steps 2-3. New
+`Sources/GPhilCoder/MediaFileCoordinator.swift`.
+
+- **Move in:** media file inventory scan/cache, delete/rename preview rebuilds,
+  copy scan/copy run loop, queued copy run loop, filtered delete run loop,
+  filtered rename run loop, rename undo/redo run loop, `mediaCopyTask`,
+  `mediaFileNameFilterRefreshTask`, and the media copy/rename status helpers.
+- **Keep on the view model for now:** `@Published` media settings, plans,
+  progress, busy flags, queue, and rename settings; `NSOpenPanel`/`NSSavePanel`
+  and `NSAlert` construction; queue/input mutation callbacks; persistence
+  writes that still interact with `isLoadingPersistedSettings`.
+- **Wire via callbacks:** setters for plans/progress/busy flags/status, prompt
+  callbacks for conflict/trash/rename confirmation, persistence hooks for
+  trash ledgers and rename history, and side-effect hooks for removing or
+  restoring queue inputs.
+
+**Gate:** `swift build` + `MediaFileManagerCoordinatorTests` + full
+`swift test` green.
+
+### Step 6 — `SettingsPersistence` first; full `SettingsStore` still DEFER
 
 **Recommendation: do not attempt now.**
 
-The 69 `didSet → UserDefaults` writes are the review's other target, but
-extracting them means either:
+The 69 `didSet → UserDefaults` writes are the review's other target, but a
+full state-owning extraction means either:
 
 - exposing a `@Published var settings: SettingsStore` and rewiring 34
   `$model.*` bindings to `$model.settings.*` across the untested 3,909-line
@@ -216,8 +263,17 @@ extracting them means either:
 
 The dual-persistence drift risk this addresses is **already mitigated** by the
 Phase-3 versioned-decode work (`VersionedBlob` + `DecodeProblem` surfacing).
-Revisit only after `ContentView` has widget-test coverage — a separate, large
-effort outside this plan's scope.
+
+Safer preliminary step: extract a `SettingsPersistence` helper that owns
+`UserDefaults` key access, scalar read/write helpers, directory/UUID helpers,
+and JSON blob encode/decode, while leaving every `@Published` property and
+side-effecting `didSet` on `EncoderViewModel`. Attempt that only after adding
+view-model persistence characterization tests for encoding settings,
+HEVC/video load order, folder-sync settings, media copy settings, media rename
+settings/history, and preset selection normalization.
+
+Revisit full `SettingsStore` only after `ContentView` has widget-test coverage
+— a separate, large effort outside this plan's scope.
 
 ---
 
