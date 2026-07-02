@@ -20,7 +20,7 @@
 | 1 | Temp-write-then-replace in `FFmpegEncoder` (truncated output on cancel/failure) | Critical | ✅ Done |
 | 2 | Stale security-scoped bookmark fix | Critical | ✅ Done (absorbed into `BookmarkStore`) |
 | 3 | Silent-decode hardening, all 4 persisted payloads | Critical | ✅ Done |
-| 4 | God-Object decomposition of `EncoderViewModel` | Important | 🔶 Steps 1-4 done; media/settings extraction pending or deferred |
+| 4 | God-Object decomposition of `EncoderViewModel` | Important | 🔶 Steps 1-4 done; Step 5 copy scan/execution slice done; remaining media/settings extraction pending or deferred |
 | 5 | Move `RestorePlanner` to `GPhilCoderCore` | Important | ✅ Done |
 | 6 | Move FFmpeg pure functions to `GPhilCoderCore` | Important | ✅ Done |
 
@@ -53,6 +53,10 @@ New `GPhilCoder` (App) files:
 - `FolderSyncCoordinator.swift` — owns the folder-sync scan/apply run loop,
   auto-sync debounce, FSEvents watcher, pending rerun flag, and completion
   messaging callbacks while `EncoderViewModel` keeps the published UI surface.
+- `MediaFileCoordinator.swift` — first Step 5 slice; owns media copy scan and
+  immediate copy execution, including progress/status updates and completion
+  callbacks, while `EncoderViewModel` keeps published UI state, prompts, and
+  queue/delete/rename execution for now.
 
 Step 1 characterization coverage:
 
@@ -226,7 +230,18 @@ cross `NSAlert` confirmation and/or macOS Trash behavior.
 **Gate:** `swift test --filter MediaFileManagerCoordinatorTests` green, then
 full `swift test` green (140 tests).
 
-### Step 5 — Extract `MediaFileCoordinator` (medium-high risk)
+### Step 5 — Extract `MediaFileCoordinator` (medium-high risk) — IN PROGRESS
+
+First slice landed: `Sources/GPhilCoder/MediaFileCoordinator.swift` now owns
+`scanMediaCopyFiles()` and immediate `copyFilteredMediaFiles()` execution via
+`MediaCopyRunConfiguration` and setter/prompt callbacks. `EncoderViewModel`
+keeps the public SwiftUI-bound entry points, published state, validation alert,
+conflict prompt, and completion notification hook.
+
+Still pending in this step: media inventory scan/cache, delete and rename
+preview rebuilds, queued copy execution, filtered delete execution, filtered
+rename execution, undo/redo execution, debounce/invalidation mechanics, and
+status helpers that are still used by the remaining view-model media paths.
 
 Same no-UI-rewrite shape as Steps 2-3. New
 `Sources/GPhilCoder/MediaFileCoordinator.swift`.

@@ -877,6 +877,39 @@ final class EncoderViewModel: ObservableObject {
         }
     )
 
+    private lazy var mediaFileCoordinator = MediaFileCoordinator(
+        setCopyPlan: { [weak self] plan in
+            self?.mediaCopyPlan = plan
+        },
+        setProgress: { [weak self] progress in
+            self?.mediaCopyProgress = progress
+        },
+        setScanning: { [weak self] isScanning in
+            self?.isMediaCopyScanning = isScanning
+        },
+        setCopying: { [weak self] isCopying in
+            self?.isMediaCopying = isCopying
+        },
+        setStatusMessage: { [weak self] message in
+            self?.statusMessage = message
+        },
+        resetForCopyRun: { [weak self] in
+            self?.resetForMediaCopyCoordinatorRun()
+        },
+        validateFolders: { [weak self] sourceRoot, destinationRoot in
+            self?.validateMediaCopyFolders(
+                sourceRoot: sourceRoot,
+                destinationRoot: destinationRoot
+            ) ?? false
+        },
+        promptConflictResolution: { [weak self] plans in
+            self?.promptMediaCopyConflictResolution(for: plans)
+        },
+        notifyCompletion: { [weak self] title, body in
+            self?.notifyCompletionIfNeeded(title: title, body: body)
+        }
+    )
+
     var processorLimit: Int {
         max(1, ProcessInfo.processInfo.activeProcessorCount)
     }
@@ -1700,6 +1733,17 @@ final class EncoderViewModel: ObservableObject {
 
     private var currentMediaFileNameFilter: MediaFileNameFilter {
         MediaFileNameFilter(query: mediaFileNameFilterQuery)
+    }
+
+    private var mediaCopyRunConfiguration: MediaCopyRunConfiguration {
+        MediaCopyRunConfiguration(
+            sourceRoot: primaryMediaCopySourceRoot,
+            destinationRoot: mediaCopyDestinationRoot,
+            filter: mediaCopyFilter,
+            selectedExtensions: selectedExtensions(for: mediaCopyFilter),
+            fileNameFilter: currentMediaFileNameFilter,
+            previewLimit: Self.mediaPreviewLimit
+        )
     }
 
     private var syncSelectedFileExtensions: Set<String>? {
@@ -2846,11 +2890,11 @@ final class EncoderViewModel: ObservableObject {
     }
 
     func scanMediaCopyFiles() {
-        runMediaCopyPreflight(copyAfterScan: false)
+        mediaFileCoordinator.scanCopyFiles(configuration: mediaCopyRunConfiguration)
     }
 
     func copyFilteredMediaFiles() {
-        runMediaCopyPreflight(copyAfterScan: true)
+        mediaFileCoordinator.copyFilteredFiles(configuration: mediaCopyRunConfiguration)
     }
 
     func deleteFilteredMediaFiles() {
@@ -3007,6 +3051,7 @@ final class EncoderViewModel: ObservableObject {
 
     func cancelMediaCopy() {
         guard isMediaCopyBusy else { return }
+        mediaFileCoordinator.cancel()
         mediaCopyTask?.cancel()
         mediaCopyTask = nil
         isMediaCopyScanning = false
@@ -3017,6 +3062,21 @@ final class EncoderViewModel: ObservableObject {
         mediaCopyProgress = nil
         currentMediaCopyWorkflowID = nil
         statusMessage = "File management operation cancelled."
+    }
+
+    private func resetForMediaCopyCoordinatorRun() {
+        mediaCopyTask?.cancel()
+        mediaCopyTask = nil
+        mediaCopyPlan = nil
+        mediaDeletePlan = nil
+        mediaRenamePlan = nil
+        isMediaRenamePreviewStale = false
+        mediaCopyProgress = nil
+        currentMediaCopyWorkflowID = nil
+        isMediaCopyScanning = false
+        isMediaCopying = false
+        isMediaDeleting = false
+        isMediaRenaming = false
     }
 
     func buildBackupRestorePlan() {
@@ -3450,136 +3510,6 @@ final class EncoderViewModel: ObservableObject {
         isMediaRenamePreviewStale = false
         mediaCopyProgress = nil
         statusMessage = Self.mediaRenameScanStatusMessage(for: plan)
-    }
-
-    private func runMediaCopyPreflight(copyAfterScan: Bool) {
-        guard let sourceRoot = primaryMediaCopySourceRoot,
-            let destinationRoot = mediaCopyDestinationRoot
-        else {
-            statusMessage = "Choose source and destination folders before copying media files."
-            return
-        }
-
-        guard validateMediaCopyFolders(sourceRoot: sourceRoot, destinationRoot: destinationRoot)
-        else {
-            return
-        }
-
-        mediaCopyTask?.cancel()
-        mediaCopyPlan = nil
-        mediaDeletePlan = nil
-        mediaRenamePlan = nil
-        isMediaRenamePreviewStale = false
-        mediaCopyProgress = nil
-        isMediaCopyScanning = true
-        isMediaCopying = false
-        isMediaDeleting = false
-        isMediaRenaming = false
-
-        let filter = mediaCopyFilter
-        let selectedExtensions = selectedExtensions(for: filter)
-        let fileNameFilter = currentMediaFileNameFilter
-        let candidateLimit = copyAfterScan ? nil : Self.mediaPreviewLimit
-        statusMessage =
-            "Scanning \(filter.fileTypeName) files in \(sourceRoot.lastPathComponent)..."
-
-        mediaCopyTask = Task { [weak self] in
-            do {
-                let worker = Task.detached(priority: .userInitiated) {
-                    try MediaCopyPlanner.buildPlan(
-                        sourceRoot: sourceRoot,
-                        destinationRoot: destinationRoot,
-                        filter: filter,
-                        selectedExtensions: selectedExtensions,
-                        fileNameFilter: fileNameFilter,
-                        candidateLimit: candidateLimit
-                    )
-                }
-                let plan = try await withTaskCancellationHandler {
-                    try await worker.value
-                } onCancel: {
-                    worker.cancel()
-                }
-
-                guard !Task.isCancelled else { return }
-
-                self?.mediaCopyPlan = plan
-                self?.isMediaCopyScanning = false
-
-                guard copyAfterScan else {
-                    self?.statusMessage = Self.mediaCopyScanStatusMessage(for: plan)
-                    self?.mediaCopyTask = nil
-                    return
-                }
-
-                guard plan.hasCopyableContent else {
-                    let completionMessage =
-                        "No \(filter.fileTypeName) files found in \(sourceRoot.lastPathComponent)."
-                    self?.statusMessage = completionMessage
-                    self?.notifyCompletionIfNeeded(
-                        title: "File copy finished",
-                        body: completionMessage
-                    )
-                    self?.mediaCopyTask = nil
-                    return
-                }
-
-                guard let resolution = self?.promptMediaCopyConflictResolution(for: [plan]) else {
-                    self?.statusMessage = "Media copy cancelled."
-                    self?.mediaCopyTask = nil
-                    return
-                }
-
-                self?.isMediaCopying = true
-                let progressStartedAt = Date()
-                self?.mediaCopyProgress = MediaCopyProgress(
-                    completed: 0,
-                    total: plan.candidates.count,
-                    copied: 0,
-                    skippedExisting: 0,
-                    failed: 0,
-                    copiedBytes: 0,
-                    totalBytes: plan.totalSizeBytes,
-                    startedAt: progressStartedAt,
-                    updatedAt: progressStartedAt,
-                    currentName: nil
-                )
-                self?.statusMessage =
-                    "Copying \(plan.candidates.count) \(filter.fileTypeName) file\(plan.candidates.count == 1 ? "" : "s")..."
-
-                let result = await self?.copyMediaCopyPlan(plan, conflictResolution: resolution)
-                    ?? MediaCopyResult(total: plan.candidates.count, cancelled: true)
-
-                guard !Task.isCancelled else { return }
-
-                self?.isMediaCopying = false
-                self?.mediaCopyTask = nil
-                let completionMessage = Self.mediaCopyResultStatusMessage(
-                    result,
-                    filter: filter,
-                    destinationRoot: destinationRoot
-                )
-                self?.statusMessage = completionMessage
-                self?.notifyCompletionIfNeeded(
-                    title: "File copy finished",
-                    body: completionMessage
-                )
-            } catch is CancellationError {
-                guard !Task.isCancelled else { return }
-                self?.isMediaCopyScanning = false
-                self?.isMediaCopying = false
-                self?.mediaCopyTask = nil
-                self?.statusMessage = "Media copy cancelled."
-            } catch {
-                guard !Task.isCancelled else { return }
-                self?.mediaCopyPlan = nil
-                self?.mediaCopyProgress = nil
-                self?.isMediaCopyScanning = false
-                self?.isMediaCopying = false
-                self?.mediaCopyTask = nil
-                self?.statusMessage = "Could not prepare media copy: \(error.localizedDescription)"
-            }
-        }
     }
 
     private func runFilteredMediaTrash() {
