@@ -53,10 +53,11 @@ New `GPhilCoder` (App) files:
 - `FolderSyncCoordinator.swift` — owns the folder-sync scan/apply run loop,
   auto-sync debounce, FSEvents watcher, pending rerun flag, and completion
   messaging callbacks while `EncoderViewModel` keeps the published UI surface.
-- `MediaFileCoordinator.swift` — first Step 5 slice; owns media copy scan and
-  immediate copy execution, including progress/status updates and completion
-  callbacks, while `EncoderViewModel` keeps published UI state, prompts, and
-  queue/delete/rename execution for now.
+- `MediaFileCoordinator.swift` — Step 5 slices; owns media copy scan,
+  immediate copy execution, media inventory scan/cache coordination, and
+  delete/rename preview rebuilds, including progress/status updates and
+  completion callbacks, while `EncoderViewModel` keeps published UI state,
+  prompts, and queue/delete/rename execution for now.
 
 Step 1 characterization coverage:
 
@@ -84,7 +85,7 @@ outputs.
 
 ### Residual
 
-`EncoderViewModel` is still **7,160 lines / 236 functions / 69 `didSet`
+`EncoderViewModel` is still large (about 6,950 lines) with **69 `didSet`
 observers**. The security-scope/bookmark logic (~27 call sites), encoding run
 loop, and folder-sync run loop are extracted. The remaining view-model code is
 mostly entry/configuration wrappers plus two larger domains:
@@ -98,8 +99,9 @@ mostly entry/configuration wrappers plus two larger domains:
   Folder validation, bookmark authorization, persistence, and collision checks
   remain on the view model because they interact with UI prompts and stored
   `syncFolderPairs`; execution delegates to `FolderSyncCoordinator`.
-- **MediaFileManager** — copy/delete/rename/undo-redo + `MediaFileInventory`
-  (the largest remaining domain).
+- **MediaFileManager** — queued copy execution, filtered delete execution,
+  filtered rename execution, undo/redo execution, and their prompt/history
+  side effects (the largest remaining domain).
 - **SettingsStore** — the 69 `@Published didSet → UserDefaults.standard`
   writes plus the `isLoadingPersistedSettings` guard dance. A full state-owning
   store is still deferred; the safer next move is a persistence-helper
@@ -232,22 +234,25 @@ full `swift test` green (140 tests).
 
 ### Step 5 — Extract `MediaFileCoordinator` (medium-high risk) — IN PROGRESS
 
-First slice landed: `Sources/GPhilCoder/MediaFileCoordinator.swift` now owns
-`scanMediaCopyFiles()` and immediate `copyFilteredMediaFiles()` execution via
-`MediaCopyRunConfiguration` and setter/prompt callbacks. `EncoderViewModel`
-keeps the public SwiftUI-bound entry points, published state, validation alert,
-conflict prompt, and completion notification hook.
+Second slice landed: `Sources/GPhilCoder/MediaFileCoordinator.swift` now owns
+`scanMediaCopyFiles()`, immediate `copyFilteredMediaFiles()` execution, media
+inventory scanning, and delete/rename preview rebuilds via
+`MediaCopyRunConfiguration`, `MediaPreviewConfiguration`, and setter/prompt
+callbacks. `EncoderViewModel` keeps the public SwiftUI-bound entry points,
+published state, validation alert, conflict/trash/rename prompts, and
+completion notification hook.
 
-Still pending in this step: media inventory scan/cache, delete and rename
-preview rebuilds, queued copy execution, filtered delete execution, filtered
-rename execution, undo/redo execution, debounce/invalidation mechanics, and
-status helpers that are still used by the remaining view-model media paths.
+Still pending in this step: queued copy execution, filtered delete execution,
+filtered rename execution, undo/redo execution, deeper debounce/invalidation
+mechanics, and status helpers that are still used by the remaining view-model
+media paths.
 
 Same no-UI-rewrite shape as Steps 2-3. New
 `Sources/GPhilCoder/MediaFileCoordinator.swift`.
 
-- **Move in:** media file inventory scan/cache, delete/rename preview rebuilds,
-  copy scan/copy run loop, queued copy run loop, filtered delete run loop,
+- **Moved in:** media file inventory scan/cache, delete/rename preview
+  rebuilds, and copy scan/copy run loop.
+- **Still move in:** queued copy run loop, filtered delete run loop,
   filtered rename run loop, rename undo/redo run loop, `mediaCopyTask`,
   `mediaFileNameFilterRefreshTask`, and the media copy/rename status helpers.
 - **Keep on the view model for now:** `@Published` media settings, plans,

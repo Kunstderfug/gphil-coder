@@ -881,6 +881,15 @@ final class EncoderViewModel: ObservableObject {
         setCopyPlan: { [weak self] plan in
             self?.mediaCopyPlan = plan
         },
+        setDeletePlan: { [weak self] plan in
+            self?.mediaDeletePlan = plan
+        },
+        setRenamePlan: { [weak self] plan in
+            self?.mediaRenamePlan = plan
+        },
+        setRenamePreviewStale: { [weak self] isStale in
+            self?.isMediaRenamePreviewStale = isStale
+        },
         setProgress: { [weak self] progress in
             self?.mediaCopyProgress = progress
         },
@@ -890,11 +899,36 @@ final class EncoderViewModel: ObservableObject {
         setCopying: { [weak self] isCopying in
             self?.isMediaCopying = isCopying
         },
+        setDeleting: { [weak self] isDeleting in
+            self?.isMediaDeleting = isDeleting
+        },
+        setRenaming: { [weak self] isRenaming in
+            self?.isMediaRenaming = isRenaming
+        },
+        setCurrentWorkflowID: { [weak self] workflowID in
+            self?.currentMediaCopyWorkflowID = workflowID
+        },
         setStatusMessage: { [weak self] message in
             self?.statusMessage = message
         },
         resetForCopyRun: { [weak self] in
             self?.resetForMediaCopyCoordinatorRun()
+        },
+        setInventory: { [weak self] inventory, sourceRootPaths in
+            self?.mediaFileInventory = inventory
+            self?.mediaFileInventorySourceRootPaths = sourceRootPaths
+        },
+        getInventory: { [weak self] in
+            self?.mediaFileInventory ?? []
+        },
+        getInventorySourceRootPaths: { [weak self] in
+            self?.mediaFileInventorySourceRootPaths ?? []
+        },
+        getActiveMode: { [weak self] in
+            self?.fileManagementMode ?? .copy
+        },
+        makePreviewConfiguration: { [weak self] in
+            self?.mediaPreviewConfiguration ?? MediaPreviewConfiguration.empty
         },
         validateFolders: { [weak self] sourceRoot, destinationRoot in
             self?.validateMediaCopyFolders(
@@ -1742,6 +1776,17 @@ final class EncoderViewModel: ObservableObject {
             filter: mediaCopyFilter,
             selectedExtensions: selectedExtensions(for: mediaCopyFilter),
             fileNameFilter: currentMediaFileNameFilter,
+            previewLimit: Self.mediaPreviewLimit
+        )
+    }
+
+    private var mediaPreviewConfiguration: MediaPreviewConfiguration {
+        MediaPreviewConfiguration(
+            sourceRoots: mediaCopySourceRoots,
+            filter: mediaCopyFilter,
+            selectedExtensions: selectedExtensions(for: mediaCopyFilter),
+            fileNameFilter: currentMediaFileNameFilter,
+            renameSettings: currentMediaRenameSettings(),
             previewLimit: Self.mediaPreviewLimit
         )
     }
@@ -3335,11 +3380,11 @@ final class EncoderViewModel: ObservableObject {
     }
 
     func refreshMediaDeletePreview() {
-        scanMediaFileInventoryThenRefresh(.delete)
+        mediaFileCoordinator.refreshDeletePreview(configuration: mediaPreviewConfiguration)
     }
 
     func refreshMediaRenamePreview() {
-        scanMediaFileInventoryThenRefresh(.rename)
+        mediaFileCoordinator.refreshRenamePreview(configuration: mediaPreviewConfiguration)
     }
 
     private func refreshActiveFileManagementPreviewIfNeeded() {
@@ -3355,11 +3400,7 @@ final class EncoderViewModel: ObservableObject {
             return
         }
 
-        if mediaFileInventoryMatchesCurrentSources {
-            rebuildMediaDeletePreviewFromInventory()
-        } else {
-            scanMediaFileInventoryThenRefresh(.delete)
-        }
+        mediaFileCoordinator.refreshDeletePreviewIfNeeded(configuration: mediaPreviewConfiguration)
     }
 
     private func refreshMediaRenamePreviewIfNeeded() {
@@ -3371,145 +3412,13 @@ final class EncoderViewModel: ObservableObject {
             return
         }
 
-        if mediaFileInventoryMatchesCurrentSources {
-            rebuildMediaRenamePreviewFromInventory()
-        } else {
-            scanMediaFileInventoryThenRefresh(.rename)
-        }
-    }
-
-    private func scanMediaFileInventoryThenRefresh(_ targetMode: FileManagementMode) {
-        guard targetMode == .delete || targetMode == .rename else { return }
-        guard !mediaCopySourceRoots.isEmpty, !isMediaCopyBusy else { return }
-        if targetMode == .delete {
-            guard mediaCopyHasSelectedExtensionsForCurrentFilter else {
-                mediaDeletePlan = nil
-                return
-            }
-        } else {
-            guard mediaCopyHasSelectedExtensionsForCurrentFilter else {
-                mediaRenamePlan = nil
-                isMediaRenamePreviewStale = false
-                return
-            }
-        }
-
-        let sourceRoots = mediaCopySourceRoots
-
-        mediaCopyTask?.cancel()
-        mediaCopyPlan = nil
-        mediaCopyProgress = nil
-        currentMediaCopyWorkflowID = nil
-        isMediaCopyScanning = true
-        isMediaCopying = false
-        isMediaDeleting = false
-        isMediaRenaming = false
-        statusMessage =
-            "Scanning \(sourceRoots.count) source folder\(sourceRoots.count == 1 ? "" : "s") into memory..."
-
-        mediaCopyTask = Task { [weak self] in
-            do {
-                let worker = Task.detached(priority: .userInitiated) {
-                    try MediaCopyPlanner.scanFileInventory(sourceRoots: sourceRoots)
-                }
-                let inventory = try await withTaskCancellationHandler {
-                    try await worker.value
-                } onCancel: {
-                    worker.cancel()
-                }
-
-                guard !Task.isCancelled else { return }
-
-                guard let self else { return }
-
-                self.mediaFileInventory = inventory
-                self.mediaFileInventorySourceRootPaths = sourceRoots.map {
-                    $0.standardizedFileURL.path
-                }
-                self.isMediaCopyScanning = false
-                self.mediaCopyTask = nil
-
-                guard self.fileManagementMode == targetMode else {
-                    self.refreshActiveFileManagementPreviewIfNeeded()
-                    return
-                }
-
-                switch targetMode {
-                case .delete:
-                    self.rebuildMediaDeletePreviewFromInventory()
-                case .rename:
-                    self.rebuildMediaRenamePreviewFromInventory()
-                case .copy:
-                    break
-                }
-            } catch is CancellationError {
-                guard !Task.isCancelled else { return }
-                self?.isMediaCopyScanning = false
-                self?.mediaCopyTask = nil
-                self?.statusMessage = "File inventory scan cancelled."
-            } catch {
-                guard !Task.isCancelled else { return }
-                self?.mediaFileInventory = []
-                self?.mediaFileInventorySourceRootPaths = []
-                if targetMode == .delete {
-                    self?.mediaDeletePlan = nil
-                } else {
-                    self?.mediaRenamePlan = nil
-                    self?.isMediaRenamePreviewStale = false
-                }
-                self?.mediaCopyProgress = nil
-                self?.isMediaCopyScanning = false
-                self?.mediaCopyTask = nil
-                self?.statusMessage =
-                    "Could not scan source folders: \(error.localizedDescription)"
-            }
-        }
-    }
-
-    private func rebuildMediaDeletePreviewFromInventory() {
-        guard mediaFileInventoryMatchesCurrentSources else {
-            scanMediaFileInventoryThenRefresh(.delete)
-            return
-        }
-
-        let plan = MediaCopyPlanner.buildDeletePlan(
-            sourceRoots: mediaCopySourceRoots,
-            filter: mediaCopyFilter,
-            selectedExtensions: currentMediaCopySelectedExtensions,
-            fileNameFilter: currentMediaFileNameFilter,
-            candidateLimit: Self.mediaPreviewLimit,
-            inventory: mediaFileInventory
-        )
-        mediaCopyPlan = nil
-        mediaDeletePlan = plan
-        mediaRenamePlan = nil
-        isMediaRenamePreviewStale = false
-        mediaCopyProgress = nil
-        statusMessage = Self.mediaDeleteScanStatusMessage(for: plan)
+        mediaFileCoordinator.refreshRenamePreviewIfNeeded(configuration: mediaPreviewConfiguration)
     }
 
     private func rebuildMediaRenamePreviewFromInventory() {
-        guard mediaFileInventoryMatchesCurrentSources else {
-            scanMediaFileInventoryThenRefresh(.rename)
-            return
-        }
-
-        let filter = mediaCopyFilter
-        let plan = MediaCopyPlanner.buildRenamePlan(
-            sourceRoots: mediaCopySourceRoots,
-            filter: filter,
-            selectedExtensions: selectedExtensions(for: filter),
-            fileNameFilter: currentMediaFileNameFilter,
-            itemLimit: Self.mediaPreviewLimit,
-            settings: currentMediaRenameSettings(),
-            inventory: mediaFileInventory
+        mediaFileCoordinator.rebuildRenamePreviewFromInventory(
+            configuration: mediaPreviewConfiguration
         )
-        mediaCopyPlan = nil
-        mediaDeletePlan = nil
-        mediaRenamePlan = plan
-        isMediaRenamePreviewStale = false
-        mediaCopyProgress = nil
-        statusMessage = Self.mediaRenameScanStatusMessage(for: plan)
     }
 
     private func runFilteredMediaTrash() {
@@ -6868,42 +6777,6 @@ final class EncoderViewModel: ObservableObject {
             && currentSelectedInputExtensions.contains(fileExtension)
     }
 
-    nonisolated private static func mediaCopyScanStatusMessage(for plan: MediaCopyPlan) -> String {
-        guard plan.hasCopyableContent else {
-            return "No \(plan.filter.fileTypeName) files found in \(plan.sourceRoot.lastPathComponent)."
-        }
-
-        var details = [
-            "Found \(plan.candidateCount) \(plan.filter.fileTypeName) file\(plan.candidateCount == 1 ? "" : "s")",
-            "totaling \(plan.totalSizeBytes.formattedFileSize)"
-        ]
-        if plan.directoryCount > 0 {
-            details.append(
-                "\(plan.directoryCount) folder\(plan.directoryCount == 1 ? "" : "s")"
-            )
-        }
-        if plan.conflictCount > 0 {
-            details.append(
-                "\(plan.conflictCount) existing destination file\(plan.conflictCount == 1 ? "" : "s")"
-            )
-        }
-        return details.joined(separator: ", ") + "."
-    }
-
-    nonisolated private static func mediaDeleteScanStatusMessage(for plan: MediaDeletePlan) -> String {
-        let scopeDescription = mediaDeleteScopeDescription(
-            filter: plan.filter,
-            selectedExtensions: plan.selectedExtensions,
-            fileNameFilter: plan.fileNameFilter
-        )
-        guard plan.hasDeletableContent else {
-            return "No files matching \(scopeDescription) were found in the selected source folders."
-        }
-
-        return
-            "Found \(plan.candidateCount) file\(plan.candidateCount == 1 ? "" : "s") matching \(scopeDescription), totaling \(plan.totalSizeBytes.formattedFileSize)."
-    }
-
     nonisolated private static func mediaDeleteScopeDescription(
         filter: MediaFileFilter,
         selectedExtensions: Set<String>,
@@ -6916,61 +6789,6 @@ final class EncoderViewModel: ObservableObject {
         let nameQuery = fileNameFilter.trimmedQuery
         guard !nameQuery.isEmpty else { return typeDescription }
         return "\(typeDescription) with names containing \"\(nameQuery)\""
-    }
-
-    nonisolated private static func mediaRenameScanStatusMessage(for plan: MediaRenamePlan) -> String {
-        guard plan.hasRenameContent else {
-            if let selectedExtensions = plan.selectedExtensions {
-                return "No \(plan.filter.fileTypeName) files matching \(plan.filter.readableExtensionList(selectedExtensions: selectedExtensions)) were found in the selected source folders."
-            }
-            return "No matching files were found in the selected source folders."
-        }
-
-        var details = [
-            "Found \(plan.itemCount) file\(plan.itemCount == 1 ? "" : "s") for rename preview",
-            "\(plan.readyCount) ready"
-        ]
-        if plan.unchangedCount > 0 {
-            details.append("\(plan.unchangedCount) unchanged")
-        }
-        if plan.blockedCount > 0 {
-            details.append("\(plan.blockedCount) blocked")
-        }
-        details.append("totaling \(plan.totalSizeBytes.formattedFileSize)")
-        return details.joined(separator: ", ") + "."
-    }
-
-    nonisolated private static func mediaCopyResultStatusMessage(
-        _ result: MediaCopyResult,
-        filter: MediaFileFilter,
-        destinationRoot: URL
-    ) -> String {
-        if result.cancelled {
-            return "Media copy cancelled after \(result.copied) copied file\(result.copied == 1 ? "" : "s")."
-        }
-
-        var details = [
-            "Copied \(result.copied) \(filter.fileTypeName) file\(result.copied == 1 ? "" : "s") to \(destinationRoot.lastPathComponent)."
-        ]
-        if result.createdDirectories > 0 {
-            details.append(
-                "Created \(result.createdDirectories) folder\(result.createdDirectories == 1 ? "" : "s")."
-            )
-        }
-        if result.skippedExisting > 0 {
-            details.append("Skipped \(result.skippedExisting) existing file\(result.skippedExisting == 1 ? "" : "s").")
-        }
-        if result.failed > 0 {
-            details.append(
-                "Failed \(result.failed): \(result.failedNames.prefix(3).joined(separator: ", "))\(result.failedNames.count > 3 ? "..." : "")."
-            )
-        }
-        if result.failedDirectories > 0 {
-            details.append(
-                "Failed \(result.failedDirectories) folder\(result.failedDirectories == 1 ? "" : "s"): \(result.failedDirectoryNames.prefix(3).joined(separator: ", "))\(result.failedDirectoryNames.count > 3 ? "..." : "")."
-            )
-        }
-        return details.joined(separator: " ")
     }
 
     nonisolated private static func mediaRenameResultStatusMessage(

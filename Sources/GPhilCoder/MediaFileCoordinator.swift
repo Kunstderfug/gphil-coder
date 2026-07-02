@@ -27,14 +27,43 @@ struct MediaCopyRunConfiguration {
     let previewLimit: Int
 }
 
+struct MediaPreviewConfiguration {
+    let sourceRoots: [URL]
+    let filter: MediaFileFilter
+    let selectedExtensions: Set<String>?
+    let fileNameFilter: MediaFileNameFilter
+    let renameSettings: MediaRenameSettings
+    let previewLimit: Int
+
+    static let empty = MediaPreviewConfiguration(
+        sourceRoots: [],
+        filter: .all,
+        selectedExtensions: nil,
+        fileNameFilter: MediaFileNameFilter(),
+        renameSettings: MediaRenameSettings(),
+        previewLimit: 0
+    )
+}
+
 @MainActor
 final class MediaFileCoordinator {
     private let setCopyPlan: @MainActor (MediaCopyPlan?) -> Void
+    private let setDeletePlan: @MainActor (MediaDeletePlan?) -> Void
+    private let setRenamePlan: @MainActor (MediaRenamePlan?) -> Void
+    private let setRenamePreviewStale: @MainActor (Bool) -> Void
     private let setProgress: @MainActor (MediaCopyProgress?) -> Void
     private let setScanning: @MainActor (Bool) -> Void
     private let setCopying: @MainActor (Bool) -> Void
+    private let setDeleting: @MainActor (Bool) -> Void
+    private let setRenaming: @MainActor (Bool) -> Void
+    private let setCurrentWorkflowID: @MainActor (UUID?) -> Void
     private let setStatusMessage: @MainActor (String) -> Void
     private let resetForCopyRun: @MainActor () -> Void
+    private let setInventory: @MainActor (_ inventory: [MediaFileInventoryRecord], _ sourceRootPaths: [String]) -> Void
+    private let getInventory: @MainActor () -> [MediaFileInventoryRecord]
+    private let getInventorySourceRootPaths: @MainActor () -> [String]
+    private let getActiveMode: @MainActor () -> FileManagementMode
+    private let makePreviewConfiguration: @MainActor () -> MediaPreviewConfiguration
     private let validateFolders: @MainActor (_ sourceRoot: URL, _ destinationRoot: URL) -> Bool
     private let promptConflictResolution: @MainActor ([MediaCopyPlan]) -> MediaCopyConflictResolution?
     private let notifyCompletion: @MainActor (_ title: String, _ body: String) -> Void
@@ -43,21 +72,43 @@ final class MediaFileCoordinator {
 
     init(
         setCopyPlan: @escaping @MainActor (MediaCopyPlan?) -> Void,
+        setDeletePlan: @escaping @MainActor (MediaDeletePlan?) -> Void,
+        setRenamePlan: @escaping @MainActor (MediaRenamePlan?) -> Void,
+        setRenamePreviewStale: @escaping @MainActor (Bool) -> Void,
         setProgress: @escaping @MainActor (MediaCopyProgress?) -> Void,
         setScanning: @escaping @MainActor (Bool) -> Void,
         setCopying: @escaping @MainActor (Bool) -> Void,
+        setDeleting: @escaping @MainActor (Bool) -> Void,
+        setRenaming: @escaping @MainActor (Bool) -> Void,
+        setCurrentWorkflowID: @escaping @MainActor (UUID?) -> Void,
         setStatusMessage: @escaping @MainActor (String) -> Void,
         resetForCopyRun: @escaping @MainActor () -> Void,
+        setInventory: @escaping @MainActor (_ inventory: [MediaFileInventoryRecord], _ sourceRootPaths: [String]) -> Void,
+        getInventory: @escaping @MainActor () -> [MediaFileInventoryRecord],
+        getInventorySourceRootPaths: @escaping @MainActor () -> [String],
+        getActiveMode: @escaping @MainActor () -> FileManagementMode,
+        makePreviewConfiguration: @escaping @MainActor () -> MediaPreviewConfiguration,
         validateFolders: @escaping @MainActor (_ sourceRoot: URL, _ destinationRoot: URL) -> Bool,
         promptConflictResolution: @escaping @MainActor ([MediaCopyPlan]) -> MediaCopyConflictResolution?,
         notifyCompletion: @escaping @MainActor (_ title: String, _ body: String) -> Void
     ) {
         self.setCopyPlan = setCopyPlan
+        self.setDeletePlan = setDeletePlan
+        self.setRenamePlan = setRenamePlan
+        self.setRenamePreviewStale = setRenamePreviewStale
         self.setProgress = setProgress
         self.setScanning = setScanning
         self.setCopying = setCopying
+        self.setDeleting = setDeleting
+        self.setRenaming = setRenaming
+        self.setCurrentWorkflowID = setCurrentWorkflowID
         self.setStatusMessage = setStatusMessage
         self.resetForCopyRun = resetForCopyRun
+        self.setInventory = setInventory
+        self.getInventory = getInventory
+        self.getInventorySourceRootPaths = getInventorySourceRootPaths
+        self.getActiveMode = getActiveMode
+        self.makePreviewConfiguration = makePreviewConfiguration
         self.validateFolders = validateFolders
         self.promptConflictResolution = promptConflictResolution
         self.notifyCompletion = notifyCompletion
@@ -76,7 +127,76 @@ final class MediaFileCoordinator {
         mediaCopyTask = nil
         setScanning(false)
         setCopying(false)
+        setDeleting(false)
+        setRenaming(false)
         setProgress(nil)
+        setCurrentWorkflowID(nil)
+    }
+
+    func refreshDeletePreview(configuration: MediaPreviewConfiguration) {
+        scanInventoryThenRefresh(.delete, configuration: configuration)
+    }
+
+    func refreshRenamePreview(configuration: MediaPreviewConfiguration) {
+        scanInventoryThenRefresh(.rename, configuration: configuration)
+    }
+
+    func refreshDeletePreviewIfNeeded(configuration: MediaPreviewConfiguration) {
+        guard getActiveMode() == .delete else { return }
+
+        guard !configuration.sourceRoots.isEmpty,
+            hasSelectedExtensions(configuration)
+        else {
+            setDeletePlan(nil)
+            return
+        }
+
+        if inventoryMatches(configuration.sourceRoots) {
+            rebuildDeletePreviewFromInventory(configuration: configuration)
+        } else {
+            scanInventoryThenRefresh(.delete, configuration: configuration)
+        }
+    }
+
+    func refreshRenamePreviewIfNeeded(configuration: MediaPreviewConfiguration) {
+        guard getActiveMode() == .rename else { return }
+
+        guard !configuration.sourceRoots.isEmpty,
+            hasSelectedExtensions(configuration)
+        else {
+            setRenamePlan(nil)
+            setRenamePreviewStale(false)
+            return
+        }
+
+        if inventoryMatches(configuration.sourceRoots) {
+            rebuildRenamePreviewFromInventory(configuration: configuration)
+        } else {
+            scanInventoryThenRefresh(.rename, configuration: configuration)
+        }
+    }
+
+    func rebuildRenamePreviewFromInventory(configuration: MediaPreviewConfiguration) {
+        guard inventoryMatches(configuration.sourceRoots) else {
+            scanInventoryThenRefresh(.rename, configuration: configuration)
+            return
+        }
+
+        let plan = MediaCopyPlanner.buildRenamePlan(
+            sourceRoots: configuration.sourceRoots,
+            filter: configuration.filter,
+            selectedExtensions: configuration.selectedExtensions,
+            fileNameFilter: configuration.fileNameFilter,
+            itemLimit: configuration.previewLimit,
+            settings: configuration.renameSettings,
+            inventory: getInventory()
+        )
+        setCopyPlan(nil)
+        setDeletePlan(nil)
+        setRenamePlan(plan)
+        setRenamePreviewStale(false)
+        setProgress(nil)
+        setStatusMessage(Self.mediaRenameScanStatusMessage(for: plan))
     }
 
     private func runCopyPreflight(
@@ -118,6 +238,137 @@ final class MediaFileCoordinator {
                 copyAfterScan: copyAfterScan
             )
         }
+    }
+
+    private func scanInventoryThenRefresh(
+        _ targetMode: FileManagementMode,
+        configuration: MediaPreviewConfiguration
+    ) {
+        guard targetMode == .delete || targetMode == .rename else { return }
+        guard !configuration.sourceRoots.isEmpty else { return }
+
+        guard hasSelectedExtensions(configuration) else {
+            if targetMode == .delete {
+                setDeletePlan(nil)
+            } else {
+                setRenamePlan(nil)
+                setRenamePreviewStale(false)
+            }
+            return
+        }
+
+        let sourceRoots = configuration.sourceRoots
+
+        mediaCopyTask?.cancel()
+        setCopyPlan(nil)
+        setProgress(nil)
+        setCurrentWorkflowID(nil)
+        setScanning(true)
+        setCopying(false)
+        setDeleting(false)
+        setRenaming(false)
+        setStatusMessage(
+            "Scanning \(sourceRoots.count) source folder\(sourceRoots.count == 1 ? "" : "s") into memory..."
+        )
+
+        mediaCopyTask = Task { [weak self] in
+            await self?.runInventoryTask(
+                targetMode: targetMode,
+                configuration: configuration
+            )
+        }
+    }
+
+    private func runInventoryTask(
+        targetMode: FileManagementMode,
+        configuration: MediaPreviewConfiguration
+    ) async {
+        do {
+            let sourceRoots = configuration.sourceRoots
+            let worker = Task.detached(priority: .userInitiated) {
+                try MediaCopyPlanner.scanFileInventory(sourceRoots: sourceRoots)
+            }
+            let inventory = try await withTaskCancellationHandler {
+                try await worker.value
+            } onCancel: {
+                worker.cancel()
+            }
+
+            guard !Task.isCancelled else { return }
+
+            setInventory(
+                inventory,
+                sourceRoots.map { $0.standardizedFileURL.path }
+            )
+            setScanning(false)
+            mediaCopyTask = nil
+
+            let latestConfiguration = makePreviewConfiguration()
+            guard getActiveMode() == targetMode else {
+                refreshDeletePreviewIfNeeded(configuration: latestConfiguration)
+                refreshRenamePreviewIfNeeded(configuration: latestConfiguration)
+                return
+            }
+
+            switch targetMode {
+            case .delete:
+                rebuildDeletePreviewFromInventory(configuration: latestConfiguration)
+            case .rename:
+                rebuildRenamePreviewFromInventory(configuration: latestConfiguration)
+            case .copy:
+                break
+            }
+        } catch is CancellationError {
+            guard !Task.isCancelled else { return }
+            setScanning(false)
+            mediaCopyTask = nil
+            setStatusMessage("File inventory scan cancelled.")
+        } catch {
+            guard !Task.isCancelled else { return }
+            setInventory([], [])
+            if targetMode == .delete {
+                setDeletePlan(nil)
+            } else {
+                setRenamePlan(nil)
+                setRenamePreviewStale(false)
+            }
+            setProgress(nil)
+            setScanning(false)
+            mediaCopyTask = nil
+            setStatusMessage("Could not scan source folders: \(error.localizedDescription)")
+        }
+    }
+
+    private func rebuildDeletePreviewFromInventory(configuration: MediaPreviewConfiguration) {
+        guard inventoryMatches(configuration.sourceRoots) else {
+            scanInventoryThenRefresh(.delete, configuration: configuration)
+            return
+        }
+
+        let plan = MediaCopyPlanner.buildDeletePlan(
+            sourceRoots: configuration.sourceRoots,
+            filter: configuration.filter,
+            selectedExtensions: configuration.selectedExtensions ?? [],
+            fileNameFilter: configuration.fileNameFilter,
+            candidateLimit: configuration.previewLimit,
+            inventory: getInventory()
+        )
+        setCopyPlan(nil)
+        setDeletePlan(plan)
+        setRenamePlan(nil)
+        setRenamePreviewStale(false)
+        setProgress(nil)
+        setStatusMessage(Self.mediaDeleteScanStatusMessage(for: plan))
+    }
+
+    private func inventoryMatches(_ sourceRoots: [URL]) -> Bool {
+        !sourceRoots.isEmpty
+            && getInventorySourceRootPaths() == sourceRoots.map { $0.standardizedFileURL.path }
+    }
+
+    private func hasSelectedExtensions(_ configuration: MediaPreviewConfiguration) -> Bool {
+        !configuration.filter.supportsExtensionSelection
+            || configuration.selectedExtensions?.isEmpty == false
     }
 
     private func runCopyTask(
@@ -356,5 +607,55 @@ final class MediaFileCoordinator {
             )
         }
         return details.joined(separator: " ")
+    }
+
+    private static func mediaDeleteScanStatusMessage(for plan: MediaDeletePlan) -> String {
+        let scopeDescription = mediaDeleteScopeDescription(
+            filter: plan.filter,
+            selectedExtensions: plan.selectedExtensions,
+            fileNameFilter: plan.fileNameFilter
+        )
+        guard plan.hasDeletableContent else {
+            return "No files matching \(scopeDescription) were found in the selected source folders."
+        }
+
+        return
+            "Found \(plan.candidateCount) file\(plan.candidateCount == 1 ? "" : "s") matching \(scopeDescription), totaling \(plan.totalSizeBytes.formattedFileSize)."
+    }
+
+    private static func mediaDeleteScopeDescription(
+        filter: MediaFileFilter,
+        selectedExtensions: Set<String>,
+        fileNameFilter: MediaFileNameFilter
+    ) -> String {
+        let typeDescription =
+            filter.supportsExtensionSelection
+            ? filter.readableExtensionList(selectedExtensions: selectedExtensions)
+            : "all files"
+        let nameQuery = fileNameFilter.trimmedQuery
+        guard !nameQuery.isEmpty else { return typeDescription }
+        return "\(typeDescription) with names containing \"\(nameQuery)\""
+    }
+
+    private static func mediaRenameScanStatusMessage(for plan: MediaRenamePlan) -> String {
+        guard plan.hasRenameContent else {
+            if let selectedExtensions = plan.selectedExtensions {
+                return "No \(plan.filter.fileTypeName) files matching \(plan.filter.readableExtensionList(selectedExtensions: selectedExtensions)) were found in the selected source folders."
+            }
+            return "No matching files were found in the selected source folders."
+        }
+
+        var details = [
+            "Found \(plan.itemCount) file\(plan.itemCount == 1 ? "" : "s") for rename preview",
+            "\(plan.readyCount) ready"
+        ]
+        if plan.unchangedCount > 0 {
+            details.append("\(plan.unchangedCount) unchanged")
+        }
+        if plan.blockedCount > 0 {
+            details.append("\(plan.blockedCount) blocked")
+        }
+        details.append("totaling \(plan.totalSizeBytes.formattedFileSize)")
+        return details.joined(separator: ", ") + "."
     }
 }
