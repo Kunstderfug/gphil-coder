@@ -15,10 +15,10 @@ import Foundation
 @MainActor
 final class SecurityScopeManager {
     /// Grants held for an active encode run. Released by `stopEncoding()`,
-    /// which `runJobs` calls at every completion/exit point.
+    /// which `EncodingCoordinator` calls at every completion/exit point.
     private var activeEncodingURLs: [URL] = []
     /// Grants held for an active folder-sync run. Released by `stopSync()`,
-    /// which `runFolderSync` calls at every completion/exit point.
+    /// which `FolderSyncCoordinator` calls at every completion/exit point.
     private var activeSyncURLs: [URL] = []
 
     // MARK: - Encoding scopes

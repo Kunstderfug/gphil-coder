@@ -1,6 +1,6 @@
 # Refactoring plan: EncoderViewModel decomposition
 
-> **Status as of commit `77e9f40` plus Steps 1-2 implementation.** Update this
+> **Status as of commit `77e9f40` plus Steps 1-3 implementation.** Update this
 > file as each step lands.
 > This document records what the 2026-07 code-review-driven refactor
 > accomplished and what remains, so the next maintainer doesn't have to
@@ -8,7 +8,7 @@
 
 ## Current status
 
-- **Branch:** `main`, 8 commits ahead of `origin/main`.
+- **Branch:** `main`, 11 commits ahead of `origin/main`.
 - **Build:** clean. **Tests:** 134 pass (baseline before the refactor was 51).
 - **No open correctness bugs** — all three Critical issues from the code review
   are closed.
@@ -20,7 +20,7 @@
 | 1 | Temp-write-then-replace in `FFmpegEncoder` (truncated output on cancel/failure) | Critical | ✅ Done |
 | 2 | Stale security-scoped bookmark fix | Critical | ✅ Done (absorbed into `BookmarkStore`) |
 | 3 | Silent-decode hardening, all 4 persisted payloads | Critical | ✅ Done |
-| 4 | God-Object decomposition of `EncoderViewModel` | Important | 🔶 Steps 1-2 done; folder-sync extraction still pending |
+| 4 | God-Object decomposition of `EncoderViewModel` | Important | 🔶 Steps 1-3 done; media/settings extraction deferred |
 | 5 | Move `RestorePlanner` to `GPhilCoderCore` | Important | ✅ Done |
 | 6 | Move FFmpeg pure functions to `GPhilCoderCore` | Important | ✅ Done |
 
@@ -50,6 +50,9 @@ New `GPhilCoder` (App) files:
 - `EncodingCoordinator.swift` — owns the encoding run loop, child process
   registry, job result application, FFmpeg progress reporting, and completion
   messaging callbacks while `EncoderViewModel` keeps the published UI surface.
+- `FolderSyncCoordinator.swift` — owns the folder-sync scan/apply run loop,
+  auto-sync debounce, FSEvents watcher, pending rerun flag, and completion
+  messaging callbacks while `EncoderViewModel` keeps the published UI surface.
 
 Step 1 characterization coverage:
 
@@ -73,17 +76,20 @@ outputs.
 
 ### Residual
 
-`EncoderViewModel` is still **7,463 lines / 241 functions / 69 `didSet`
-observers**. The security-scope/bookmark logic (~27 call sites) and encoding
-run loop are extracted. Three cohesive domains remain inside the class:
+`EncoderViewModel` is still **7,160 lines / 236 functions / 69 `didSet`
+observers**. The security-scope/bookmark logic (~27 call sites), encoding run
+loop, and folder-sync run loop are extracted. The remaining view-model code is
+mostly entry/configuration wrappers plus two larger domains:
 
 - **Encoding entry/preflight** — `startEncoding`/`cancelEncoding`/
   `confirmEncodingPreflight` still live on the view model because they assemble
   `EncodingSettingsSnapshot` from UI-bound settings and request file access,
   then delegate execution to `EncodingCoordinator`.
-- **FolderSyncCoordinator** — `folderSyncTask`, `runFolderSync`,
-  `applyFolderSyncPlans`, `scheduleAutomaticFolderSync`,
-  `runPendingFolderSyncIfNeeded`, `configureFolderSyncWatcher`.
+- **Folder sync entry/configuration** — `scanFolderSyncPlan`/`syncFoldersNow`/
+  `cancelFolderSync` and `configureFolderSyncWatcher` stay as thin wrappers.
+  Folder validation, bookmark authorization, persistence, and collision checks
+  remain on the view model because they interact with UI prompts and stored
+  `syncFolderPairs`; execution delegates to `FolderSyncCoordinator`.
 - **MediaFileManager** — copy/delete/rename/undo-redo + `MediaFileInventory`
   (the largest remaining domain).
 - **SettingsStore** — the 69 `@Published didSet → UserDefaults.standard`
@@ -99,10 +105,11 @@ Verified directly against the code; this evidence drives the step ordering:
   remain `@Published` on `EncoderViewModel`; the coordinator updates them via
   injected closures and calls back for security-scope release, status text, and
   completion notifications.
-- **`runFolderSync`** (`EncoderViewModel.swift:2792`) reads `syncFolderPairs`,
-  `isFolderSyncBusy`, `folderSyncPendingAfterCurrentRun`, and calls
-  `prepareFolderSyncFileAccess`, `securityScopes.stopSync()`, plus 6
-  completion-path branches.
+- **`runFolderSync`** is now in `FolderSyncCoordinator.swift`. `syncFolderPairs`,
+  `isSyncing`, `isFolderSyncWatching`, `syncPlan`, `syncProgress`, and the
+  scan counts remain `@Published` on `EncoderViewModel`; the coordinator
+  updates them through callbacks and calls back for folder validation,
+  bookmark/file access, scope release, and completion notifications.
 - **`ContentView` binds 34 `@Published` properties via `$model.*` two-way
   bindings** (`$model.mp3Mode`, `$model.overwriteExisting`, …) across the
   3,909-line view, which has **no widget tests**.
@@ -178,19 +185,19 @@ view model.
 the view model; the encoding domain becomes testable in isolation via injected
 mock callbacks.
 
-### Step 3 — Extract `FolderSyncCoordinator` (medium risk)
+### Step 3 — Extract `FolderSyncCoordinator` (medium risk) — DONE
 
-Same shape as Step 2. New `Sources/GPhilCoder/FolderSyncCoordinator.swift`.
+Same shape as Step 2. Added `Sources/GPhilCoder/FolderSyncCoordinator.swift`.
 
 - **Moves in:** `runFolderSync`, `applyFolderSyncPlans`,
   `scheduleAutomaticFolderSync`, `runPendingFolderSyncIfNeeded`,
   `configureFolderSyncWatcher`, ownership of `folderSyncTask`/
   `folderSyncAutoTask`/`folderSyncWatcher`/`folderSyncPendingAfterCurrentRun`.
 - `syncFolderPairs`, `isSyncing`, `isFolderSyncWatching`, the `sync*Count`
-  `@Published` values stay on the view model, updated via callbacks.
+  `@Published` values stayed on the view model, updated via callbacks.
 - Reuses the already-extracted `securityScopes` and `bookmarks` collaborators.
 
-**Gate:** `swift build` + Step-1 tests still green. **Net:** ~400 more lines
+**Gate:** `swift build` + Step-1 tests green. **Net:** ~300 more lines
 out.
 
 ### Step 4 — `SettingsStore` (DEFER)

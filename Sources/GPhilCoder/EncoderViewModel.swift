@@ -67,7 +67,6 @@ final class EncoderViewModel: ObservableObject {
     private static let mediaPreviewLimit = 300
     private static let mediaFileNameFilterDebounceNanoseconds: UInt64 = 400_000_000
     private static let syncPreviewLimit = 300
-    private static let syncAutoDebounceNanoseconds: UInt64 = 1_250_000_000
 
     private enum QueueFile {
         static let fileExtension = "gphilcoderqueue"
@@ -789,10 +788,6 @@ final class EncoderViewModel: ObservableObject {
     private var restoreApplyTask: Task<Void, Never>?
     private var mediaCopyTask: Task<Void, Never>?
     private var mediaFileNameFilterRefreshTask: Task<Void, Never>?
-    private var folderSyncTask: Task<Void, Never>?
-    private var folderSyncAutoTask: Task<Void, Never>?
-    private var folderSyncWatcher: FolderSyncWatcher?
-    private var folderSyncPendingAfterCurrentRun = false
     private var isUpdatingSyncPairStatus = false
     private var isLoadingPersistedSettings = false
     private let securityScopes = SecurityScopeManager()
@@ -818,6 +813,67 @@ final class EncoderViewModel: ObservableObject {
         },
         notifyCompletion: { [weak self] title, body in
             self?.notifyCompletionIfNeeded(title: title, body: body)
+        }
+    )
+
+    private lazy var folderSyncCoordinator = FolderSyncCoordinator(
+        getIsBusy: { [weak self] in
+            self?.isFolderSyncBusy ?? false
+        },
+        setPlan: { [weak self] plan in
+            self?.syncPlan = plan
+        },
+        setScannedCounts: { [weak self] operations, copies, deletes, size in
+            self?.syncScannedOperationCount = operations
+            self?.syncScannedCopyCount = copies
+            self?.syncScannedDeleteCount = deletes
+            self?.syncScannedTotalSize = size
+        },
+        setProgress: { [weak self] progress in
+            self?.syncProgress = progress
+        },
+        setCurrentPair: { [weak self] pairID in
+            self?.currentSyncPairID = pairID
+        },
+        setScanning: { [weak self] isScanning in
+            self?.isSyncScanning = isScanning
+        },
+        setSyncing: { [weak self] isSyncing in
+            self?.isSyncing = isSyncing
+        },
+        setWatching: { [weak self] isWatching in
+            self?.isFolderSyncWatching = isWatching
+        },
+        setStatusMessage: { [weak self] message in
+            self?.statusMessage = message
+        },
+        markPair: { [weak self] id, state, message, lastSyncedAt in
+            self?.markSyncPair(id, state: state, message: message, lastSyncedAt: lastSyncedAt)
+        },
+        collisionMessage: { [weak self] pairs in
+            self?.syncDestinationCollisionMessage(for: pairs)
+        },
+        prepareFileAccess: { [weak self] pairs, triggeredAutomatically in
+            self?.prepareFolderSyncFileAccess(
+                for: pairs,
+                triggeredAutomatically: triggeredAutomatically
+            )
+        },
+        validateFolders: { [weak self] origin, destination, showsAlert in
+            self?.validateSyncFolders(
+                originRoot: origin,
+                destinationRoot: destination,
+                showsAlert: showsAlert
+            ) ?? false
+        },
+        releaseScopes: { [weak self] in
+            self?.securityScopes.stopSync()
+        },
+        notifyCompletion: { [weak self] title, body in
+            self?.notifyCompletionIfNeeded(title: title, body: body)
+        },
+        makeConfiguration: { [weak self] in
+            self?.folderSyncRunConfiguration ?? .empty
         }
     )
 
@@ -1657,6 +1713,21 @@ final class EncoderViewModel: ObservableObject {
         case .custom:
             return Self.normalizedExtensionSet(from: syncCustomFileExtensions)
         }
+    }
+
+    private var folderSyncRunConfiguration: FolderSyncRunConfiguration {
+        FolderSyncRunConfiguration(
+            pairs: syncFolderPairs,
+            destinationLayout: syncDestinationLayout,
+            deleteDestinationItems: syncDeleteDestinationItems,
+            overwriteExisting: syncOverwriteExisting,
+            includedFileExtensions: syncSelectedFileExtensions,
+            autoSyncEnabled: !isLoadingPersistedSettings && syncAutoSyncEnabled,
+            watchOrigins: syncFolderPairs
+                .filter(\.isEnabled)
+                .compactMap { directoryURLIfExists(atPath: $0.originPath) },
+            previewLimit: Self.syncPreviewLimit
+        )
     }
 
     private var currentMediaDeletePlanMatchesFilters: Bool {
@@ -2763,26 +2834,15 @@ final class EncoderViewModel: ObservableObject {
     }
 
     func scanFolderSyncPlan() {
-        runFolderSync(syncAfterScan: false, triggeredAutomatically: false)
+        folderSyncCoordinator.scan(configuration: folderSyncRunConfiguration)
     }
 
     func syncFoldersNow() {
-        runFolderSync(syncAfterScan: true, triggeredAutomatically: false)
+        folderSyncCoordinator.syncNow(configuration: folderSyncRunConfiguration)
     }
 
     func cancelFolderSync() {
-        guard isFolderSyncBusy else { return }
-        folderSyncTask?.cancel()
-        folderSyncAutoTask?.cancel()
-        folderSyncTask = nil
-        folderSyncAutoTask = nil
-        folderSyncPendingAfterCurrentRun = false
-        securityScopes.stopSync()
-        isSyncScanning = false
-        isSyncing = false
-        currentSyncPairID = nil
-        syncProgress = nil
-        statusMessage = "Folder sync cancelled."
+        folderSyncCoordinator.cancel()
     }
 
     func scanMediaCopyFiles() {
@@ -2807,312 +2867,6 @@ final class EncoderViewModel: ObservableObject {
 
     func redoLastMediaRename() {
         runMediaRenameHistoryAction(.redo)
-    }
-
-    private func runFolderSync(syncAfterScan: Bool, triggeredAutomatically: Bool) {
-        var pairs = syncFolderPairs.filter(\.isEnabled)
-        guard !pairs.isEmpty else {
-            statusMessage = "Add at least one enabled folder pair before syncing."
-            return
-        }
-
-        guard !isFolderSyncBusy else {
-            if triggeredAutomatically {
-                folderSyncPendingAfterCurrentRun = true
-            }
-            return
-        }
-
-        if let collisionMessage = syncDestinationCollisionMessage(for: pairs) {
-            statusMessage = collisionMessage
-            return
-        }
-
-        guard let authorizedPairs = prepareFolderSyncFileAccess(
-            for: pairs,
-            triggeredAutomatically: triggeredAutomatically
-        ) else {
-            return
-        }
-        pairs = authorizedPairs
-
-        let destinationLayout = syncDestinationLayout
-
-        for pair in pairs {
-            let effectiveDestinationRoot = pair.effectiveDestinationURL(
-                layout: destinationLayout,
-                allPairs: pairs
-            )
-            guard validateSyncFolders(
-                originRoot: pair.originURL,
-                destinationRoot: effectiveDestinationRoot,
-                showsAlert: !triggeredAutomatically
-            ) else {
-                markSyncPair(
-                    pair.id,
-                    state: .failed,
-                    message: "Origin and destination folders are not valid."
-                )
-                securityScopes.stopSync()
-                return
-            }
-        }
-
-        folderSyncTask?.cancel()
-        syncPlan = nil
-        syncScannedOperationCount = 0
-        syncScannedCopyCount = 0
-        syncScannedDeleteCount = 0
-        syncScannedTotalSize = 0
-        syncProgress = nil
-        currentSyncPairID = nil
-        isSyncScanning = true
-        isSyncing = false
-        statusMessage =
-            "Scanning \(pairs.count) folder sync pair\(pairs.count == 1 ? "" : "s")..."
-
-        let deleteDestinationItems = syncDeleteDestinationItems
-        let overwriteExisting = syncOverwriteExisting
-        let includedFileExtensions = syncSelectedFileExtensions
-        let previewLimit = Self.syncPreviewLimit
-
-        folderSyncTask = Task { [weak self] in
-            do {
-                var fullPlans: [(pair: SyncFolderPair, plan: FolderSyncPlan)] = []
-                var previewPlan: FolderSyncPlan?
-                var operationCount = 0
-                var copyCount = 0
-                var deleteCount = 0
-                var totalSize: Int64 = 0
-
-                for pair in pairs {
-                    guard !Task.isCancelled else { return }
-                    self?.currentSyncPairID = pair.id
-                    self?.markSyncPair(pair.id, state: .syncing, message: "Scanning...")
-                    let effectiveDestinationRoot = pair.effectiveDestinationURL(
-                        layout: destinationLayout,
-                        allPairs: pairs
-                    )
-
-                    let fullWorker = Task.detached(priority: .userInitiated) {
-                        try FolderSyncPlanner.buildPlan(
-                            originRoot: pair.originURL,
-                            destinationRoot: effectiveDestinationRoot,
-                            syncDeletes: deleteDestinationItems,
-                            includedFileExtensions: includedFileExtensions
-                        )
-                    }
-                    let fullPlan = try await withTaskCancellationHandler {
-                        try await fullWorker.value
-                    } onCancel: {
-                        fullWorker.cancel()
-                    }
-                    fullPlans.append((pair, fullPlan))
-                    operationCount += fullPlan.operationCount
-                    copyCount += fullPlan.copyCount
-                    deleteCount += fullPlan.deleteCount
-                    totalSize += fullPlan.totalCopyBytes
-
-                    if previewPlan == nil {
-                        let previewWorker = Task.detached(priority: .userInitiated) {
-                            try FolderSyncPlanner.buildPlan(
-                                originRoot: pair.originURL,
-                                destinationRoot: effectiveDestinationRoot,
-                                syncDeletes: deleteDestinationItems,
-                                includedFileExtensions: includedFileExtensions,
-                                operationLimit: previewLimit
-                            )
-                        }
-                        previewPlan = try await withTaskCancellationHandler {
-                            try await previewWorker.value
-                        } onCancel: {
-                            previewWorker.cancel()
-                        }
-                    }
-
-                    let message = fullPlan.hasWork
-                        ? "\(fullPlan.operationCount) pending change\(fullPlan.operationCount == 1 ? "" : "s")."
-                        : "Already in sync."
-                    self?.markSyncPair(pair.id, state: .watching, message: message)
-                }
-
-                guard !Task.isCancelled else { return }
-
-                self?.syncPlan = previewPlan
-                self?.syncScannedOperationCount = operationCount
-                self?.syncScannedCopyCount = copyCount
-                self?.syncScannedDeleteCount = deleteCount
-                self?.syncScannedTotalSize = totalSize
-                self?.isSyncScanning = false
-
-                guard syncAfterScan else {
-                    self?.currentSyncPairID = nil
-                    self?.folderSyncTask = nil
-                    self?.securityScopes.stopSync()
-                    self?.statusMessage =
-                        operationCount == 0
-                        ? "All enabled sync pairs are already current."
-                        : "Found \(operationCount) pending sync change\(operationCount == 1 ? "" : "s")."
-                    return
-                }
-
-                guard operationCount > 0 else {
-                    self?.currentSyncPairID = nil
-                    self?.folderSyncTask = nil
-                    let completionMessage = "All enabled sync pairs are already current."
-                    self?.statusMessage = completionMessage
-                    if !triggeredAutomatically {
-                        self?.notifyCompletionIfNeeded(
-                            title: "Folder sync finished",
-                            body: completionMessage
-                        )
-                    }
-                    self?.securityScopes.stopSync()
-                    self?.runPendingFolderSyncIfNeeded()
-                    return
-                }
-
-                self?.isSyncing = true
-                self?.statusMessage =
-                    "Syncing \(operationCount) change\(operationCount == 1 ? "" : "s")..."
-                let result = await self?.applyFolderSyncPlans(
-                    fullPlans,
-                    totalOperations: operationCount,
-                    totalBytes: totalSize,
-                    overwriteExisting: overwriteExisting
-                ) ?? FolderSyncRunResult(cancelled: true)
-
-                guard !Task.isCancelled else { return }
-
-                self?.isSyncing = false
-                self?.currentSyncPairID = nil
-                self?.folderSyncTask = nil
-                self?.securityScopes.stopSync()
-                let completionMessage = Self.folderSyncResultStatusMessage(result)
-                self?.statusMessage = completionMessage
-                self?.notifyCompletionIfNeeded(
-                    title: "Folder sync finished",
-                    body: completionMessage
-                )
-                self?.runPendingFolderSyncIfNeeded()
-            } catch is CancellationError {
-                guard !Task.isCancelled else { return }
-                self?.isSyncScanning = false
-                self?.isSyncing = false
-                self?.currentSyncPairID = nil
-                self?.folderSyncTask = nil
-                self?.securityScopes.stopSync()
-                self?.statusMessage = "Folder sync cancelled."
-            } catch {
-                guard !Task.isCancelled else { return }
-                self?.isSyncScanning = false
-                self?.isSyncing = false
-                self?.currentSyncPairID = nil
-                self?.folderSyncTask = nil
-                self?.securityScopes.stopSync()
-                self?.statusMessage = "Could not run folder sync: \(error.localizedDescription)"
-            }
-        }
-    }
-
-    private func applyFolderSyncPlans(
-        _ plans: [(pair: SyncFolderPair, plan: FolderSyncPlan)],
-        totalOperations: Int,
-        totalBytes: Int64,
-        overwriteExisting: Bool
-    ) async -> FolderSyncRunResult {
-        var result = FolderSyncRunResult(pairs: plans.count, operations: totalOperations)
-        let startedAt = Date()
-        var completed = 0
-        var copiedBytes: Int64 = 0
-
-        for pairPlan in plans {
-            guard !Task.isCancelled else {
-                result.cancelled = true
-                return result
-            }
-
-            currentSyncPairID = pairPlan.pair.id
-            markSyncPair(pairPlan.pair.id, state: .syncing, message: "Applying sync changes...")
-            let failedBeforePair = result.failed
-
-            for operation in pairPlan.plan.operations {
-                guard !Task.isCancelled else {
-                    result.cancelled = true
-                    return result
-                }
-
-                syncProgress = FolderSyncProgress(
-                    completed: completed,
-                    total: totalOperations,
-                    copied: result.copied,
-                    deleted: result.deleted,
-                    skipped: result.skipped,
-                    failed: result.failed,
-                    copiedBytes: copiedBytes,
-                    totalBytes: totalBytes,
-                    startedAt: startedAt,
-                    updatedAt: Date(),
-                    currentPath: operation.relativePath
-                )
-
-                let itemResult = await Task.detached(priority: .userInitiated) {
-                    FolderSyncPlanner.applyOperation(
-                        operation,
-                        overwriteExisting: overwriteExisting
-                    )
-                }.value
-
-                switch itemResult {
-                case .applied:
-                    switch operation.kind {
-                    case .copyNew, .copyUpdated:
-                        result.copied += 1
-                        copiedBytes += operation.fileSizeBytes
-                    case .deleteFile, .deleteDirectory:
-                        result.deleted += 1
-                    case .createDirectory:
-                        break
-                    }
-                case .skippedExisting:
-                    result.skipped += 1
-                case .failed(let path):
-                    result.failed += 1
-                    result.failedPaths.append(path)
-                }
-
-                completed += 1
-                syncProgress = FolderSyncProgress(
-                    completed: completed,
-                    total: totalOperations,
-                    copied: result.copied,
-                    deleted: result.deleted,
-                    skipped: result.skipped,
-                    failed: result.failed,
-                    copiedBytes: copiedBytes,
-                    totalBytes: totalBytes,
-                    startedAt: startedAt,
-                    updatedAt: Date(),
-                    currentPath: operation.relativePath
-                )
-                let speedDetail = syncProgress?.bytesPerSecond
-                    .map { " at \($0.formattedMegabytesPerSecond)" } ?? ""
-                statusMessage =
-                    "Synced \(completed) of \(totalOperations). Copied \(result.copied), deleted \(result.deleted), failed \(result.failed)\(speedDetail)."
-            }
-
-            let pairMessage = pairPlan.plan.operationCount == 0
-                ? "Already in sync."
-                : "Synced \(pairPlan.plan.operationCount) change\(pairPlan.plan.operationCount == 1 ? "" : "s")."
-            markSyncPair(
-                pairPlan.pair.id,
-                state: result.failed == failedBeforePair ? .succeeded : .failed,
-                message: pairMessage,
-                lastSyncedAt: Date()
-            )
-        }
-
-        return result
     }
 
     func addCurrentMediaCopyWorkflowToQueue() {
@@ -6476,44 +6230,8 @@ final class EncoderViewModel: ObservableObject {
         }
     }
 
-    private func scheduleAutomaticFolderSync() {
-        guard syncAutoSyncEnabled, syncEnabledPairCount > 0 else { return }
-        folderSyncAutoTask?.cancel()
-        folderSyncAutoTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: Self.syncAutoDebounceNanoseconds)
-            guard !Task.isCancelled else { return }
-            await MainActor.run {
-                self?.runFolderSync(syncAfterScan: true, triggeredAutomatically: true)
-            }
-        }
-    }
-
-    private func runPendingFolderSyncIfNeeded() {
-        guard folderSyncPendingAfterCurrentRun else { return }
-        folderSyncPendingAfterCurrentRun = false
-        scheduleAutomaticFolderSync()
-    }
-
     private func configureFolderSyncWatcher() {
-        folderSyncWatcher?.stop()
-        folderSyncWatcher = nil
-        isFolderSyncWatching = false
-        guard !isLoadingPersistedSettings, syncAutoSyncEnabled else { return }
-
-        let origins = syncFolderPairs
-            .filter(\.isEnabled)
-            .compactMap { directoryURLIfExists(atPath: $0.originPath) }
-        guard !origins.isEmpty else { return }
-
-        let watcher = FolderSyncWatcher(urls: origins) { [weak self] in
-            DispatchQueue.main.async {
-                self?.scheduleAutomaticFolderSync()
-            }
-        }
-        guard watcher.isWatching else { return }
-
-        folderSyncWatcher = watcher
-        isFolderSyncWatching = true
+        folderSyncCoordinator.configureWatcher(configuration: folderSyncRunConfiguration)
     }
 
     private func persistSyncFolderPairs() {
@@ -6551,27 +6269,6 @@ final class EncoderViewModel: ObservableObject {
             }
             return pair
         }
-    }
-
-    private static func folderSyncResultStatusMessage(_ result: FolderSyncRunResult) -> String {
-        if result.cancelled {
-            return "Folder sync cancelled after \(result.copied) copied and \(result.deleted) deleted."
-        }
-        if result.operations == 0 {
-            return "All enabled sync pairs are already current."
-        }
-        var parts = [
-            "Folder sync finished",
-            "\(result.copied) copied",
-            "\(result.deleted) deleted"
-        ]
-        if result.skipped > 0 {
-            parts.append("\(result.skipped) skipped")
-        }
-        if result.failed > 0 {
-            parts.append("\(result.failed) failed")
-        }
-        return parts.joined(separator: ", ") + "."
     }
 
     private func showMediaCopyFolderAlert(message: String, detail: String) {
