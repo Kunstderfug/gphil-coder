@@ -1,6 +1,6 @@
 # Refactoring plan: EncoderViewModel decomposition
 
-> **Status as of commit `77e9f40` plus Step 1 implementation.** Update this
+> **Status as of commit `77e9f40` plus Steps 1-2 implementation.** Update this
 > file as each step lands.
 > This document records what the 2026-07 code-review-driven refactor
 > accomplished and what remains, so the next maintainer doesn't have to
@@ -20,7 +20,7 @@
 | 1 | Temp-write-then-replace in `FFmpegEncoder` (truncated output on cancel/failure) | Critical | ✅ Done |
 | 2 | Stale security-scoped bookmark fix | Critical | ✅ Done (absorbed into `BookmarkStore`) |
 | 3 | Silent-decode hardening, all 4 persisted payloads | Critical | ✅ Done |
-| 4 | God-Object decomposition of `EncoderViewModel` | Important | 🔶 Step 1 done; extraction still pending |
+| 4 | God-Object decomposition of `EncoderViewModel` | Important | 🔶 Steps 1-2 done; folder-sync extraction still pending |
 | 5 | Move `RestorePlanner` to `GPhilCoderCore` | Important | ✅ Done |
 | 6 | Move FFmpeg pure functions to `GPhilCoderCore` | Important | ✅ Done |
 
@@ -47,6 +47,9 @@ New `GPhilCoder` (App) files:
 - `BookmarkStore.swift` — bookmark create/resolve; `resolveSecurityScopedBookmark`
   now surfaces `isStale` via an `onStale` closure so stale bookmarks get
   re-issued instead of silently failing.
+- `EncodingCoordinator.swift` — owns the encoding run loop, child process
+  registry, job result application, FFmpeg progress reporting, and completion
+  messaging callbacks while `EncoderViewModel` keeps the published UI surface.
 
 Step 1 characterization coverage:
 
@@ -64,19 +67,20 @@ Step 1 characterization coverage:
 The cancellation characterization test exposed an extra coordinator bug:
 `cancelEncoding()` cancelled the parent task but did not reliably terminate
 already-starting FFmpeg child processes. `FFmpegTool` now supports a
-run-scoped `ProcessRegistry`, and `EncoderViewModel` resets/terminates that
+run-scoped `ProcessRegistry`, and `EncodingCoordinator` resets/terminates that
 registry around each encode run so cancelled encodes do not replace existing
 outputs.
 
 ### Residual
 
-`EncoderViewModel` is still **7,659 lines / 232 functions / 69 `didSet`
-observers**. Only the security-scope/bookmark logic (~27 call sites) was
-extracted. Four cohesive domains remain inside the class:
+`EncoderViewModel` is still **7,463 lines / 241 functions / 69 `didSet`
+observers**. The security-scope/bookmark logic (~27 call sites) and encoding
+run loop are extracted. Three cohesive domains remain inside the class:
 
-- **EncodingCoordinator** — `encodeTask`, `runJobs`, `startEncoding`/
-  `cancelEncoding`, `confirmEncodingPreflight`, `JobResult`,
-  `EncodingProgressReporter`.
+- **Encoding entry/preflight** — `startEncoding`/`cancelEncoding`/
+  `confirmEncodingPreflight` still live on the view model because they assemble
+  `EncodingSettingsSnapshot` from UI-bound settings and request file access,
+  then delegate execution to `EncodingCoordinator`.
 - **FolderSyncCoordinator** — `folderSyncTask`, `runFolderSync`,
   `applyFolderSyncPlans`, `scheduleAutomaticFolderSync`,
   `runPendingFolderSyncIfNeeded`, `configureFolderSyncWatcher`.
@@ -91,11 +95,10 @@ extracted. Four cohesive domains remain inside the class:
 
 Verified directly against the code; this evidence drives the step ordering:
 
-- **`runJobs`** (the EncodingCoordinator core, `EncoderViewModel.swift:7427`)
-  mutates `jobs` (a `@Published` array), flips `isEncoding`, clears
-  `encodeTask`, and calls `securityScopes.stopEncoding()`,
-  `notifyCompletionIfNeeded`, and `summarizeFFmpegOutput`.
-  `EncodingProgressReporter` holds a `weak var model: EncoderViewModel?`.
+- **`runJobs`** is now in `EncodingCoordinator.swift`. `jobs` and `isEncoding`
+  remain `@Published` on `EncoderViewModel`; the coordinator updates them via
+  injected closures and calls back for security-scope release, status text, and
+  completion notifications.
 - **`runFolderSync`** (`EncoderViewModel.swift:2792`) reads `syncFolderPairs`,
   `isFolderSyncBusy`, `folderSyncPendingAfterCurrentRun`, and calls
   `prepareFolderSyncFileAccess`, `securityScopes.stopSync()`, plus 6
@@ -150,30 +153,28 @@ Added `Tests/GPhilCoderTests/FolderSyncCoordinatorTests.swift`:
 
 **Gate:** `swift test` green (134 tests).
 
-### Step 2 — Extract `EncodingCoordinator` (medium risk)
+### Step 2 — Extract `EncodingCoordinator` (medium risk) — DONE
 
-Only after Step 1 lands.
-
-New `Sources/GPhilCoder/EncodingCoordinator.swift`, `@MainActor`, owned by the
+Added `Sources/GPhilCoder/EncodingCoordinator.swift`, `@MainActor`, owned by the
 view model.
 
 - **Moves in:** `runJobs`, `markJobRunning`, `encode(job:settings:)`,
   `apply(_:)`, `failureDiagnosticMessage`, `summarizeFFmpegOutput`,
   `updateJobProgress`, the `JobResult` enum, `EncodingProgressReporter`, and
   ownership of `encodeTask`.
-- **The hard part — `jobs` and `isEncoding`:** these stay `@Published` on the
+- **The hard part — `jobs` and `isEncoding`:** these stayed `@Published` on the
   view model (so the 34 `ContentView` bindings are untouched). The coordinator
-  updates them via callback closures (`onJobsUpdate`, `onEncodingStateChange`,
-  `onStatusMessage`); the view model's setters become thin forwarders. Public
+  updates them via callback closures (`setJobs`, `setEncodingState`,
+  `setStatusMessage`); the view model's setters are closure-backed. Public
   surface to `ContentView` is identical.
 - `securityScopes.stopEncoding()` (called from `runJobs`) becomes a
-  coordinator-injected callback: `coordinator.onReleaseScopes = { [weak self]
-  in self?.securityScopes.stopEncoding() }`.
+  coordinator-injected `releaseScopes` callback.
 - `startEncoding`/`cancelEncoding`/`confirmEncodingPreflight` stay on the view
   model (they assemble `EncodingSettingsSnapshot` from 30+ settings) but
-  delegate the run to `coordinator.run(jobs:settings:)`.
+  delegate the run to `encodingCoordinator.start(jobs:settings:)` and
+  `encodingCoordinator.cancel()`.
 
-**Gate:** `swift build` + Step-1 tests still green. **Net:** ~250 lines out of
+**Gate:** `swift build` + Step-1 tests green. **Net:** ~200 lines out of
 the view model; the encoding domain becomes testable in isolation via injected
 mock callbacks.
 

@@ -785,7 +785,6 @@ final class EncoderViewModel: ObservableObject {
         }
     }
 
-    private var encodeTask: Task<Void, Never>?
     private var restorePlanTask: Task<Void, Never>?
     private var restoreApplyTask: Task<Void, Never>?
     private var mediaCopyTask: Task<Void, Never>?
@@ -796,11 +795,31 @@ final class EncoderViewModel: ObservableObject {
     private var folderSyncPendingAfterCurrentRun = false
     private var isUpdatingSyncPairStatus = false
     private var isLoadingPersistedSettings = false
-    private let encodingProcesses = ProcessRegistry()
     private let securityScopes = SecurityScopeManager()
     private let bookmarks = BookmarkStore()
     private var mediaFileInventory: [MediaFileInventoryRecord] = []
     private var mediaFileInventorySourceRootPaths: [String] = []
+
+    private lazy var encodingCoordinator = EncodingCoordinator(
+        getJobs: { [weak self] in
+            self?.jobs ?? []
+        },
+        setJobs: { [weak self] jobs in
+            self?.jobs = jobs
+        },
+        setEncodingState: { [weak self] isEncoding in
+            self?.isEncoding = isEncoding
+        },
+        setStatusMessage: { [weak self] message in
+            self?.statusMessage = message
+        },
+        releaseScopes: { [weak self] in
+            self?.securityScopes.stopEncoding()
+        },
+        notifyCompletion: { [weak self] title, body in
+            self?.notifyCompletionIfNeeded(title: title, body: body)
+        }
+    )
 
     var processorLimit: Int {
         max(1, ProcessInfo.processInfo.activeProcessorCount)
@@ -5006,22 +5025,16 @@ final class EncoderViewModel: ObservableObject {
 
         guard prepareEncodingFileAccess(for: plannedJobs) else { return }
 
-        encodingProcesses.reset()
-        jobs = plannedJobs
         jobStateFilter = nil
-        isEncoding = true
 
         statusMessage =
             "Encoding \(plannedJobs.count) \(plannedJobs.count == 1 ? "file" : "files") with \(settings.summary)..."
 
-        encodeTask = Task { [weak self] in
-            await self?.runJobs(settings: settings)
-        }
+        encodingCoordinator.start(jobs: plannedJobs, settings: settings)
     }
 
     func cancelEncoding() {
-        encodeTask?.cancel()
-        encodingProcesses.terminateAll()
+        encodingCoordinator.cancel()
         statusMessage = "Stopping active encoding jobs..."
     }
 
@@ -7427,202 +7440,6 @@ final class EncoderViewModel: ObservableObject {
         }
     }
 
-    private func runJobs(settings: EncodingSettingsSnapshot) async {
-        let processRegistry = encodingProcesses
-        await withTaskGroup(of: JobResult.self) { group in
-            var nextIndex = 0
-            let initialCount = min(settings.parallelJobs, jobs.count)
-
-            while nextIndex < initialCount {
-                let job = markJobRunning(at: nextIndex)
-                let reporter = EncodingProgressReporter(model: self, jobID: job.id)
-                group.addTask {
-                    await Self.encode(
-                        job: job,
-                        settings: settings,
-                        progressReporter: reporter,
-                        processRegistry: processRegistry
-                    )
-                }
-                nextIndex += 1
-            }
-
-            while let result = await group.next() {
-                if Task.isCancelled {
-                    group.cancelAll()
-                    apply(.cancelled(result.jobID))
-                    continue
-                }
-
-                apply(result)
-
-                if nextIndex < jobs.count {
-                    let job = markJobRunning(at: nextIndex)
-                    let reporter = EncodingProgressReporter(model: self, jobID: job.id)
-                    group.addTask {
-                        await Self.encode(
-                            job: job,
-                            settings: settings,
-                            progressReporter: reporter,
-                            processRegistry: processRegistry
-                        )
-                    }
-                    nextIndex += 1
-                }
-            }
-        }
-
-        if Task.isCancelled {
-            for index in jobs.indices
-            where jobs[index].state == .queued || jobs[index].state == .running {
-                jobs[index].state = .cancelled
-                jobs[index].message = "Cancelled."
-                jobs[index].finishedAt = Date()
-            }
-        }
-
-        isEncoding = false
-        encodeTask = nil
-        securityScopes.stopEncoding()
-
-        let completionTitle: String
-        let completionMessage: String
-        if Task.isCancelled {
-            completionTitle = "Encoding stopped"
-            completionMessage =
-                "Encoding cancelled. \(completedCount) completed, \(failedCount) failed, \(skippedCount) skipped."
-        } else if failedCount > 0 {
-            completionTitle = "Encoding finished with failures"
-            completionMessage =
-                "Finished with \(failedCount) failure\(failedCount == 1 ? "" : "s")."
-        } else if skippedCount > 0 {
-            completionTitle = "Encoding finished"
-            completionMessage =
-                "Finished. \(skippedCount) file\(skippedCount == 1 ? "" : "s") skipped."
-        } else if completedCount > 0 {
-            completionTitle = "Encoding finished"
-            completionMessage =
-                "Finished \(completedCount) \(settings.encodingWorkflow.title.lowercased()) export\(completedCount == 1 ? "" : "s")."
-        } else {
-            completionTitle = "Encoding finished"
-            completionMessage = "No files were encoded."
-        }
-
-        statusMessage = completionMessage
-        notifyCompletionIfNeeded(title: completionTitle, body: completionMessage)
-    }
-
-    private func markJobRunning(at index: Int) -> EncodeJob {
-        jobs[index].state = .running
-        jobs[index].message = "Encoding..."
-        jobs[index].diagnosticMessage = ""
-        jobs[index].startedAt = Date()
-        return jobs[index]
-    }
-
-    private static func encode(job: EncodeJob, settings: EncodingSettingsSnapshot) async
-        -> JobResult
-    {
-        await encode(job: job, settings: settings, progressReporter: nil, processRegistry: nil)
-    }
-
-    private static func encode(
-        job: EncodeJob,
-        settings: EncodingSettingsSnapshot,
-        progressReporter: EncodingProgressReporter?,
-        processRegistry: ProcessRegistry?
-    ) async
-        -> JobResult
-    {
-        let encoder = FFmpegEncoder(
-            ffmpegURL: settings.ffmpegURL,
-            processRegistry: processRegistry
-        )
-
-        do {
-            let output = try await encoder.encode(
-                input: job.item.url,
-                output: job.outputURL,
-                settings: settings
-            ) { progress in
-                progressReporter?.report(progress)
-            }
-            return .success(job.id, output)
-        } catch EncodeSkipError.outputExists {
-            return .skipped(job.id, "Output already exists.")
-        } catch is CancellationError {
-            return .cancelled(job.id)
-        } catch {
-            return .failure(
-                job.id,
-                error.localizedDescription,
-                failureDiagnosticMessage(for: job, settings: settings, error: error)
-            )
-        }
-    }
-
-    private static func failureDiagnosticMessage(
-        for job: EncodeJob,
-        settings: EncodingSettingsSnapshot,
-        error: Error
-    ) -> String {
-        [
-            "GPhilCoder encoding failed",
-            "Input: \(job.item.url.path(percentEncoded: false))",
-            "Output: \(job.outputURL.path(percentEncoded: false))",
-            "FFmpeg: \(settings.ffmpegURL.path(percentEncoded: false))",
-            "Settings: \(settings.summary)",
-            "FFmpeg threads: \(settings.ffmpegThreads == 0 ? "Auto" : "\(settings.ffmpegThreads)")",
-            "",
-            "Error:",
-            error.localizedDescription
-        ].joined(separator: "\n")
-    }
-
-    private func apply(_ result: JobResult) {
-        guard let index = jobs.firstIndex(where: { $0.id == result.jobID }) else { return }
-        jobs[index].finishedAt = Date()
-
-        switch result {
-        case .success(_, let output):
-            jobs[index].state = .succeeded
-            jobs[index].message = summarizeFFmpegOutput(output)
-            jobs[index].diagnosticMessage = ""
-        case .skipped(_, let message):
-            jobs[index].state = .skipped
-            jobs[index].message = message
-            jobs[index].diagnosticMessage = ""
-        case .failure(_, let message, let diagnosticMessage):
-            jobs[index].state = .failed
-            jobs[index].message = message
-            jobs[index].diagnosticMessage = diagnosticMessage
-        case .cancelled:
-            jobs[index].state = .cancelled
-            jobs[index].message = "Cancelled."
-            jobs[index].diagnosticMessage = ""
-        }
-    }
-
-    func updateJobProgress(jobID: UUID, progress: FFmpegProgressSnapshot) {
-        guard let index = jobs.firstIndex(where: { $0.id == jobID }),
-            jobs[index].state == .running
-        else {
-            return
-        }
-        jobs[index].message = progress.message
-    }
-
-    private func summarizeFFmpegOutput(_ output: String) -> String {
-        let lines =
-            output
-            .split(separator: "\n")
-            .map(String.init)
-            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-
-        return lines.last(where: { $0.contains("audio:") || $0.contains("video:") })
-            ?? "Output written."
-    }
-
     private static func normalizedExtensionSet(from text: String) -> Set<String> {
         let separators = CharacterSet(charactersIn: ",; \n\t")
         return Set(
@@ -7635,39 +7452,6 @@ final class EncoderViewModel: ObservableObject {
                     return normalized.isEmpty ? nil : normalized
                 }
         )
-    }
-}
-
-private final class EncodingProgressReporter: @unchecked Sendable {
-    weak var model: EncoderViewModel?
-    let jobID: UUID
-
-    init(model: EncoderViewModel, jobID: UUID) {
-        self.model = model
-        self.jobID = jobID
-    }
-
-    func report(_ progress: FFmpegProgressSnapshot) {
-        Task { @MainActor [weak model] in
-            model?.updateJobProgress(jobID: jobID, progress: progress)
-        }
-    }
-}
-
-private enum JobResult {
-    case success(UUID, String)
-    case skipped(UUID, String)
-    case failure(UUID, String, String)
-    case cancelled(UUID)
-
-    var jobID: UUID {
-        switch self {
-        case .success(let id, _),
-            .skipped(let id, _),
-            .failure(let id, _, _),
-            .cancelled(let id):
-            id
-        }
     }
 }
 
