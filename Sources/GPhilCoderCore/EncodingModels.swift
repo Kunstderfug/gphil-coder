@@ -824,36 +824,23 @@ public extension EncodingPresetDocument {
     ///
     /// Surfaced as a typed value (instead of a silent `nil`) so callers can
     /// show the user what happened and avoid overwriting on-disk data.
-    enum DecodeProblem: Error, Equatable, Sendable {
-        /// The blob was written by a version newer than this code understands.
-        case versionMismatch(found: Int, supported: Int)
-        /// The blob exists but could not be structurally decoded.
-        case corrupt(underlying: String)
-    }
+    typealias DecodeProblem = GPhilCoderCore.DecodeProblem
 
     /// Decodes the stored-presets blob, distinguishing a future version and
     /// corruption from an empty-but-valid state.
     ///
-    /// The version envelope is read first so that a future shape change can be
-    /// detected (and, eventually, migrated) before attempting a full structural
-    /// decode. New migration branches go here.
+    /// Routes the version-envelope check through the shared `VersionedBlob`
+    /// helper while keeping presets' own `presets`-keyed shape. Presets have
+    /// always been versioned, so no legacy bare-array fallback is supplied;
+    /// the existing `EncodingPresetTests` pin this behavior.
     static func decode(from data: Data) -> Result<[EncodingPreset], DecodeProblem> {
-        let envelopeVersion = (try? JSONDecoder().decode(
-            VersionEnvelope.self, from: data))?.version
-        if let version = envelopeVersion, version != Self.currentVersion {
-            // Future: branch on `version` and migrate to currentVersion here.
-            return .failure(.versionMismatch(found: version, supported: Self.currentVersion))
-        }
-        do {
-            let document = try JSONDecoder().decode(EncodingPresetDocument.self, from: data)
-            return .success(document.presets)
-        } catch {
-            return .failure(.corrupt(underlying: String(describing: error)))
-        }
-    }
-
-    private struct VersionEnvelope: Codable {
-        let version: Int?
+        VersionedBlob.decode(
+            from: data,
+            currentVersion: Self.currentVersion,
+            decodePayload: { data in
+                try JSONDecoder().decode(EncodingPresetDocument.self, from: data).presets
+            }
+        )
     }
 }
 

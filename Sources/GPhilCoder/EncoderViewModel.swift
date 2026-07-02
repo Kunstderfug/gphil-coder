@@ -198,6 +198,16 @@ final class EncoderViewModel: ObservableObject {
         var redoStack: [MediaRenameHistoryTransaction]
     }
 
+    /// Versioned wrapper around `MediaRenameSettings`, mirroring the
+    /// `VersionedBlob` envelope shape so a corrupt blob can be distinguished
+    /// from a missing one.
+    private struct MediaRenameSettingsDocument: Codable, Sendable {
+        static let currentVersion = 1
+
+        var version = Self.currentVersion
+        var settings: MediaRenameSettings
+    }
+
     private struct MediaRenameHistoryItem: Codable, Equatable, Identifiable, Sendable {
         let id: UUID
         let originalPath: String
@@ -5879,17 +5889,62 @@ final class EncoderViewModel: ObservableObject {
 
         let defaults = UserDefaults.standard
 
-        if let data = defaults.data(forKey: DefaultsKey.trashedSourceRecords),
-            let records = try? JSONDecoder().decode([TrashedSourceRecord].self, from: data)
-        {
-            trashedSourceRecords = records
+        if let data = defaults.data(forKey: DefaultsKey.trashedSourceRecords) {
+            switch VersionedBlob.decodeEnvelope(
+                from: data, currentVersion: 1, allowLegacyBareArray: true
+            ) as Result<[TrashedSourceRecord], DecodeProblem> {
+            case .success(let records):
+                trashedSourceRecords = records
+            case .failure(.versionMismatch):
+                // Leave the blob intact for a newer build to read.
+                statusMessage =
+                    "Could not read saved trash records — they were saved by a newer version of GPhilCoder and were kept. Restore-from-Trash may be unavailable until you upgrade."
+            case .failure(.corrupt):
+                preserveCorruptBlob(data, name: "trashed-source-records")
+                statusMessage =
+                    "Could not read saved trash records — the data appears damaged and was preserved to a backup file. Contact support before relying on Trash restore."
+            }
         }
-        if let data = defaults.data(forKey: DefaultsKey.mediaRenameHistory),
-            let document = try? JSONDecoder().decode(MediaRenameHistoryDocument.self, from: data),
-            document.version == MediaRenameHistoryDocument.currentVersion
-        {
-            mediaRenameUndoStack = Array(document.undoStack.suffix(Self.mediaRenameHistoryLimit))
-            mediaRenameRedoStack = Array(document.redoStack.suffix(Self.mediaRenameHistoryLimit))
+        if let data = defaults.data(forKey: DefaultsKey.mediaRenameHistory) {
+            // The rename-history document already carries its own version, so
+            // route it through the shared helper to surface a corrupt blob
+            // rather than silently discarding undo/redo history.
+            let result = VersionedBlob.decode(
+                from: data,
+                currentVersion: MediaRenameHistoryDocument.currentVersion,
+                decodePayload: { data in
+                    let document = try JSONDecoder().decode(
+                        MediaRenameHistoryDocument.self, from: data
+                    )
+                    guard document.version == MediaRenameHistoryDocument.currentVersion else {
+                        // Re-throw as a version mismatch the envelope check missed
+                        // (the document decodes structurally but reports a new version).
+                        throw DecodeProblem.versionMismatch(
+                            found: document.version,
+                            supported: MediaRenameHistoryDocument.currentVersion
+                        )
+                    }
+                    return [document]
+                }
+            ) as Result<[MediaRenameHistoryDocument], DecodeProblem>
+            switch result {
+            case .success(let documents):
+                if let document = documents.first {
+                    mediaRenameUndoStack = Array(
+                        document.undoStack.suffix(Self.mediaRenameHistoryLimit)
+                    )
+                    mediaRenameRedoStack = Array(
+                        document.redoStack.suffix(Self.mediaRenameHistoryLimit)
+                    )
+                }
+            case .failure(.versionMismatch):
+                statusMessage =
+                    "Could not read rename history — it was saved by a newer version of GPhilCoder and was kept."
+            case .failure(.corrupt):
+                preserveCorruptBlob(data, name: "media-rename-history")
+                statusMessage =
+                    "Could not read rename history — the data appears damaged and was preserved to a backup file."
+            }
         }
         loadMediaRenameSettings(from: defaults)
         loadEncodingPresets(from: defaults)
@@ -6691,7 +6746,7 @@ final class EncoderViewModel: ObservableObject {
             return
         }
 
-        if let data = try? JSONEncoder().encode(trashedSourceRecords) {
+        if let data = try? VersionedBlob.encode(trashedSourceRecords, currentVersion: 1) {
             UserDefaults.standard.set(data, forKey: DefaultsKey.trashedSourceRecords)
         }
     }
@@ -6713,7 +6768,8 @@ final class EncoderViewModel: ObservableObject {
 
     private func persistMediaRenameSettings() {
         let settings = currentMediaRenameSettings()
-        if let data = try? JSONEncoder().encode(settings) {
+        let document = MediaRenameSettingsDocument(settings: settings)
+        if let data = try? JSONEncoder().encode(document) {
             UserDefaults.standard.set(data, forKey: DefaultsKey.mediaRenameSettings)
         }
     }
@@ -6769,12 +6825,42 @@ final class EncoderViewModel: ObservableObject {
     }
 
     private func loadMediaRenameSettings(from defaults: UserDefaults) {
-        guard let data = defaults.data(forKey: DefaultsKey.mediaRenameSettings),
-            let settings = try? JSONDecoder().decode(MediaRenameSettings.self, from: data)
-        else {
-            return
-        }
+        guard let data = defaults.data(forKey: DefaultsKey.mediaRenameSettings) else { return }
 
+        // Rename settings are a single struct, not an array. Wrap a decode
+        // through the shared helper so a corrupt blob surfaces instead of
+        // silently reverting the user's last-used rename configuration.
+        let result = VersionedBlob.decode(
+            from: data,
+            currentVersion: MediaRenameSettingsDocument.currentVersion,
+            decodePayload: { data in
+                [try JSONDecoder().decode(MediaRenameSettingsDocument.self, from: data).settings]
+            },
+            legacyBareArray: { data in
+                // Legacy shape was a bare MediaRenameSettings struct.
+                guard let settings = try? JSONDecoder().decode(
+                    MediaRenameSettings.self, from: data
+                ) else { return nil }
+                return [settings]
+            }
+        ) as Result<[MediaRenameSettings], DecodeProblem>
+
+        switch result {
+        case .success(let settings) where !settings.isEmpty:
+            applyMediaRenameSettings(settings[0])
+        case .failure(.versionMismatch):
+            statusMessage =
+                "Could not read rename settings — they were saved by a newer version of GPhilCoder and were kept."
+        case .failure(.corrupt):
+            preserveCorruptBlob(data, name: "media-rename-settings")
+            statusMessage =
+                "Could not read rename settings — the data appears damaged and was preserved to a backup file."
+        case .success:
+            break
+        }
+    }
+
+    private func applyMediaRenameSettings(_ settings: MediaRenameSettings) {
         mediaRenameOperation = settings.operation
         mediaRenamePattern = settings.pattern
         mediaRenameFindText = settings.findText
@@ -6791,13 +6877,24 @@ final class EncoderViewModel: ObservableObject {
 
     private func loadPendingTrashSourceRecords() {
         guard let url = try? trashEmergencyJournalURL() else { return }
-        guard let data = try? Data(contentsOf: url),
-            let records = try? JSONDecoder().decode([PendingTrashSourceRecord].self, from: data)
-        else {
-            return
-        }
+        guard let data = try? Data(contentsOf: url) else { return }
 
-        pendingTrashSourceRecords = records
+        // The emergency journal is the last-resort record of files about to be
+        // moved to Trash. A corrupt blob must surface, not vanish — otherwise
+        // the user could lose the ability to recover files this app deleted.
+        switch VersionedBlob.decodeEnvelope(
+            from: data, currentVersion: 1, allowLegacyBareArray: true
+        ) as Result<[PendingTrashSourceRecord], DecodeProblem> {
+        case .success(let records):
+            pendingTrashSourceRecords = records
+        case .failure(.versionMismatch):
+            statusMessage =
+                "Could not read the trash emergency journal — it was saved by a newer version of GPhilCoder and was kept."
+        case .failure(.corrupt):
+            preserveCorruptBlob(data, name: "trash-emergency-journal")
+            statusMessage =
+                "Could not read the trash emergency journal — the data appears damaged and was preserved to a backup file. If you recently moved files to Trash, contact support before clearing it."
+        }
     }
 
     private func recordPendingTrashIntent(
@@ -6874,7 +6971,7 @@ final class EncoderViewModel: ObservableObject {
             return
         }
 
-        let data = try JSONEncoder().encode(records)
+        let data = try VersionedBlob.encode(records, currentVersion: 1)
         try data.write(to: url, options: [.atomic])
     }
 
@@ -6894,6 +6991,39 @@ final class EncoderViewModel: ObservableObject {
             withIntermediateDirectories: true
         )
         return directoryURL.appendingPathComponent(TrashEmergencyJournal.fileName)
+    }
+
+    /// Preserves a corrupt persisted blob to a timestamped `.corrupt` sidecar
+    /// in Application Support so the user (or support) can recover it later.
+    /// Used when a decode surfaces `.corrupt` for safety-critical payloads
+    /// (trash records, rename history, the trash emergency journal).
+    private func preserveCorruptBlob(_ data: Data, name: String) {
+        do {
+            let baseURL = try FileManager.default.url(
+                for: .applicationSupportDirectory,
+                in: .userDomainMask,
+                appropriateFor: nil,
+                create: true
+            )
+            let directoryURL = baseURL.appendingPathComponent(
+                TrashEmergencyJournal.directoryName,
+                isDirectory: true
+            )
+            try FileManager.default.createDirectory(
+                at: directoryURL,
+                withIntermediateDirectories: true
+            )
+            let timestamp = ISO8601DateFormatter().string(from: Date())
+                .replacingOccurrences(of: ":", with: "-")
+            let sidecar = directoryURL.appendingPathComponent(
+                "\(name)-\(timestamp).corrupt",
+                isDirectory: false
+            )
+            try data.write(to: sidecar, options: [.atomic])
+        } catch {
+            // Best-effort: surfacing already happened via statusMessage. Do not
+            // raise a further error from this recovery path.
+        }
     }
 
     private func setSelectedInputExtensions(_ extensions: Set<String>) {
