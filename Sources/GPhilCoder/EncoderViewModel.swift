@@ -796,8 +796,8 @@ final class EncoderViewModel: ObservableObject {
     private var folderSyncPendingAfterCurrentRun = false
     private var isUpdatingSyncPairStatus = false
     private var isLoadingPersistedSettings = false
-    private var activeEncodingSecurityScopedURLs: [URL] = []
-    private var activeFolderSyncSecurityScopedURLs: [URL] = []
+    private let securityScopes = SecurityScopeManager()
+    private let bookmarks = BookmarkStore()
     private var mediaFileInventory: [MediaFileInventoryRecord] = []
     private var mediaFileInventorySourceRootPaths: [String] = []
 
@@ -2554,8 +2554,8 @@ final class EncoderViewModel: ObservableObject {
             originPath: originPath,
             destinationPath: destinationPath,
             state: syncAutoSyncEnabled ? .watching : .idle,
-            originBookmarkData: securityScopedBookmarkData(for: originRoot),
-            destinationBookmarkData: securityScopedBookmarkData(for: destinationRoot)
+            originBookmarkData: bookmarks.bookmarkData(for: originRoot),
+            destinationBookmarkData: bookmarks.bookmarkData(for: destinationRoot)
         )
 
         if let editingSyncPairID {
@@ -2578,8 +2578,8 @@ final class EncoderViewModel: ObservableObject {
                 ? (syncAutoSyncEnabled ? .watching : .idle)
                 : .disabled
             editedPair.lastMessage = "Ready to sync."
-            editedPair.originBookmarkData = securityScopedBookmarkData(for: originRoot)
-            editedPair.destinationBookmarkData = securityScopedBookmarkData(for: destinationRoot)
+            editedPair.originBookmarkData = bookmarks.bookmarkData(for: originRoot)
+            editedPair.destinationBookmarkData = bookmarks.bookmarkData(for: destinationRoot)
 
             var editedPairs = syncFolderPairs
             editedPairs[index] = editedPair
@@ -2757,7 +2757,7 @@ final class EncoderViewModel: ObservableObject {
         folderSyncTask = nil
         folderSyncAutoTask = nil
         folderSyncPendingAfterCurrentRun = false
-        stopActiveFolderSyncSecurityScopes()
+        securityScopes.stopSync()
         isSyncScanning = false
         isSyncing = false
         currentSyncPairID = nil
@@ -2833,7 +2833,7 @@ final class EncoderViewModel: ObservableObject {
                     state: .failed,
                     message: "Origin and destination folders are not valid."
                 )
-                stopActiveFolderSyncSecurityScopes()
+                securityScopes.stopSync()
                 return
             }
         }
@@ -2928,7 +2928,7 @@ final class EncoderViewModel: ObservableObject {
                 guard syncAfterScan else {
                     self?.currentSyncPairID = nil
                     self?.folderSyncTask = nil
-                    self?.stopActiveFolderSyncSecurityScopes()
+                    self?.securityScopes.stopSync()
                     self?.statusMessage =
                         operationCount == 0
                         ? "All enabled sync pairs are already current."
@@ -2947,7 +2947,7 @@ final class EncoderViewModel: ObservableObject {
                             body: completionMessage
                         )
                     }
-                    self?.stopActiveFolderSyncSecurityScopes()
+                    self?.securityScopes.stopSync()
                     self?.runPendingFolderSyncIfNeeded()
                     return
                 }
@@ -2967,7 +2967,7 @@ final class EncoderViewModel: ObservableObject {
                 self?.isSyncing = false
                 self?.currentSyncPairID = nil
                 self?.folderSyncTask = nil
-                self?.stopActiveFolderSyncSecurityScopes()
+                self?.securityScopes.stopSync()
                 let completionMessage = Self.folderSyncResultStatusMessage(result)
                 self?.statusMessage = completionMessage
                 self?.notifyCompletionIfNeeded(
@@ -2981,7 +2981,7 @@ final class EncoderViewModel: ObservableObject {
                 self?.isSyncing = false
                 self?.currentSyncPairID = nil
                 self?.folderSyncTask = nil
-                self?.stopActiveFolderSyncSecurityScopes()
+                self?.securityScopes.stopSync()
                 self?.statusMessage = "Folder sync cancelled."
             } catch {
                 guard !Task.isCancelled else { return }
@@ -2989,7 +2989,7 @@ final class EncoderViewModel: ObservableObject {
                 self?.isSyncing = false
                 self?.currentSyncPairID = nil
                 self?.folderSyncTask = nil
-                self?.stopActiveFolderSyncSecurityScopes()
+                self?.securityScopes.stopSync()
                 self?.statusMessage = "Could not run folder sync: \(error.localizedDescription)"
             }
         }
@@ -5090,7 +5090,7 @@ final class EncoderViewModel: ObservableObject {
         for pairs: [SyncFolderPair],
         triggeredAutomatically: Bool
     ) -> [SyncFolderPair]? {
-        stopActiveFolderSyncSecurityScopes()
+        securityScopes.stopSync()
 
         var preparedPairs = pairs
         startFolderSyncSecurityScopes(for: preparedPairs)
@@ -5101,38 +5101,38 @@ final class EncoderViewModel: ObservableObject {
         guard !pairsMissingBookmarks.isEmpty else { return preparedPairs }
 
         guard !triggeredAutomatically else {
-            stopActiveFolderSyncSecurityScopes()
+            securityScopes.stopSync()
             statusMessage = "Auto-sync skipped because loaded sync pairs need folder access authorization."
             return nil
         }
 
         guard let grantedRoots = requestFolderSyncAccess(for: pairsMissingBookmarks) else {
-            stopActiveFolderSyncSecurityScopes()
+            securityScopes.stopSync()
             statusMessage = "Folder sync cancelled because folder access was not authorized."
             return nil
         }
 
-        startFolderSyncSecurityScopes(grantedRoots)
+        securityScopes.startSync(grantedRoots)
         guard selectedSyncAccessRoots(grantedRoots, cover: pairsMissingBookmarks) else {
-            stopActiveFolderSyncSecurityScopes()
+            securityScopes.stopSync()
             statusMessage = "Folder sync cancelled because the selected folder does not contain every loaded origin and destination."
             return nil
         }
 
         let grantedBookmarks = grantedRoots.compactMap { root -> (url: URL, data: Data)? in
-            guard let data = securityScopedBookmarkData(for: root) else { return nil }
+            guard let data = bookmarks.bookmarkData(for: root) else { return nil }
             return (root, data)
         }
 
         for index in preparedPairs.indices {
             if preparedPairs[index].originBookmarkData == nil {
-                preparedPairs[index].originBookmarkData = bookmarkData(
+                preparedPairs[index].originBookmarkData = bookmarks.bookmarkData(
                     for: preparedPairs[index].originURL,
                     in: grantedBookmarks
                 )
             }
             if preparedPairs[index].destinationBookmarkData == nil {
-                preparedPairs[index].destinationBookmarkData = bookmarkData(
+                preparedPairs[index].destinationBookmarkData = bookmarks.bookmarkData(
                     for: preparedPairs[index].destinationURL,
                     in: grantedBookmarks
                 )
@@ -5143,7 +5143,7 @@ final class EncoderViewModel: ObservableObject {
             $0.originBookmarkData == nil || $0.destinationBookmarkData == nil
         }
         guard !stillMissingBookmarks else {
-            stopActiveFolderSyncSecurityScopes()
+            securityScopes.stopSync()
             statusMessage = "Folder sync cancelled because GPhilCoder could not save folder authorization."
             return nil
         }
@@ -5169,16 +5169,10 @@ final class EncoderViewModel: ObservableObject {
         return panel.urls
     }
 
-    private func bookmarkData(
-        for url: URL,
-        in grantedBookmarks: [(url: URL, data: Data)]
-    ) -> Data? {
-        grantedBookmarks.first { containsFileURL(url, in: $0.url) }?.data
-    }
-
     private func commonFolderSyncAccessRoot(for pairs: [SyncFolderPair]) -> URL? {
         let paths = pairs.flatMap { pair in
-            [normalizedFilePath(pair.originURL), normalizedFilePath(pair.destinationURL)]
+            [SecurityScopeManager.normalizedFilePath(pair.originURL),
+             SecurityScopeManager.normalizedFilePath(pair.destinationURL)]
         }
         guard let firstPath = paths.first else { return nil }
 
@@ -5195,8 +5189,8 @@ final class EncoderViewModel: ObservableObject {
 
     private func selectedSyncAccessRoots(_ roots: [URL], cover pairs: [SyncFolderPair]) -> Bool {
         for pair in pairs {
-            guard roots.contains(where: { containsFileURL(pair.originURL, in: $0) }),
-                roots.contains(where: { containsFileURL(pair.destinationURL, in: $0) })
+            guard roots.contains(where: { SecurityScopeManager.containsFileURL(pair.originURL, in: $0) }),
+                roots.contains(where: { SecurityScopeManager.containsFileURL(pair.destinationURL, in: $0) })
             else {
                 return false
             }
@@ -5204,54 +5198,43 @@ final class EncoderViewModel: ObservableObject {
         return true
     }
 
-    private func containsFileURL(_ url: URL, in root: URL) -> Bool {
-        let path = normalizedFilePath(url)
-        let rootPath = normalizedFilePath(root)
-        return path == rootPath || path.hasPrefix("\(rootPath)/")
-    }
-
-    private func securityScopedBookmarkData(for url: URL) -> Data? {
-        try? url.bookmarkData(
-            options: .withSecurityScope,
-            includingResourceValuesForKeys: nil,
-            relativeTo: nil
-        )
-    }
-
+    /// Resolves each pair's origin/destination bookmarks into security-scoped
+    /// URLs and starts accessing them. When macOS reports a bookmark as stale
+    /// (folder renamed/moved), the bookmark is re-created from the resolved URL
+    /// and the pair is updated so the next launch resolves cleanly.
     private func startFolderSyncSecurityScopes(for pairs: [SyncFolderPair]) {
-        let urls = pairs.flatMap { pair in
-            [
-                resolveSecurityScopedBookmark(pair.originBookmarkData, fallbackURL: pair.originURL),
-                resolveSecurityScopedBookmark(pair.destinationBookmarkData, fallbackURL: pair.destinationURL)
-            ]
-        }
-        startFolderSyncSecurityScopes(urls)
-    }
+        var refreshedPairs = pairs
+        var anyPairRefreshed = false
 
-    private func resolveSecurityScopedBookmark(_ data: Data?, fallbackURL: URL) -> URL {
-        guard let data else { return fallbackURL }
-        var isStale = false
-        return (try? URL(
-            resolvingBookmarkData: data,
-            options: .withSecurityScope,
-            relativeTo: nil,
-            bookmarkDataIsStale: &isStale
-        )) ?? fallbackURL
-    }
-
-    private func startFolderSyncSecurityScopes(_ urls: [URL]) {
-        for url in uniqueURLs(urls) where !activeFolderSyncSecurityScopedURLs.contains(where: { sameFileURL($0, url) }) {
-            if url.startAccessingSecurityScopedResource() {
-                activeFolderSyncSecurityScopedURLs.append(url)
+        let urls = pairs.flatMap { pair -> [URL] in
+            guard let index = refreshedPairs.firstIndex(where: { $0.id == pair.id }) else {
+                return [pair.originURL, pair.destinationURL]
             }
+            let originURL = bookmarks.resolveSecurityScopedBookmark(
+                pair.originBookmarkData,
+                fallbackURL: pair.originURL
+            ) { resolved in
+                if let refreshed = self.bookmarks.bookmarkData(for: resolved) {
+                    refreshedPairs[index].originBookmarkData = refreshed
+                    anyPairRefreshed = true
+                }
+            }
+            let destinationURL = bookmarks.resolveSecurityScopedBookmark(
+                pair.destinationBookmarkData,
+                fallbackURL: pair.destinationURL
+            ) { resolved in
+                if let refreshed = self.bookmarks.bookmarkData(for: resolved) {
+                    refreshedPairs[index].destinationBookmarkData = refreshed
+                    anyPairRefreshed = true
+                }
+            }
+            return [originURL, destinationURL]
         }
-    }
 
-    private func stopActiveFolderSyncSecurityScopes() {
-        for url in activeFolderSyncSecurityScopedURLs {
-            url.stopAccessingSecurityScopedResource()
+        securityScopes.startSync(urls)
+        if anyPairRefreshed {
+            updateStoredSyncPairs(with: refreshedPairs)
         }
-        activeFolderSyncSecurityScopedURLs.removeAll()
     }
 
     private func updateStoredSyncPairs(with preparedPairs: [SyncFolderPair]) {
@@ -5265,25 +5248,27 @@ final class EncoderViewModel: ObservableObject {
     }
 
     private func prepareEncodingFileAccess(for plannedJobs: [EncodeJob]) -> Bool {
-        stopActiveEncodingSecurityScopes()
+        securityScopes.stopEncoding()
 
         let initialRoots = securityScopedRoots(for: plannedJobs)
-        startEncodingSecurityScopes(initialRoots)
+        securityScopes.startEncoding(initialRoots)
 
-        let outputDirectories = uniqueURLs(plannedJobs.map { $0.outputURL.deletingLastPathComponent() })
-        let deniedDirectories = outputDirectories.filter { !canWriteTemporaryFile(in: $0) }
+        let outputDirectories = SecurityScopeManager.uniqueURLs(
+            plannedJobs.map { $0.outputURL.deletingLastPathComponent() }
+        )
+        let deniedDirectories = outputDirectories.filter { !securityScopes.canWriteTemporaryFile(in: $0) }
         guard !deniedDirectories.isEmpty else { return true }
 
         guard let grantedRoots = requestWriteAccess(for: deniedDirectories) else {
-            stopActiveEncodingSecurityScopes()
+            securityScopes.stopEncoding()
             statusMessage = "Encoding cancelled because GPhilCoder does not have permission to write to the output folder."
             return false
         }
 
-        startEncodingSecurityScopes(grantedRoots)
-        let stillDenied = outputDirectories.filter { !canWriteTemporaryFile(in: $0) }
+        securityScopes.startEncoding(grantedRoots)
+        let stillDenied = outputDirectories.filter { !securityScopes.canWriteTemporaryFile(in: $0) }
         guard stillDenied.isEmpty else {
-            stopActiveEncodingSecurityScopes()
+            securityScopes.stopEncoding()
             let names = stillDenied.prefix(3).map { $0.path(percentEncoded: false) }.joined(separator: "\n")
             statusMessage = "GPhilCoder still cannot write to:\n\(names)"
             return false
@@ -5301,40 +5286,7 @@ final class EncoderViewModel: ObservableObject {
             urls.append(exportFolder)
         }
 
-        return uniqueURLs(urls)
-    }
-
-    private func startEncodingSecurityScopes(_ urls: [URL]) {
-        for url in urls where !activeEncodingSecurityScopedURLs.contains(where: { sameFileURL($0, url) }) {
-            if url.startAccessingSecurityScopedResource() {
-                activeEncodingSecurityScopedURLs.append(url)
-            }
-        }
-    }
-
-    private func stopActiveEncodingSecurityScopes() {
-        for url in activeEncodingSecurityScopedURLs {
-            url.stopAccessingSecurityScopedResource()
-        }
-        activeEncodingSecurityScopedURLs.removeAll()
-    }
-
-    private func canWriteTemporaryFile(in directory: URL) -> Bool {
-        do {
-            try FileManager.default.createDirectory(
-                at: directory,
-                withIntermediateDirectories: true
-            )
-            let probeURL = directory.appendingPathComponent(
-                ".gphilcoder-write-test-\(UUID().uuidString)",
-                isDirectory: false
-            )
-            try Data().write(to: probeURL, options: .withoutOverwriting)
-            try? FileManager.default.removeItem(at: probeURL)
-            return true
-        } catch {
-            return false
-        }
+        return SecurityScopeManager.uniqueURLs(urls)
     }
 
     private func requestWriteAccess(for directories: [URL]) -> [URL]? {
@@ -5351,29 +5303,6 @@ final class EncoderViewModel: ObservableObject {
 
         guard panel.runModal() == .OK else { return nil }
         return panel.urls
-    }
-
-    private func uniqueURLs(_ urls: [URL]) -> [URL] {
-        var seen: Set<String> = []
-        var result: [URL] = []
-
-        for url in urls {
-            let standardized = url.standardizedFileURL
-            let key = standardized.path
-            guard !seen.contains(key) else { continue }
-            seen.insert(key)
-            result.append(standardized)
-        }
-
-        return result
-    }
-
-    private func sameFileURL(_ lhs: URL, _ rhs: URL) -> Bool {
-        lhs.standardizedFileURL.path == rhs.standardizedFileURL.path
-    }
-
-    private func normalizedFilePath(_ url: URL) -> String {
-        url.standardizedFileURL.resolvingSymlinksInPath().path
     }
 
     private func defaultQueueFileName() -> String {
@@ -7538,7 +7467,7 @@ final class EncoderViewModel: ObservableObject {
 
         isEncoding = false
         encodeTask = nil
-        stopActiveEncodingSecurityScopes()
+        securityScopes.stopEncoding()
 
         let completionTitle: String
         let completionMessage: String
