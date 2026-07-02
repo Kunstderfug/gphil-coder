@@ -6573,7 +6573,6 @@ final class EncoderViewModel: ObservableObject {
         do {
             let data = try SyncFolderPairPersistence.encode(syncFolderPairs)
             UserDefaults.standard.set(data, forKey: DefaultsKey.syncFolderPairs)
-            UserDefaults.standard.synchronize()
         } catch {
             statusMessage = "Could not save sync pairs: \(error.localizedDescription)"
         }

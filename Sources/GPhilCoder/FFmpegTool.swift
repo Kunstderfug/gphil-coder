@@ -255,9 +255,15 @@ struct FFmpegEncoder {
             arguments.append(contentsOf: ["-threads", "\(settings.ffmpegThreads)"])
         }
 
-        arguments.append(output.path)
+        // Write to a unique temp sibling, then atomically replace the final
+        // output on success. A cancelled or failed encode must never leave a
+        // truncated file at the user-visible output path.
+        let tempOutput = temporaryOutputURL(beside: output)
+        arguments.append(tempOutput.path)
 
-        return try await ProcessRunner.run(executableURL: ffmpegURL, arguments: arguments)
+        return try await runInstallingTemp(temp: tempOutput, output: output) {
+            try await ProcessRunner.run(executableURL: ffmpegURL, arguments: arguments)
+        }
     }
 
     private func encodeVideo(
@@ -312,14 +318,20 @@ struct FFmpegEncoder {
             arguments.append(contentsOf: ["-threads", "\(settings.ffmpegThreads)"])
         }
 
-        arguments.append(output.path)
+        // Write to a unique temp sibling, then atomically replace the final
+        // output on success. A cancelled or failed encode must never leave a
+        // truncated file at the user-visible output path.
+        let tempOutput = temporaryOutputURL(beside: output)
+        arguments.append(tempOutput.path)
 
-        return try await ProcessRunner.run(
-            executableURL: ffmpegURL,
-            arguments: arguments
-        ) { chunk in
-            guard let progress = FFmpegProgressSnapshot.parse(from: chunk) else { return }
-            progressHandler?(progress)
+        return try await runInstallingTemp(temp: tempOutput, output: output) {
+            try await ProcessRunner.run(
+                executableURL: ffmpegURL,
+                arguments: arguments
+            ) { chunk in
+                guard let progress = FFmpegProgressSnapshot.parse(from: chunk) else { return }
+                progressHandler?(progress)
+            }
         }
     }
 
@@ -393,9 +405,16 @@ struct FFmpegEncoder {
             if settings.ffmpegThreads > 0 {
                 arguments.append(contentsOf: ["-threads", "\(settings.ffmpegThreads)"])
             }
-            arguments.append(outputURL.path)
 
-            let output = try await ProcessRunner.run(executableURL: ffmpegURL, arguments: arguments)
+            // Write to a unique temp sibling, then atomically replace the final
+            // output on success. A cancelled or failed encode must never leave a
+            // truncated file at the user-visible output path.
+            let tempOutput = temporaryOutputURL(beside: outputURL)
+            arguments.append(tempOutput.path)
+
+            let output = try await runInstallingTemp(temp: tempOutput, output: outputURL) {
+                try await ProcessRunner.run(executableURL: ffmpegURL, arguments: arguments)
+            }
             let summary = output
                 .split(separator: "\n")
                 .map(String.init)
@@ -532,6 +551,51 @@ struct FFmpegEncoder {
         "FL", "FR", "FC", "LFE", "BL", "BR", "FLC", "FRC", "BC",
         "SL", "SR", "TC", "TFL", "TFC", "TFR", "TBL", "TBC", "TBR"
     ]
+
+    /// A unique temp-file URL beside `output` that preserves the output's
+    /// extension. ffmpeg writes here; on success the temp replaces `output`
+    /// atomically so a cancelled or failed encode leaves no truncated output.
+    private func temporaryOutputURL(beside output: URL) -> URL {
+        let directory = output.deletingLastPathComponent()
+        let fileExtension = output.pathExtension
+        let stem = ".gphilcoder-encoding-\(UUID().uuidString)"
+        let name = fileExtension.isEmpty ? stem : "\(stem).\(fileExtension)"
+        return directory.appendingPathComponent(name, isDirectory: false)
+    }
+
+    /// Runs an encode that writes to `temp`, then installs the temp at `output`
+    /// on success. On any throw (including `CancellationError`) the temp is
+    /// removed and `output` is left untouched. Mirrors the temp+replace
+    /// discipline already used by the sync and copy planners.
+    private func runInstallingTemp(
+        temp: URL,
+        output: URL,
+        _ work: () async throws -> String
+    ) async throws -> String {
+        let fileManager = FileManager.default
+        do {
+            let result = try await work()
+            if fileManager.fileExists(atPath: temp.path) {
+                _ = try fileManager.replaceItemAt(
+                    output,
+                    withItemAt: temp,
+                    backupItemName: nil,
+                    options: []
+                )
+            } else {
+                // ffmpeg reported success but produced no output file (e.g.
+                // an empty/passthrough case). Treat as a write failure so the
+                // job is flagged instead of silently succeeding.
+                throw FFmpegToolError.processFailed(status: 0, output: result)
+            }
+            return result
+        } catch {
+            if fileManager.fileExists(atPath: temp.path) {
+                try? fileManager.removeItem(at: temp)
+            }
+            throw error
+        }
+    }
 }
 
 enum FFmpegProbe {

@@ -1,13 +1,13 @@
 import CryptoKit
 import Foundation
 
-enum RestoreCopySource: String, CaseIterable, Identifiable, Sendable {
+public enum RestoreCopySource: String, CaseIterable, Identifiable, Sendable {
     case deleted
     case backup
 
-    var id: String { rawValue }
+    public var id: String { rawValue }
 
-    var title: String {
+    public var title: String {
         switch self {
         case .deleted:
             "Deleted folder"
@@ -17,13 +17,13 @@ enum RestoreCopySource: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-enum RestoreMatchMode: String, CaseIterable, Identifiable, Sendable {
+public enum RestoreMatchMode: String, CaseIterable, Identifiable, Sendable {
     case filenameAndSize
     case filenameOnly
 
-    var id: String { rawValue }
+    public var id: String { rawValue }
 
-    var title: String {
+    public var title: String {
         switch self {
         case .filenameAndSize:
             "Filename + size"
@@ -32,7 +32,7 @@ enum RestoreMatchMode: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    var detail: String {
+    public var detail: String {
         switch self {
         case .filenameAndSize:
             "Safest: requires the same filename and exact byte size."
@@ -41,7 +41,7 @@ enum RestoreMatchMode: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    var matchDescription: String {
+    public var matchDescription: String {
         switch self {
         case .filenameAndSize:
             "filename and byte size"
@@ -51,14 +51,14 @@ enum RestoreMatchMode: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-enum RestoreHashMode: String, CaseIterable, Identifiable, Sendable {
+public enum RestoreHashMode: String, CaseIterable, Identifiable, Sendable {
     case auto
     case always
     case never
 
-    var id: String { rawValue }
+    public var id: String { rawValue }
 
-    var title: String {
+    public var title: String {
         switch self {
         case .auto:
             "Auto"
@@ -69,7 +69,7 @@ enum RestoreHashMode: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    var detail: String {
+    public var detail: String {
         switch self {
         case .auto:
             "Hash only duplicate matching candidates."
@@ -81,14 +81,14 @@ enum RestoreHashMode: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-enum RestorePlanStatus: String, CaseIterable, Sendable {
+public enum RestorePlanStatus: String, CaseIterable, Sendable {
     case alreadyRestored
     case matched
     case matchedConflict
     case ambiguous
     case missing
 
-    var title: String {
+    public var title: String {
         switch self {
         case .alreadyRestored:
             "Restored"
@@ -104,14 +104,14 @@ enum RestorePlanStatus: String, CaseIterable, Sendable {
     }
 }
 
-enum RestorePlanProgressPhase: String, Sendable {
+public enum RestorePlanProgressPhase: String, Sendable {
     case scanningDeleted
     case scanningRestore
     case checkingRestore
     case scanningBackup
     case matching
 
-    var title: String {
+    public var title: String {
         switch self {
         case .scanningDeleted:
             "Scanning deleted files"
@@ -127,15 +127,15 @@ enum RestorePlanProgressPhase: String, Sendable {
     }
 }
 
-struct RestorePlanProgress: Equatable, Sendable {
-    let phase: RestorePlanProgressPhase
-    let completed: Int
-    let total: Int?
-    let detail: String
-    let statusCounts: RestorePlanStatusCounts?
-    let unresolvedItems: [RestoreUnresolvedFile]?
+public struct RestorePlanProgress: Equatable, Sendable {
+    public let phase: RestorePlanProgressPhase
+    public let completed: Int
+    public let total: Int?
+    public let detail: String
+    public let statusCounts: RestorePlanStatusCounts?
+    public let unresolvedItems: [RestoreUnresolvedFile]?
 
-    init(
+    public init(
         phase: RestorePlanProgressPhase,
         completed: Int,
         total: Int?,
@@ -151,11 +151,11 @@ struct RestorePlanProgress: Equatable, Sendable {
         self.unresolvedItems = unresolvedItems
     }
 
-    var title: String {
+    public var title: String {
         phase.title
     }
 
-    var countText: String {
+    public var countText: String {
         if let total {
             "\(min(completed, total)) / \(total)"
         } else {
@@ -164,85 +164,129 @@ struct RestorePlanProgress: Equatable, Sendable {
     }
 }
 
-struct RestorePlanStatusCounts: Equatable, Sendable {
-    var deletedTotal = 0
-    var alreadyRestored = 0
-    var matched = 0
-    var conflict = 0
-    var ambiguous = 0
-    var missing = 0
+public struct RestorePlanStatusCounts: Equatable, Sendable {
+    public var deletedTotal = 0
+    public var alreadyRestored = 0
+    public var matched = 0
+    public var conflict = 0
+    public var ambiguous = 0
+    public var missing = 0
 
-    var unresolvedFromRestore: Int {
+    public init() {}
+
+    public init(
+        deletedTotal: Int = 0,
+        alreadyRestored: Int = 0,
+        matched: Int = 0,
+        conflict: Int = 0,
+        ambiguous: Int = 0,
+        missing: Int = 0
+    ) {
+        self.deletedTotal = deletedTotal
+        self.alreadyRestored = alreadyRestored
+        self.matched = matched
+        self.conflict = conflict
+        self.ambiguous = ambiguous
+        self.missing = missing
+    }
+
+    public var unresolvedFromRestore: Int {
         max(0, deletedTotal - alreadyRestored)
     }
 
-    var summary: String {
+    public var summary: String {
         "\(alreadyRestored) restored, \(unresolvedFromRestore) unresolved, \(matched) backup matches, \(conflict) target exists, \(ambiguous) ambiguous, \(missing) missing."
     }
 }
 
-struct RestoreUnresolvedFile: Codable, Identifiable, Equatable, Sendable {
-    let id: String
-    let name: String
-    let matchName: String?
-    let deletedPath: String
-    let size: Int64
+public struct RestoreUnresolvedFile: Codable, Identifiable, Equatable, Sendable {
+    public let id: String
+    public let name: String
+    public let matchName: String?
+    public let deletedPath: String
+    public let size: Int64
+
+    public init(id: String, name: String, matchName: String?, deletedPath: String, size: Int64) {
+        self.id = id
+        self.name = name
+        self.matchName = matchName
+        self.deletedPath = deletedPath
+        self.size = size
+    }
 }
 
-struct RestorePlanRecord: Identifiable, Sendable {
-    let id = UUID()
-    let status: RestorePlanStatus
-    let deletedURL: URL
-    let backupURL: URL?
-    let restoreURL: URL?
-    let relativePath: String?
-    let size: Int64
-    let sha256: String?
-    let note: String
-    let candidates: [URL]
+public struct RestorePlanRecord: Identifiable, Sendable {
+    public let id = UUID()
+    public let status: RestorePlanStatus
+    public let deletedURL: URL
+    public let backupURL: URL?
+    public let restoreURL: URL?
+    public let relativePath: String?
+    public let size: Int64
+    public let sha256: String?
+    public let note: String
+    public let candidates: [URL]
 
-    var displayName: String {
+    public var displayName: String {
         deletedURL.lastPathComponent
     }
 
-    var sourceURLForDeletedCopy: URL {
+    public var sourceURLForDeletedCopy: URL {
         deletedURL
     }
 }
 
-struct RestorePlanScanSummary: Equatable, Sendable {
-    let deletedFileCount: Int
-    let restoreCandidateCount: Int
-    let restoreScannedCount: Int
-    let unresolvedFileCount: Int
-    let backupCandidateCount: Int
-    let backupScannedCount: Int
+public struct RestorePlanScanSummary: Equatable, Sendable {
+    public let deletedFileCount: Int
+    public let restoreCandidateCount: Int
+    public let restoreScannedCount: Int
+    public let unresolvedFileCount: Int
+    public let backupCandidateCount: Int
+    public let backupScannedCount: Int
 
-    var detail: String {
+    public var detail: String {
         "\(deletedFileCount) deleted, \(restoreCandidateCount) restore-root candidates after scanning \(restoreScannedCount), \(unresolvedFileCount) sent to backup, \(backupCandidateCount) backup candidates after scanning \(backupScannedCount)."
     }
 }
 
-struct RestorePlanBuildResult: Sendable {
-    let records: [RestorePlanRecord]
-    let scanSummary: RestorePlanScanSummary
+public struct RestorePlanBuildResult: Sendable {
+    public let records: [RestorePlanRecord]
+    public let scanSummary: RestorePlanScanSummary
 }
 
-struct RestorePlanOptions: Sendable {
-    let deletedFolder: URL
-    let backupRoot: URL
-    let restoreRoot: URL
-    let matchMode: RestoreMatchMode
-    let hashMode: RestoreHashMode
-    let includeHidden: Bool
+public struct RestorePlanOptions: Sendable {
+    public let deletedFolder: URL
+    public let backupRoot: URL
+    public let restoreRoot: URL
+    public let matchMode: RestoreMatchMode
+    public let hashMode: RestoreHashMode
+    public let includeHidden: Bool
+
+    public init(
+        deletedFolder: URL,
+        backupRoot: URL,
+        restoreRoot: URL,
+        matchMode: RestoreMatchMode,
+        hashMode: RestoreHashMode,
+        includeHidden: Bool
+    ) {
+        self.deletedFolder = deletedFolder
+        self.backupRoot = backupRoot
+        self.restoreRoot = restoreRoot
+        self.matchMode = matchMode
+        self.hashMode = hashMode
+        self.includeHidden = includeHidden
+    }
 }
 
-struct RestoreApplyResult: Sendable {
-    var copied = 0
-    var skipped = 0
-    var failed = 0
-    var restoredURLs: [URL] = []
-    var failedNames: [String] = []
+public struct RestoreApplyResult: Sendable {
+    public var copied = 0
+    public var skipped = 0
+    public var failed = 0
+    public var restoredURLs: [URL] = []
+    public var failedNames: [String] = []
+
+    public init() {}
 }
 
 private struct RestoreFileInfo: Sendable {
@@ -262,14 +306,14 @@ private struct RestoreMatchKey: Hashable, Sendable {
     let size: Int64?
 }
 
-typealias RestorePlanProgressHandler = @Sendable (RestorePlanProgress) -> Void
+public typealias RestorePlanProgressHandler = @Sendable (RestorePlanProgress) -> Void
 
-enum RestorePlanner {
+public enum RestorePlanner {
     private static let scanProgressInterval = 100
     private static let matchingProgressInterval = 10
     private static let unresolvedListProgressInterval = 100
 
-    static func buildPlan(
+    public static func buildPlan(
         options: RestorePlanOptions,
         progress: RestorePlanProgressHandler? = nil
     ) throws -> RestorePlanBuildResult {
@@ -583,7 +627,7 @@ enum RestorePlanner {
         }
     }
 
-    static func apply(
+    public static func apply(
         records: [RestorePlanRecord],
         copySource: RestoreCopySource,
         overwrite: Bool
