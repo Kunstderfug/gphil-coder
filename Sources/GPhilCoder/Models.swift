@@ -272,19 +272,19 @@ struct AudioInputItem: Identifiable, Hashable {
     }
 
     func outputFileName(for format: AudioOutputFormat) -> String {
-        let baseName = url.deletingPathExtension().lastPathComponent
-        let outputBaseName = url.pathExtension.lowercased() == format.fileExtension
-            ? "\(baseName)-encoded"
-            : baseName
-        return outputBaseName + "." + format.fileExtension
+        encodedOutputFileName(
+            sourceExtension: url.pathExtension,
+            baseName: url.deletingPathExtension().lastPathComponent,
+            formatExtension: format.fileExtension
+        )
     }
 
     func outputFileName(for container: VideoOutputContainer) -> String {
-        let baseName = url.deletingPathExtension().lastPathComponent
-        let outputBaseName = url.pathExtension.lowercased() == container.fileExtension
-            ? "\(baseName)-encoded"
-            : baseName
-        return outputBaseName + "." + container.fileExtension
+        encodedOutputFileName(
+            sourceExtension: url.pathExtension,
+            baseName: url.deletingPathExtension().lastPathComponent,
+            formatExtension: container.fileExtension
+        )
     }
 }
 

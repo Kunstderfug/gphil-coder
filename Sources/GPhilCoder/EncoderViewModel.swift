@@ -4505,7 +4505,7 @@ final class EncoderViewModel: ObservableObject {
 
             let moveSucceeded = await Task.detached(priority: .userInitiated) {
                 do {
-                    try Self.moveRenameFile(from: sourceURL, to: targetURL)
+                    try moveRenameFile(from: sourceURL, to: targetURL)
                     return true
                 } catch {
                     return false
@@ -4664,33 +4664,6 @@ final class EncoderViewModel: ObservableObject {
 
     nonisolated private static func renameMediaItem(_ item: MediaRenameItem) throws {
         try moveRenameFile(from: item.sourceURL, to: item.targetURL)
-    }
-
-    nonisolated private static func moveRenameFile(from sourceURL: URL, to targetURL: URL) throws {
-        let fileManager = FileManager.default
-        let sourcePath = sourceURL.standardizedFileURL.path
-        let targetPath = targetURL.standardizedFileURL.path
-        let sourceKey = sourcePath.lowercased()
-        let targetKey = targetPath.lowercased()
-
-        if sourceKey == targetKey && sourcePath != targetPath {
-            let temporaryURL = sourceURL.deletingLastPathComponent()
-                .appendingPathComponent(".gphilcoder-rename-\(UUID().uuidString).tmp")
-            try fileManager.moveItem(at: sourceURL, to: temporaryURL)
-            do {
-                try fileManager.moveItem(at: temporaryURL, to: targetURL)
-            } catch {
-                try? fileManager.moveItem(at: temporaryURL, to: sourceURL)
-                throw error
-            }
-            return
-        }
-
-        guard !fileManager.fileExists(atPath: targetPath) else {
-            throw CocoaError(.fileWriteFileExists)
-        }
-
-        try fileManager.moveItem(at: sourceURL, to: targetURL)
     }
 
     private func confirmMediaRename(itemCount: Int, unchangedCount: Int) -> Bool {
@@ -4854,31 +4827,6 @@ final class EncoderViewModel: ObservableObject {
         }
 
         return result
-    }
-
-    nonisolated private static func availableDestinationURL(
-        in folder: URL,
-        preferredName: String
-    ) -> URL {
-        let fileManager = FileManager.default
-        let preferredURL = folder.appendingPathComponent(preferredName, isDirectory: false)
-        guard fileManager.fileExists(atPath: preferredURL.path) else { return preferredURL }
-
-        let baseName = (preferredName as NSString).deletingPathExtension
-        let fileExtension = (preferredName as NSString).pathExtension
-
-        for index in 2...10_000 {
-            let candidateName =
-                fileExtension.isEmpty
-                ? "\(baseName) \(index)"
-                : "\(baseName) \(index).\(fileExtension)"
-            let candidateURL = folder.appendingPathComponent(candidateName, isDirectory: false)
-            if !fileManager.fileExists(atPath: candidateURL.path) {
-                return candidateURL
-            }
-        }
-
-        return folder.appendingPathComponent(UUID().uuidString + "-" + preferredName)
     }
 
     func clearInputs() {
