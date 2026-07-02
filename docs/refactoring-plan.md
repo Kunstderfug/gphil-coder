@@ -8,8 +8,8 @@
 
 ## Current status
 
-- **Branch:** `main`, 6 commits ahead of `origin/main`.
-- **Build:** clean. **Tests:** 129 pass (baseline before the refactor was 51).
+- **Branch:** `main`, 8 commits ahead of `origin/main`.
+- **Build:** clean. **Tests:** 134 pass (baseline before the refactor was 51).
 - **No open correctness bugs** — all three Critical issues from the code review
   are closed.
 
@@ -52,10 +52,12 @@ Step 1 characterization coverage:
 
 - `Tests/GPhilCoderTests/EncodingCoordinatorTests.swift` — black-box tests for
   successful audio encoding, existing-output skip behavior with the same-format
-  `-encoded` suffix, and cancellation preserving an existing output file.
+  `-encoded` suffix, mixed skip/success runs, cancellation preserving an
+  existing output file, and cancellation marking queued work as cancelled.
 - `Tests/GPhilCoderTests/FolderSyncCoordinatorTests.swift` — black-box tests for
   scan/sync copy-update-delete counts, no-op reruns, and update detection after
-  an origin file changes.
+  an origin file changes, plus disabled-pair filtering, custom extension
+  filtering, filtered deletes, and overwrite-off skips.
 - `Tests/GPhilCoderTests/AsyncTestSupport.swift` — shared async polling and
   `UserDefaults` cleanup for view-model tests.
 
@@ -132,6 +134,8 @@ Added `Tests/GPhilCoderTests/EncodingCoordinatorTests.swift`:
 - Asserts `cancelEncoding()` mid-run leaves an existing output untouched
   (validates the Phase-1 temp-replace end-to-end).
 - Asserts the existing-output skip path and `-encoded` suffix integration.
+- Asserts mixed skip/success runs keep per-job state correct.
+- Asserts queued jobs become `.cancelled` when a single-worker run is cancelled.
 
 Added `Tests/GPhilCoderTests/FolderSyncCoordinatorTests.swift`:
 
@@ -139,8 +143,12 @@ Added `Tests/GPhilCoderTests/FolderSyncCoordinatorTests.swift`:
   `syncFoldersNow()`, and asserts copied/updated/deleted counts match
   `FolderSyncPlanner` expectations.
 - Asserts re-running is a no-op, and a changed origin file triggers an update.
+- Asserts disabled pairs are ignored.
+- Asserts custom extension filters copy/delete only matching extensions.
+- Asserts overwrite-off sync skips existing destination files without replacing
+  them.
 
-**Gate:** `swift test` green (129 tests).
+**Gate:** `swift test` green (134 tests).
 
 ### Step 2 — Extract `EncodingCoordinator` (medium risk)
 

@@ -106,6 +106,102 @@ final class FolderSyncCoordinatorTests: XCTestCase {
         )
     }
 
+    func testDisabledFolderSyncPairIsIgnored() async throws {
+        let workspace = try makeTemporaryDirectory()
+        let enabledOrigin = try makeDirectory("EnabledOrigin", in: workspace)
+        let enabledDestination = try makeDirectory("EnabledDestination", in: workspace)
+        let disabledOrigin = try makeDirectory("DisabledOrigin", in: workspace)
+        let disabledDestination = try makeDirectory("DisabledDestination", in: workspace)
+        try writeFile("enabled.txt", in: enabledOrigin, contents: "enabled")
+        try writeFile("disabled.txt", in: disabledOrigin, contents: "disabled")
+
+        let model = makeFolderSyncModel()
+        addPair(origin: enabledOrigin, destination: enabledDestination, to: model)
+        addPair(origin: disabledOrigin, destination: disabledDestination, to: model)
+        guard let disabledPair = model.syncFolderPairs.last else {
+            XCTFail("Expected disabled pair to be added.")
+            return
+        }
+        model.setSyncFolderPair(disabledPair, enabled: false)
+
+        model.syncFoldersNow()
+
+        let synced = await waitUntil(timeout: 5) { !model.isFolderSyncBusy }
+        XCTAssertTrue(synced)
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: enabledDestination.appendingPathComponent("enabled.txt").path
+            )
+        )
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: disabledDestination.appendingPathComponent("disabled.txt").path
+            )
+        )
+        XCTAssertEqual(model.syncFolderPairs.last?.state, .disabled)
+    }
+
+    func testCustomFolderSyncFilterCopiesAndDeletesOnlyMatchingExtensions() async throws {
+        let workspace = try makeTemporaryDirectory()
+        let origin = try makeDirectory("Origin", in: workspace)
+        let destination = try makeDirectory("Destination", in: workspace)
+        try writeFile("Audio/take.wav", in: origin, contents: "audio")
+        try writeFile("Docs/notes.txt", in: origin, contents: "notes")
+        try writeFile("remove.wav", in: destination, contents: "remove")
+        try writeFile("keep.txt", in: destination, contents: "keep")
+
+        let model = makeFolderSyncModel()
+        model.syncFileFilter = .custom
+        model.syncCustomFileExtensions = "wav"
+        addPair(origin: origin, destination: destination, to: model)
+
+        model.syncFoldersNow()
+
+        let synced = await waitUntil(timeout: 5) { !model.isFolderSyncBusy }
+        XCTAssertTrue(synced)
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: destination.appendingPathComponent("Audio/take.wav").path
+            )
+        )
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: destination.appendingPathComponent("Docs/notes.txt").path
+            )
+        )
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: destination.appendingPathComponent("remove.wav").path
+            )
+        )
+        XCTAssertEqual(
+            try String(contentsOf: destination.appendingPathComponent("keep.txt"), encoding: .utf8),
+            "keep"
+        )
+    }
+
+    func testFolderSyncOverwriteOffSkipsExistingDestinationFile() async throws {
+        let workspace = try makeTemporaryDirectory()
+        let origin = try makeDirectory("Origin", in: workspace)
+        let destination = try makeDirectory("Destination", in: workspace)
+        try writeFile("track.txt", in: origin, contents: "newer larger")
+        try writeFile("track.txt", in: destination, contents: "old")
+
+        let model = makeFolderSyncModel()
+        model.syncOverwriteExisting = false
+        addPair(origin: origin, destination: destination, to: model)
+
+        model.syncFoldersNow()
+
+        let synced = await waitUntil(timeout: 5) { !model.isFolderSyncBusy }
+        XCTAssertTrue(synced)
+        XCTAssertEqual(
+            try String(contentsOf: destination.appendingPathComponent("track.txt"), encoding: .utf8),
+            "old"
+        )
+        XCTAssertEqual(model.statusMessage, "Folder sync finished, 0 copied, 0 deleted, 1 skipped.")
+    }
+
     private func makeFolderSyncModel() -> EncoderViewModel {
         let model = EncoderViewModel()
         model.completionNotificationsEnabled = false

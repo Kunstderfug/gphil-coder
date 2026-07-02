@@ -65,6 +65,31 @@ final class EncodingCoordinatorTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: existingOutput), Data("existing".utf8))
     }
 
+    func testMixedExistingOutputSkipAndSuccessfulEncode() async throws {
+        let model = try makeEncodingModel(outputFormat: .flac)
+        let sourceDirectory = try makeTemporaryDirectory()
+        let skippedSource = try writeWAV(named: "a-skip.flac", in: sourceDirectory, seconds: 0.25)
+        let encodedSource = try writeWAV(named: "b-encode.wav", in: sourceDirectory, seconds: 0.25)
+        let outputDirectory = try makeTemporaryDirectory()
+        let existingOutput = outputDirectory.appendingPathComponent("a-skip-encoded.flac")
+        try Data("existing".utf8).write(to: existingOutput)
+
+        _ = model.addFileURLs([encodedSource, skippedSource])
+        model.exportFolder = outputDirectory
+
+        model.startEncoding()
+
+        let completed = await waitUntil { !model.isEncoding && model.jobs.count == 2 }
+        XCTAssertTrue(completed)
+        XCTAssertEqual(model.jobs.map(\.state), [.skipped, .succeeded])
+        XCTAssertEqual(try Data(contentsOf: existingOutput), Data("existing".utf8))
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: outputDirectory.appendingPathComponent("b-encode.flac").path
+            )
+        )
+    }
+
     func testCancelEncodingDoesNotReplaceExistingOutput() async throws {
         let model = try makeEncodingModel(outputFormat: .flac)
         let source = try writeWAV(
@@ -100,6 +125,43 @@ final class EncodingCoordinatorTests: XCTestCase {
         XCTAssertTrue(cancelled)
         XCTAssertEqual(model.jobs.first?.state, .cancelled)
         XCTAssertEqual(try Data(contentsOf: output), sentinel)
+    }
+
+    func testCancelEncodingMarksQueuedJobsCancelled() async throws {
+        let model = try makeEncodingModel(outputFormat: .flac)
+        let sourceDirectory = try makeTemporaryDirectory()
+        let first = try writeWAV(named: "first.wav", in: sourceDirectory, seconds: 120)
+        let second = try writeWAV(named: "second.wav", in: sourceDirectory, seconds: 120)
+        let outputDirectory = try makeTemporaryDirectory()
+
+        _ = model.addFileURLs([first, second])
+        model.exportFolder = outputDirectory
+        model.parallelJobs = 1
+
+        model.startEncoding()
+
+        let reachedRunning = await waitUntil(timeout: 2) {
+            model.jobs.contains { $0.state == .running }
+                && model.jobs.contains { $0.state == .queued }
+        }
+        guard reachedRunning else {
+            if model.jobs.allSatisfy({ $0.state == .succeeded }) {
+                throw XCTSkip("Encoding completed before cancellation could be observed.")
+            }
+            XCTFail("Encoding never reached running-with-queued state.")
+            return
+        }
+
+        model.cancelEncoding()
+
+        let cancelled = await waitUntil(timeout: 10) { !model.isEncoding }
+        XCTAssertTrue(cancelled)
+        XCTAssertEqual(model.jobs.map(\.state), [.cancelled, .cancelled])
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: outputDirectory.appendingPathComponent("second.flac").path
+            )
+        )
     }
 
     private func makeEncodingModel(outputFormat: AudioOutputFormat) throws -> EncoderViewModel {
