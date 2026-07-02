@@ -1,36 +1,6 @@
 import Foundation
 import GPhilCoderCore
 
-enum FFmpegToolError: LocalizedError {
-    case notFound
-    case unsupportedOggBitrate
-    case unsupportedFLACChannelCount(Int)
-    case unsupportedWavPackChannelCount(Int)
-    case outputWouldOverwriteInput
-    case processFailed(status: Int32, output: String)
-    case couldNotStart(String)
-
-    var errorDescription: String? {
-        switch self {
-        case .notFound:
-            return "FFmpeg was not found. Install it with Homebrew or place ffmpeg in /opt/homebrew/bin or /usr/local/bin."
-        case .unsupportedOggBitrate:
-            return "Ogg bitrate mode requires FFmpeg with the libvorbis encoder. Use Ogg quality mode or install an FFmpeg build with libvorbis."
-        case .unsupportedFLACChannelCount(let count):
-            return "FLAC supports up to 8 channels, but this source has \(count). Enable oversized multichannel splitting, use WavPack, or downmix before exporting to FLAC."
-        case .unsupportedWavPackChannelCount(let count):
-            return "WavPack can store very large channel counts, but common apps only handle the 18 standard named speaker channels reliably. This source has \(count) channels, so enable oversized multichannel splitting, export to WAV/RF64/W64, or split stems for DAW-compatible archival."
-        case .outputWouldOverwriteInput:
-            return "Output path matches the source file. Encoding was blocked to protect the original."
-        case let .processFailed(status, output):
-            let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? "FFmpeg exited with status \(status)." : trimmed
-        case let .couldNotStart(message):
-            return message
-        }
-    }
-}
-
 struct FFmpegCapabilities {
     var hasLibVorbis = false
     var hasHEVCVideoToolbox = false
@@ -58,52 +28,6 @@ struct FFmpegCapabilities {
             hasLibVorbis: output.contains("libvorbis"),
             hasHEVCVideoToolbox: output.contains("hevc_videotoolbox")
         )
-    }
-}
-
-struct FFmpegProgressSnapshot: Sendable {
-    let fps: String?
-    let speed: String?
-
-    var message: String {
-        var parts: [String] = []
-        if let fps, !fps.isEmpty {
-            parts.append("\(fps) fps")
-        }
-        if let speed, !speed.isEmpty {
-            parts.append("\(speed) realtime")
-        }
-        return parts.isEmpty ? "Encoding..." : "Encoding... " + parts.joined(separator: ", ")
-    }
-
-    static func parse(from text: String) -> FFmpegProgressSnapshot? {
-        let normalized = text.replacingOccurrences(of: "\r", with: "\n")
-        let lines = normalized
-            .split(separator: "\n")
-            .map(String.init)
-            .reversed()
-
-        for line in lines where line.contains("fps=") || line.contains("speed=") {
-            let fps = firstRegexValue(in: line, pattern: #"fps=\s*([0-9.]+)"#)
-            let speed = firstRegexValue(in: line, pattern: #"speed=\s*([0-9.]+x)"#)
-            if fps != nil || speed != nil {
-                return FFmpegProgressSnapshot(fps: fps, speed: speed)
-            }
-        }
-
-        return nil
-    }
-
-    private static func firstRegexValue(in text: String, pattern: String) -> String? {
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
-        let range = NSRange(text.startIndex..<text.endIndex, in: text)
-        guard let match = regex.firstMatch(in: text, range: range),
-            match.numberOfRanges > 1,
-            let valueRange = Range(match.range(at: 1), in: text)
-        else {
-            return nil
-        }
-        return String(text[valueRange])
     }
 }
 
@@ -214,7 +138,7 @@ struct FFmpegEncoder {
             ffmpegURL: ffmpegURL,
             input: input
         )
-        if let channelCount, shouldSplitMultichannel(channelCount, settings: settings) {
+        if let channelCount, ffmpegShouldSplitMultichannel(channelCount, settings: settings) {
             return try await encodeSplitMultichannel(
                 input: input,
                 output: output,
@@ -249,7 +173,7 @@ struct FFmpegEncoder {
             "-vn"
         ]
 
-        arguments.append(contentsOf: try codecArguments(for: settings))
+        arguments.append(contentsOf: try ffmpegCodecArguments(for: settings))
 
         if settings.ffmpegThreads > 0 {
             arguments.append(contentsOf: ["-threads", "\(settings.ffmpegThreads)"])
@@ -303,7 +227,7 @@ struct FFmpegEncoder {
             "-map", "0:a?"
         ])
 
-        arguments.append(contentsOf: videoCodecArguments(for: settings))
+        arguments.append(contentsOf: ffmpegVideoCodecArguments(for: settings))
 
         switch settings.videoAudioMode {
         case .copy:
@@ -335,47 +259,13 @@ struct FFmpegEncoder {
         }
     }
 
-    private func videoCodecArguments(for settings: EncodingSettingsSnapshot) -> [String] {
-        var arguments: [String] = []
-
-        if let scaleFilter = videoScaleFilter(for: settings.videoScaleMode) {
-            arguments.append(contentsOf: ["-vf", scaleFilter])
-        }
-
-        arguments.append(contentsOf: [
-            "-c:v", "hevc_videotoolbox",
-            "-b:v", "\(settings.videoBitrateKbps)k",
-            "-maxrate", "\(settings.videoBitrateKbps)k",
-            "-bufsize", "\(settings.videoBitrateKbps * 2)k",
-            "-tag:v", "hvc1",
-            "-allow_sw", "0",
-            "-prio_speed", "1",
-            "-realtime", "1",
-            "-power_efficient", "0"
-        ])
-
-        if settings.hevcPreset.bitDepth == 10 {
-            arguments.append(contentsOf: ["-pix_fmt", "p010le", "-profile:v", "main10"])
-        } else {
-            arguments.append(contentsOf: ["-pix_fmt", "yuv420p"])
-        }
-
-        return arguments
-    }
-
-    private func videoScaleFilter(for scaleMode: VideoScaleMode) -> String? {
-        guard let maxSize = scaleMode.maxSize else { return nil }
-        return
-            "scale=w=min(\(maxSize.width)\\,iw):h=min(\(maxSize.height)\\,ih):force_original_aspect_ratio=decrease:force_divisible_by=2"
-    }
-
     private func encodeSplitMultichannel(
         input: URL,
         output: URL,
         settings: EncodingSettingsSnapshot,
         channelCount: Int
     ) async throws -> String {
-        let groups = channelGroups(for: channelCount, settings: settings)
+        let groups = ffmpegChannelGroups(for: channelCount, settings: settings)
         let outputURLs = groups.map {
             splitOutputURL(baseURL: output, startChannel: $0.start, endChannel: $0.end)
         }
@@ -399,9 +289,9 @@ struct FFmpegEncoder {
                 settings.overwriteExisting ? "-y" : "-n",
                 "-i", input.path,
                 "-vn",
-                "-filter:a", panFilter(for: group)
+                "-filter:a", ffmpegPanFilter(for: group)
             ]
-            arguments.append(contentsOf: try codecArguments(for: settings))
+            arguments.append(contentsOf: try ffmpegCodecArguments(for: settings))
             if settings.ffmpegThreads > 0 {
                 arguments.append(contentsOf: ["-threads", "\(settings.ffmpegThreads)"])
             }
@@ -427,116 +317,6 @@ struct FFmpegEncoder {
             + outputs.joined(separator: " ")
     }
 
-    private func codecArguments(for settings: EncodingSettingsSnapshot) throws -> [String] {
-        var arguments: [String] = []
-
-        switch settings.outputFormat {
-        case .mp3:
-            arguments.append(contentsOf: ["-codec:a", "libmp3lame"])
-
-            switch settings.mp3Mode {
-            case .vbr:
-                arguments.append(contentsOf: ["-q:a", "\(settings.vbrQuality)"])
-            case .cbr:
-                arguments.append(contentsOf: ["-b:a", "\(settings.cbrBitrateKbps)k"])
-            case .abr:
-                arguments.append(contentsOf: ["-abr", "1", "-b:a", "\(settings.abrBitrateKbps)k"])
-            }
-
-        case .ogg:
-            if settings.oggMode == .bitrate, !settings.useLibVorbis {
-                throw FFmpegToolError.unsupportedOggBitrate
-            }
-
-            arguments.append(contentsOf: [
-                "-codec:a", settings.useLibVorbis ? "libvorbis" : "vorbis",
-                "-ac", "2"
-            ])
-
-            switch settings.oggMode {
-            case .bitrate:
-                arguments.append(contentsOf: ["-b:a", "\(settings.oggBitrateKbps)k"])
-            case .quality:
-                arguments.append(contentsOf: ["-qscale:a", "\(settings.oggQuality)"])
-            }
-
-            arguments.append(contentsOf: ["-strict", "-2"])
-
-        case .opus:
-            arguments.append(contentsOf: [
-                "-codec:a", "libopus",
-                "-b:a", "\(settings.opusBitrateKbps)k",
-                "-vbr", settings.opusRateMode.ffmpegValue,
-                "-compression_level", "10"
-            ])
-
-        case .flac:
-            arguments.append(contentsOf: [
-                "-codec:a", "flac",
-                "-compression_level", "\(settings.flacCompressionLevel)"
-            ])
-
-        case .wavpack:
-            arguments.append(contentsOf: ["-codec:a", "wavpack"])
-        }
-
-        return arguments
-    }
-
-    private func shouldSplitMultichannel(
-        _ channelCount: Int,
-        settings: EncodingSettingsSnapshot
-    ) -> Bool {
-        guard settings.splitOversizedMultichannel else { return false }
-        switch settings.outputFormat {
-        case .flac:
-            return channelCount > FLACEncodingOptions.maximumChannelCount
-        case .wavpack:
-            return channelCount > WavPackEncodingOptions.compatibleNamedChannelCount
-        case .mp3, .ogg, .opus:
-            return false
-        }
-    }
-
-    private func channelGroups(
-        for channelCount: Int,
-        settings: EncodingSettingsSnapshot
-    ) -> [(start: Int, end: Int)] {
-        let groupSize =
-            settings.outputFormat == .flac
-            ? FLACEncodingOptions.maximumChannelCount
-            : MultichannelSplitOptions.wavPackGroupSize
-        var groups = stride(from: 1, through: channelCount, by: groupSize).map {
-            start in
-            (start: start, end: min(start + groupSize - 1, channelCount))
-        }
-
-        if settings.outputFormat == .wavpack,
-            groups.count >= 2,
-            let previous = groups.dropLast().last,
-            let last = groups.last,
-            last.end - previous.start + 1 <= WavPackEncodingOptions.compatibleNamedChannelCount
-        {
-            groups.removeLast(2)
-            groups.append((start: previous.start, end: last.end))
-        }
-
-        return groups
-    }
-
-    private func panFilter(for group: (start: Int, end: Int)) -> String {
-        let outputChannelCount = group.end - group.start + 1
-        if outputChannelCount == 1 {
-            return "pan=mono|c0=c\(group.start - 1)"
-        }
-
-        let channels = Array(Self.standardPanChannels.prefix(outputChannelCount))
-        let mappings = channels.enumerated().map { outputIndex, channelName in
-            "\(channelName)=c\(group.start - 1 + outputIndex)"
-        }
-        return "pan=\(channels.joined(separator: "+"))|" + mappings.joined(separator: "|")
-    }
-
     private func splitOutputURL(baseURL: URL, startChannel: Int, endChannel: Int) -> URL {
         let directory = baseURL.deletingLastPathComponent()
         let baseName = baseURL.deletingPathExtension().lastPathComponent
@@ -546,11 +326,6 @@ struct FFmpegEncoder {
             isDirectory: false
         )
     }
-
-    private static let standardPanChannels = [
-        "FL", "FR", "FC", "LFE", "BL", "BR", "FLC", "FRC", "BC",
-        "SL", "SR", "TC", "TFL", "TFC", "TFR", "TBL", "TBC", "TBR"
-    ]
 
     /// A unique temp-file URL beside `output` that preserves the output's
     /// extension. ffmpeg writes here; on success the temp replaces `output`
@@ -599,6 +374,8 @@ struct FFmpegEncoder {
 }
 
 enum FFmpegProbe {
+    /// Runs `ffmpeg -i <input>` (which exits non-zero but prints stream info
+    /// to stderr) and parses the audio channel count via the Core helper.
     static func audioChannelCount(ffmpegURL: URL, input: URL) async throws -> Int? {
         let output: String
         do {
@@ -611,106 +388,6 @@ enum FFmpegProbe {
         }
 
         return parseAudioChannelCount(from: output)
-    }
-
-    static func parseAudioChannelCount(from output: String) -> Int? {
-        let audioLines = output
-            .split(separator: "\n")
-            .map(String.init)
-            .filter { $0.contains("Audio:") }
-
-        for line in audioLines {
-            if let explicit = firstRegexInt(in: line, pattern: #"(\d+)\s+channels"#) {
-                return explicit
-            }
-            if let compact = firstRegexInt(in: line, pattern: #"(\d+)ch(?:\s|$)"#) {
-                return compact
-            }
-
-            if let layout = audioLayoutField(from: line),
-                let count = channelCount(forLayout: layout)
-            {
-                return count
-            }
-        }
-
-        return nil
-    }
-
-    private static func audioLayoutField(from line: String) -> String? {
-        let fields = line.split(separator: ",").map {
-            $0.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        guard let sampleRateIndex = fields.firstIndex(where: { $0.contains(" Hz") }),
-            fields.indices.contains(sampleRateIndex + 1)
-        else {
-            return nil
-        }
-        return fields[sampleRateIndex + 1]
-    }
-
-    private static func channelCount(forLayout layout: String) -> Int? {
-        let normalized = layout.lowercased()
-            .replacingOccurrences(of: #"[^a-z0-9.]+"#, with: "", options: .regularExpression)
-        if let known = knownLayoutChannelCounts[normalized] {
-            return known
-        }
-
-        let parts = normalized.split(separator: ".")
-        guard parts.count >= 2, parts.allSatisfy({ Int($0) != nil }) else { return nil }
-        return parts.compactMap { Int($0) }.reduce(0, +)
-    }
-
-    private static func firstRegexInt(in text: String, pattern: String) -> Int? {
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
-        let range = NSRange(text.startIndex..<text.endIndex, in: text)
-        guard let match = regex.firstMatch(in: text, range: range),
-            match.numberOfRanges > 1,
-            let valueRange = Range(match.range(at: 1), in: text)
-        else {
-            return nil
-        }
-        return Int(text[valueRange])
-    }
-
-    private static let knownLayoutChannelCounts: [String: Int] = [
-        "mono": 1,
-        "stereo": 2,
-        "2.1": 3,
-        "3.0": 3,
-        "3.0back": 3,
-        "4.0": 4,
-        "quad": 4,
-        "quadside": 4,
-        "3.1": 4,
-        "5.0": 5,
-        "5.0side": 5,
-        "4.1": 5,
-        "5.1": 6,
-        "5.1side": 6,
-        "6.0": 6,
-        "6.0front": 6,
-        "hexagonal": 6,
-        "6.1": 7,
-        "6.1back": 7,
-        "6.1front": 7,
-        "7.0": 7,
-        "7.0front": 7,
-        "7.1": 8,
-        "7.1wide": 8,
-        "7.1wideside": 8,
-        "octagonal": 8
-    ]
-}
-
-enum EncodeSkipError: LocalizedError {
-    case outputExists
-
-    var errorDescription: String? {
-        switch self {
-        case .outputExists:
-            "Output already exists."
-        }
     }
 }
 

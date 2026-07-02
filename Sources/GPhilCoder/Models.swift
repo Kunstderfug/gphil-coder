@@ -185,10 +185,6 @@ enum OutputMode: String, CaseIterable, Identifiable {
     }
 }
 
-enum MultichannelSplitOptions {
-    static let wavPackGroupSize = 10
-}
-
 enum JobState: Equatable {
     case queued
     case running
