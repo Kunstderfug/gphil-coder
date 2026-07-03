@@ -296,6 +296,7 @@ struct EncodeJob: Identifiable {
     var message: String = ""
     var diagnosticMessage: String = ""
     var progressFraction: Double?
+    var estimatedSecondsRemaining: TimeInterval?
     var startedAt: Date?
     var finishedAt: Date?
 

@@ -70,6 +70,25 @@ private enum WorkflowTab: CaseIterable, Hashable, Identifiable {
             "externaldrive.badge.icloud"
         }
     }
+
+    var iconColor: Color {
+        switch self {
+        case .audioEncoding:
+            .teal
+        case .videoEncoding:
+            .purple
+        case .mediaCopy:
+            .blue
+        case .mediaRename:
+            .orange
+        case .mediaDelete:
+            .red
+        case .folderSync:
+            .green
+        case .backupRestore:
+            .indigo
+        }
+    }
 }
 
 private enum MediaCopyPreviewMode: Hashable {
@@ -3678,9 +3697,15 @@ private struct JobRow: View {
                             .font(.caption.monospacedDigit().weight(.semibold))
                             .foregroundStyle(stateColor)
                             .frame(width: 42, alignment: .trailing)
+                        if let estimatedSecondsRemaining = job.estimatedSecondsRemaining {
+                            Text("ETA \(etaLabel(for: estimatedSecondsRemaining))")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                                .frame(minWidth: 74, alignment: .trailing)
+                        }
                     }
                     .accessibilityLabel("Encoding progress")
-                    .accessibilityValue(progressLabel(for: progressFraction))
+                    .accessibilityValue(progressAccessibilityValue(for: progressFraction))
                 }
             }
 
@@ -3785,6 +3810,23 @@ private struct JobRow: View {
     private func progressLabel(for fraction: Double) -> String {
         "\(Int((fraction * 100).rounded()))%"
     }
+
+    private func etaLabel(for seconds: TimeInterval) -> String {
+        let totalSeconds = max(0, Int(seconds.rounded()))
+        let hours = totalSeconds / 3600
+        let minutes = (totalSeconds % 3600) / 60
+        let remainingSeconds = totalSeconds % 60
+        if hours > 0 {
+            return "\(hours):\(String(format: "%02d", minutes)):\(String(format: "%02d", remainingSeconds))"
+        }
+        return "\(minutes):\(String(format: "%02d", remainingSeconds))"
+    }
+
+    private func progressAccessibilityValue(for fraction: Double) -> String {
+        let progress = progressLabel(for: fraction)
+        guard let estimatedSecondsRemaining = job.estimatedSecondsRemaining else { return progress }
+        return "\(progress), estimated time remaining \(etaLabel(for: estimatedSecondsRemaining))"
+    }
 }
 
 private struct SettingValue: View {
@@ -3830,18 +3872,19 @@ private struct WorkflowTabButton: View {
                 Image(systemName: tab.symbolName)
                     .font(.system(size: 14, weight: .semibold))
                     .frame(width: 18, height: 18)
+                    .foregroundStyle(tab.iconColor)
             }
             .labelStyle(.titleAndIcon)
             .frame(maxWidth: .infinity, minHeight: 34)
             .padding(.horizontal, 10)
-            .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
+            .foregroundStyle(isSelected ? tab.iconColor : Color.primary)
             .background(
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(isSelected ? Color.accentColor.opacity(0.14) : Color.clear)
+                    .fill(isSelected ? tab.iconColor.opacity(0.14) : Color.clear)
             )
             .overlay {
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .stroke(isSelected ? Color.accentColor.opacity(0.35) : Color.clear)
+                    .stroke(isSelected ? tab.iconColor.opacity(0.35) : Color.clear)
             }
             .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
         }

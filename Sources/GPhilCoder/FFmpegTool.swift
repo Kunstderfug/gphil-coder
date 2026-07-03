@@ -145,12 +145,19 @@ struct FFmpegEncoder {
             input: input,
             processRegistry: processRegistry
         )
+        let inputDuration = try? await FFmpegProbe.mediaDuration(
+            ffmpegURL: ffmpegURL,
+            input: input,
+            processRegistry: processRegistry
+        )
         if let channelCount, ffmpegShouldSplitMultichannel(channelCount, settings: settings) {
             return try await encodeSplitMultichannel(
                 input: input,
                 output: output,
                 settings: settings,
-                channelCount: channelCount
+                channelCount: channelCount,
+                inputDuration: inputDuration,
+                progressHandler: progressHandler
             )
         }
 
@@ -197,7 +204,15 @@ struct FFmpegEncoder {
                 executableURL: ffmpegURL,
                 arguments: arguments,
                 processRegistry: processRegistry
-            )
+            ) { chunk in
+                guard let progress = FFmpegProgressSnapshot.parse(
+                    from: chunk,
+                    duration: inputDuration
+                ) else {
+                    return
+                }
+                progressHandler?(progress)
+            }
         }
     }
 
@@ -285,7 +300,9 @@ struct FFmpegEncoder {
         input: URL,
         output: URL,
         settings: EncodingSettingsSnapshot,
-        channelCount: Int
+        channelCount: Int,
+        inputDuration: TimeInterval?,
+        progressHandler: (@Sendable (FFmpegProgressSnapshot) -> Void)?
     ) async throws -> String {
         let groups = ffmpegChannelGroups(for: channelCount, settings: settings)
         let outputURLs = groups.map {
@@ -304,7 +321,8 @@ struct FFmpegEncoder {
         }
 
         var outputs: [String] = []
-        for (group, outputURL) in zip(groups, outputURLs) {
+        for (splitIndex, pair) in zip(groups.indices, zip(groups, outputURLs)) {
+            let (group, outputURL) = pair
             var arguments = [
                 "-hide_banner",
                 "-nostdin",
@@ -329,8 +347,22 @@ struct FFmpegEncoder {
                     executableURL: ffmpegURL,
                     arguments: arguments,
                     processRegistry: processRegistry
-                )
+                ) { chunk in
+                    guard let progress = FFmpegProgressSnapshot.parse(
+                        from: chunk,
+                        duration: inputDuration
+                    ) else {
+                        return
+                    }
+                    progressHandler?(
+                        progress.aggregatingSplit(index: splitIndex, total: groups.count)
+                    )
+                }
             }
+            progressHandler?(
+                FFmpegProgressSnapshot(fps: nil, speed: nil)
+                    .aggregatingSplit(index: splitIndex, total: groups.count, completed: true)
+            )
             let summary = output
                 .split(separator: "\n")
                 .map(String.init)

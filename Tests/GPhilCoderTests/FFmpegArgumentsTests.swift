@@ -228,6 +228,14 @@ final class FFmpegArgumentsTests: XCTestCase {
         XCTAssertEqual(fractionCompleted, 0.25, accuracy: 0.001)
     }
 
+    func testProgressSnapshotParsesEstimatedTimeRemaining() throws {
+        let snapshot = FFmpegProgressSnapshot.parse(
+            from: "frame=  100 fps= 60.0 q=0.0 size=    1024kB time=00:00:02.00 bitrate=4194.3kbits/s speed=2x\r",
+            duration: 8
+        )
+        XCTAssertEqual(try XCTUnwrap(snapshot?.estimatedSecondsRemaining), 3, accuracy: 0.001)
+    }
+
     func testProgressSnapshotClampsFractionCompleted() {
         let snapshot = FFmpegProgressSnapshot.parse(
             from: "frame=  100 fps= 60.0 q=0.0 size=    1024kB time=00:00:12.00 bitrate=4194.3kbits/s speed=2x\r",
@@ -241,6 +249,28 @@ final class FFmpegArgumentsTests: XCTestCase {
             from: "Duration: 00:01:02.50, start: 0.000000, bitrate: 1424 kb/s"
         )
         XCTAssertEqual(try XCTUnwrap(duration), 62.5, accuracy: 0.001)
+    }
+
+    func testProgressSnapshotAggregatesSplitFraction() throws {
+        let snapshot = FFmpegProgressSnapshot(
+            fps: "12.0",
+            speed: "1.0x",
+            fractionCompleted: 0.5,
+            estimatedSecondsRemaining: 12
+        )
+            .aggregatingSplit(index: 1, total: 4)
+
+        XCTAssertEqual(try XCTUnwrap(snapshot.fractionCompleted), 0.375, accuracy: 0.001)
+        XCTAssertEqual(snapshot.estimatedSecondsRemaining, 12)
+        XCTAssertEqual(snapshot.fps, "12.0")
+        XCTAssertEqual(snapshot.speed, "1.0x")
+    }
+
+    func testProgressSnapshotAggregatesCompletedSplit() throws {
+        let snapshot = FFmpegProgressSnapshot(fps: nil, speed: nil)
+            .aggregatingSplit(index: 2, total: 4, completed: true)
+
+        XCTAssertEqual(try XCTUnwrap(snapshot.fractionCompleted), 0.75, accuracy: 0.001)
     }
 
     func testProgressSnapshotReturnsNilWhenNoProgressLine() {

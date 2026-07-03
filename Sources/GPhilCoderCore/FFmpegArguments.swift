@@ -64,11 +64,18 @@ public struct FFmpegProgressSnapshot: Sendable, Equatable {
     public let fps: String?
     public let speed: String?
     public let fractionCompleted: Double?
+    public let estimatedSecondsRemaining: TimeInterval?
 
-    public init(fps: String?, speed: String?, fractionCompleted: Double? = nil) {
+    public init(
+        fps: String?,
+        speed: String?,
+        fractionCompleted: Double? = nil,
+        estimatedSecondsRemaining: TimeInterval? = nil
+    ) {
         self.fps = fps
         self.speed = speed
         self.fractionCompleted = fractionCompleted
+        self.estimatedSecondsRemaining = estimatedSecondsRemaining
     }
 
     public var message: String {
@@ -97,11 +104,17 @@ public struct FFmpegProgressSnapshot: Sendable, Equatable {
             let elapsed = firstRegexValue(in: line, pattern: #"time=\s*([0-9:.]+)"#)
                 .flatMap(parseTimestamp)
             let fractionCompleted = progressFraction(elapsed: elapsed, duration: duration)
+            let eta = estimatedSecondsRemaining(
+                elapsed: elapsed,
+                duration: duration,
+                speed: speed
+            )
             if fps != nil || speed != nil || fractionCompleted != nil {
                 return FFmpegProgressSnapshot(
                     fps: fps,
                     speed: speed,
-                    fractionCompleted: fractionCompleted
+                    fractionCompleted: fractionCompleted,
+                    estimatedSecondsRemaining: eta
                 )
             }
         }
@@ -112,6 +125,23 @@ public struct FFmpegProgressSnapshot: Sendable, Equatable {
     public static func parseDuration(from text: String) -> TimeInterval? {
         firstRegexValue(in: text, pattern: #"Duration:\s*([0-9:.]+)"#)
             .flatMap(parseTimestamp)
+    }
+
+    public func aggregatingSplit(
+        index: Int,
+        total: Int,
+        completed: Bool = false
+    ) -> FFmpegProgressSnapshot {
+        guard total > 0 else { return self }
+
+        let splitFraction = completed ? 1 : (fractionCompleted ?? 0)
+        let aggregateFraction = Double(index) / Double(total) + splitFraction / Double(total)
+        return FFmpegProgressSnapshot(
+            fps: fps,
+            speed: speed,
+            fractionCompleted: min(max(aggregateFraction, 0), 1),
+            estimatedSecondsRemaining: estimatedSecondsRemaining
+        )
     }
 
     private static func firstRegexValue(in text: String, pattern: String) -> String? {
@@ -135,6 +165,23 @@ public struct FFmpegProgressSnapshot: Sendable, Equatable {
     private static func progressFraction(elapsed: TimeInterval?, duration: TimeInterval?) -> Double? {
         guard let elapsed, let duration, duration > 0 else { return nil }
         return min(max(elapsed / duration, 0), 1)
+    }
+
+    private static func estimatedSecondsRemaining(
+        elapsed: TimeInterval?,
+        duration: TimeInterval?,
+        speed: String?
+    ) -> TimeInterval? {
+        guard let elapsed,
+            let duration,
+            duration > elapsed,
+            let speed,
+            let realtimeMultiplier = Double(speed.dropLast()),
+            realtimeMultiplier > 0
+        else {
+            return nil
+        }
+        return (duration - elapsed) / realtimeMultiplier
     }
 }
 
