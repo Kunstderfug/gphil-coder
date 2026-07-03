@@ -47,30 +47,6 @@ final class EncoderViewModel: ObservableObject {
         static let fileName = "trash-emergency-journal.json"
     }
 
-    private struct RestoreUnresolvedExportDocument: Encodable {
-        let version: Int
-        let exportedAt: Date
-        let isPartialSearchSnapshot: Bool
-        let deletedFolderPath: String?
-        let backupRootPath: String?
-        let restoreRootPath: String?
-        let matchMode: String
-        let hashMode: String
-        let progressPhase: String?
-        let progressDetail: String?
-        let deletedCount: Int
-        let restoredCount: Int
-        let unresolvedListCount: Int
-        let files: [RestoreUnresolvedFile]
-    }
-
-    private struct RestoreUnresolvedCopyResult: Sendable {
-        var copied = 0
-        var failed = 0
-        var copiedURLs: [URL] = []
-        var failedNames: [String] = []
-    }
-
     @Published private(set) var inputs: [AudioInputItem] = []
     @Published private(set) var jobs: [EncodeJob] = []
     @Published var jobStateFilter: JobState?
@@ -640,8 +616,6 @@ final class EncoderViewModel: ObservableObject {
         }
     }
 
-    private var restorePlanTask: Task<Void, Never>?
-    private var restoreApplyTask: Task<Void, Never>?
     private var isUpdatingSyncPairStatus = false
     private var isLoadingPersistedSettings = false
     private let settingsPersistence = SettingsPersistence()
@@ -788,6 +762,39 @@ final class EncoderViewModel: ObservableObject {
         },
         notifyCompletion: { [weak self] title, body in
             self?.notifyCompletionIfNeeded(title: title, body: body)
+        }
+    )
+
+    private lazy var restoreCoordinator = RestoreCoordinator(
+        setRecords: { [weak self] records in
+            self?.restorePlanRecords = records
+        },
+        setLiveCounts: { [weak self] counts in
+            self?.restorePlanLiveCounts = counts
+        },
+        setLiveUnresolvedItems: { [weak self] items in
+            self?.restorePlanLiveUnresolvedItems = items
+        },
+        setScanSummary: { [weak self] summary in
+            self?.restorePlanScanSummary = summary
+        },
+        setProgress: { [weak self] progress in
+            self?.restorePlanProgress = progress
+        },
+        setPlanning: { [weak self] isPlanning in
+            self?.isRestorePlanning = isPlanning
+        },
+        setRestoring: { [weak self] isRestoring in
+            self?.isRestoringFromPlan = isRestoring
+        },
+        setStoppedWithPartialResults: { [weak self] stopped in
+            self?.restorePlanStoppedWithPartialResults = stopped
+        },
+        setStatusMessage: { [weak self] message in
+            self?.statusMessage = message
+        },
+        appendRestoredFileURLs: { [weak self] urls in
+            self?.appendRestoredFileURLs(urls)
         }
     )
 
@@ -2949,21 +2956,6 @@ final class EncoderViewModel: ObservableObject {
             return
         }
 
-        restorePlanTask?.cancel()
-        restorePlanRecords.removeAll()
-        restorePlanScanSummary = nil
-        restorePlanLiveCounts = RestorePlanStatusCounts()
-        restorePlanLiveUnresolvedItems.removeAll()
-        restorePlanStoppedWithPartialResults = false
-        restorePlanProgress = RestorePlanProgress(
-            phase: .scanningDeleted,
-            completed: 0,
-            total: nil,
-            detail: "Preparing deleted-folder scan."
-        )
-        isRestorePlanning = true
-        statusMessage = "Scanning deleted files and checking the restore root..."
-
         let options = RestorePlanOptions(
             deletedFolder: deletedFolder,
             backupRoot: backupRoot,
@@ -2972,55 +2964,7 @@ final class EncoderViewModel: ObservableObject {
             hashMode: restoreHashMode,
             includeHidden: restoreIncludeHidden
         )
-        let progressHandler: RestorePlanProgressHandler = { [weak self] progress in
-            Task { @MainActor [weak self] in
-                guard self?.isRestorePlanning == true else { return }
-                self?.restorePlanProgress = progress
-                if let statusCounts = progress.statusCounts {
-                    self?.restorePlanLiveCounts = statusCounts
-                }
-                if let unresolvedItems = progress.unresolvedItems {
-                    self?.restorePlanLiveUnresolvedItems = unresolvedItems
-                }
-                self?.statusMessage = "\(progress.title): \(progress.detail)"
-            }
-        }
-
-        restorePlanTask = Task { [weak self] in
-            do {
-                let worker = Task.detached(priority: .userInitiated) {
-                    try RestorePlanner.buildPlan(options: options, progress: progressHandler)
-                }
-                let result = try await withTaskCancellationHandler {
-                    try await worker.value
-                } onCancel: {
-                    worker.cancel()
-                }
-                guard !Task.isCancelled else { return }
-                let records = result.records
-                self?.restorePlanRecords = records
-                self?.restorePlanLiveCounts = nil
-                self?.restorePlanLiveUnresolvedItems.removeAll()
-                self?.restorePlanScanSummary = result.scanSummary
-                self?.restorePlanProgress = nil
-                self?.isRestorePlanning = false
-                self?.restorePlanStoppedWithPartialResults = false
-                self?.restorePlanTask = nil
-                self?.statusMessage =
-                    "Restore plan built: \(records.filter { $0.status == .alreadyRestored }.count) restored, \(records.filter { $0.status == .matched }.count) backup matches, \(records.filter { $0.status == .matchedConflict }.count) target exists, \(records.filter { $0.status == .ambiguous }.count) ambiguous, \(records.filter { $0.status == .missing }.count) missing."
-            } catch {
-                guard !Task.isCancelled else { return }
-                self?.restorePlanRecords.removeAll()
-                self?.restorePlanLiveCounts = nil
-                self?.restorePlanLiveUnresolvedItems.removeAll()
-                self?.restorePlanScanSummary = nil
-                self?.restorePlanProgress = nil
-                self?.isRestorePlanning = false
-                self?.restorePlanStoppedWithPartialResults = false
-                self?.restorePlanTask = nil
-                self?.statusMessage = "Could not build restore plan: \(error.localizedDescription)"
-            }
-        }
+        restoreCoordinator.buildPlan(options: options)
     }
 
     func applyBackupRestorePlan() {
@@ -3037,59 +2981,15 @@ final class EncoderViewModel: ObservableObject {
 
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
-        restoreApplyTask?.cancel()
-        restorePlanProgress = nil
-        isRestoringFromPlan = true
-        statusMessage = "Restoring matched files..."
-        let records = restorePlanRecords
-        let copySource = restoreCopySource
-        let overwrite = restoreOverwriteExisting
-
-        restoreApplyTask = Task { [weak self] in
-            let worker = Task.detached(priority: .userInitiated) {
-                RestorePlanner.apply(records: records, copySource: copySource, overwrite: overwrite)
-            }
-            let result = await withTaskCancellationHandler {
-                await worker.value
-            } onCancel: {
-                worker.cancel()
-            }
-            guard !Task.isCancelled else { return }
-
-            self?.appendRestoredFileURLs(result.restoredURLs)
-            self?.isRestoringFromPlan = false
-            self?.restoreApplyTask = nil
-
-            var details = [
-                "Restored \(result.copied) file\(result.copied == 1 ? "" : "s")."
-            ]
-            if result.skipped > 0 {
-                details.append("Skipped \(result.skipped).")
-            }
-            if result.failed > 0 {
-                details.append(
-                    "Failed \(result.failed): \(result.failedNames.prefix(3).joined(separator: ", "))\(result.failedNames.count > 3 ? "..." : "")."
-                )
-            }
-            self?.statusMessage = details.joined(separator: " ")
-        }
+        restoreCoordinator.apply(
+            records: restorePlanRecords,
+            copySource: restoreCopySource,
+            overwrite: restoreOverwriteExisting
+        )
     }
 
     func cancelBackupRestorePlan() {
-        restorePlanTask?.cancel()
-        restorePlanTask = nil
-        isRestorePlanning = false
-        restorePlanStoppedWithPartialResults = true
-
-        let unresolvedCount = restorePlanLiveUnresolvedItems.count
-        if unresolvedCount > 0 {
-            statusMessage =
-                "Stopped restore search. Kept partial snapshot with \(unresolvedCount) unresolved file\(unresolvedCount == 1 ? "" : "s")."
-        } else if let counts = restorePlanLiveCounts, counts.deletedTotal > 0 {
-            statusMessage = "Stopped restore search. Kept partial counters: \(counts.summary)"
-        } else {
-            statusMessage = "Stopped restore search before an unresolved snapshot was available."
-        }
+        restoreCoordinator.cancelBuild()
     }
 
     func exportRestoreUnresolvedItems() {
@@ -3105,13 +3005,12 @@ final class EncoderViewModel: ObservableObject {
         panel.allowedContentTypes = [.json]
         panel.canCreateDirectories = true
         panel.directoryURL = restoreDeletedFolder ?? lastInputDirectoryURL()
-        panel.nameFieldStringValue = defaultRestoreUnresolvedFileName()
+        panel.nameFieldStringValue = RestoreUnresolvedExporter.defaultFileName()
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
-        let document = RestoreUnresolvedExportDocument(
-            version: 1,
-            exportedAt: Date(),
+        let request = RestoreUnresolvedExportRequest(
+            items: items,
             isPartialSearchSnapshot: isRestorePlanning || restorePlanStoppedWithPartialResults,
             deletedFolderPath: restoreDeletedFolder?.path(percentEncoded: false),
             backupRootPath: restoreBackupRoot?.path(percentEncoded: false),
@@ -3121,24 +3020,10 @@ final class EncoderViewModel: ObservableObject {
             progressPhase: restorePlanProgress?.title,
             progressDetail: restorePlanProgress?.detail,
             deletedCount: restorePlanDeletedCount,
-            restoredCount: restorePlanAlreadyRestoredCount,
-            unresolvedListCount: items.count,
-            files: items
+            restoredCount: restorePlanAlreadyRestoredCount
         )
 
-        let exportURL = normalizedJSONFileURL(url)
-
-        do {
-            let encoder = JSONEncoder()
-            encoder.dateEncodingStrategy = .iso8601
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            let data = try encoder.encode(document)
-            try data.write(to: exportURL, options: .atomic)
-            statusMessage =
-                "Exported \(items.count) unresolved file\(items.count == 1 ? "" : "s") to \(exportURL.lastPathComponent)."
-        } catch {
-            statusMessage = "Could not export unresolved files: \(error.localizedDescription)"
-        }
+        restoreCoordinator.exportUnresolvedItems(request, to: url)
     }
 
     func copyRestoreUnresolvedItemsToRestoreRoot() {
@@ -3163,35 +3048,7 @@ final class EncoderViewModel: ObservableObject {
 
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
-        restoreApplyTask?.cancel()
-        isRestoringFromPlan = true
-        statusMessage = "Copying unresolved files to the restore root..."
-
-        restoreApplyTask = Task { [weak self] in
-            let worker = Task.detached(priority: .userInitiated) {
-                Self.copyUnresolvedItems(items, to: destinationFolder)
-            }
-            let result = await withTaskCancellationHandler {
-                await worker.value
-            } onCancel: {
-                worker.cancel()
-            }
-            guard !Task.isCancelled else { return }
-
-            self?.appendRestoredFileURLs(result.copiedURLs)
-            self?.isRestoringFromPlan = false
-            self?.restoreApplyTask = nil
-
-            var details = [
-                "Copied \(result.copied) unresolved file\(result.copied == 1 ? "" : "s") to GPhilCoder Unresolved Files."
-            ]
-            if result.failed > 0 {
-                details.append(
-                    "Failed \(result.failed): \(result.failedNames.prefix(3).joined(separator: ", "))\(result.failedNames.count > 3 ? "..." : "")."
-                )
-            }
-            self?.statusMessage = details.joined(separator: " ")
-        }
+        restoreCoordinator.copyUnresolvedItems(items, to: destinationFolder)
     }
 
     func refreshMediaDeletePreview() {
@@ -3391,47 +3248,6 @@ final class EncoderViewModel: ObservableObject {
         default:
             return nil
         }
-    }
-
-    nonisolated private static func copyUnresolvedItems(
-        _ items: [RestoreUnresolvedFile],
-        to destinationFolder: URL
-    ) -> RestoreUnresolvedCopyResult {
-        var result = RestoreUnresolvedCopyResult()
-        let fileManager = FileManager.default
-
-        do {
-            try fileManager.createDirectory(
-                at: destinationFolder,
-                withIntermediateDirectories: true
-            )
-        } catch {
-            result.failed = items.count
-            result.failedNames = Array(items.prefix(3).map(\.name))
-            return result
-        }
-
-        for item in items {
-            guard !Task.isCancelled else { break }
-
-            let sourceURL = URL(fileURLWithPath: item.deletedPath)
-            let preferredName = item.matchName ?? item.name
-            let destinationURL = availableDestinationURL(
-                in: destinationFolder,
-                preferredName: preferredName
-            )
-
-            do {
-                try fileManager.copyItem(at: sourceURL, to: destinationURL)
-                result.copied += 1
-                result.copiedURLs.append(destinationURL)
-            } catch {
-                result.failed += 1
-                result.failedNames.append(item.name)
-            }
-        }
-
-        return result
     }
 
     func clearInputs() {
@@ -3914,12 +3730,6 @@ final class EncoderViewModel: ObservableObject {
         return "GPhilCoder Sync Pairs \(formatter.string(from: Date())).\(SyncFolderPairListFile.fileExtension)"
     }
 
-    private func defaultRestoreUnresolvedFileName() -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd HH.mm"
-        return "GPhilCoder Unresolved \(formatter.string(from: Date())).json"
-    }
-
     private func normalizedQueueFileURL(_ url: URL) -> URL {
         url.pathExtension.isEmpty ? url.appendingPathExtension(QueueFile.fileExtension) : url
     }
@@ -3930,10 +3740,6 @@ final class EncoderViewModel: ObservableObject {
 
     private func normalizedSyncFolderPairListFileURL(_ url: URL) -> URL {
         url.pathExtension.isEmpty ? url.appendingPathExtension(SyncFolderPairListFile.fileExtension) : url
-    }
-
-    private func normalizedJSONFileURL(_ url: URL) -> URL {
-        url.pathExtension.isEmpty ? url.appendingPathExtension("json") : url
     }
 
     private func existingOutputURLs(for baseOutputURL: URL) -> [URL] {

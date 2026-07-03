@@ -96,7 +96,7 @@ struct RestoreFromBackupSheet: View {
 
                     GroupBox("Matching") {
                         VStack(alignment: .leading, spacing: 12) {
-                            Picker("Match by", selection: $model.restoreMatchMode) {
+                            Picker("Match by", selection: model.binding(\.restoreMatchMode)) {
                                 ForEach(RestoreMatchMode.allCases) { mode in
                                     Text(mode.title).tag(mode)
                                 }
@@ -108,7 +108,7 @@ struct RestoreFromBackupSheet: View {
                                 .foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
 
-                            Picker("Hashing", selection: $model.restoreHashMode) {
+                            Picker("Hashing", selection: model.binding(\.restoreHashMode)) {
                                 ForEach(RestoreHashMode.allCases) { mode in
                                     Text(mode.title).tag(mode)
                                 }
@@ -120,17 +120,17 @@ struct RestoreFromBackupSheet: View {
                                 .foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
 
-                            Picker("Copy from", selection: $model.restoreCopySource) {
+                            Picker("Copy from", selection: model.binding(\.restoreCopySource)) {
                                 ForEach(RestoreCopySource.allCases) { source in
                                     Text(source.title).tag(source)
                                 }
                             }
                             .disabled(model.isRestorePlanning || model.isRestoringFromPlan)
 
-                            Toggle("Include hidden files", isOn: $model.restoreIncludeHidden)
+                            Toggle("Include hidden files", isOn: model.binding(\.restoreIncludeHidden))
                                 .disabled(model.isRestorePlanning || model.isRestoringFromPlan)
 
-                            Toggle("Overwrite existing restore paths", isOn: $model.restoreOverwriteExisting)
+                            Toggle("Overwrite existing restore paths", isOn: model.binding(\.restoreOverwriteExisting))
                                 .disabled(model.isRestorePlanning || model.isRestoringFromPlan)
                         }
                         .padding(.vertical, 4)

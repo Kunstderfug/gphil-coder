@@ -39,7 +39,7 @@ private struct MediaRenameSettingsForm: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             settingRow("Action") {
-                Picker("Action", selection: $model.mediaRenameOperation) {
+                Picker("Action", selection: model.binding(\.mediaRenameOperation)) {
                     ForEach(MediaRenameOperation.allCases) { operation in
                         Text(operation.title)
                             .tag(operation)
@@ -56,7 +56,7 @@ private struct MediaRenameSettingsForm: View {
             Divider()
 
             settingRow("Sort") {
-                Picker("Sort", selection: $model.mediaRenameSort) {
+                Picker("Sort", selection: model.binding(\.mediaRenameSort)) {
                     ForEach(MediaRenameSort.allCases) { sort in
                         Text(sort.title)
                             .tag(sort)
@@ -81,7 +81,7 @@ private struct MediaRenameSettingsForm: View {
         case .pattern:
             VStack(alignment: .leading, spacing: 8) {
                 settingRow("Pattern") {
-                    TextField("Pattern", text: $model.mediaRenamePattern)
+                    TextField("Pattern", text: model.binding(\.mediaRenamePattern))
                         .textFieldStyle(.roundedBorder)
                         .disabled(model.isMediaCopyBusy)
                         .help("Use {name}, {index}, {parent}, and {date}")
@@ -99,26 +99,26 @@ private struct MediaRenameSettingsForm: View {
         case .replaceText:
             VStack(alignment: .leading, spacing: 10) {
                 settingRow("Find") {
-                    TextField("Find", text: $model.mediaRenameFindText)
+                    TextField("Find", text: model.binding(\.mediaRenameFindText))
                         .textFieldStyle(.roundedBorder)
                 }
                 settingRow("Replace") {
-                    TextField("Replace", text: $model.mediaRenameReplacementText)
+                    TextField("Replace", text: model.binding(\.mediaRenameReplacementText))
                         .textFieldStyle(.roundedBorder)
                 }
-                Toggle("Case sensitive", isOn: $model.mediaRenameIsCaseSensitive)
+                Toggle("Case sensitive", isOn: model.binding(\.mediaRenameIsCaseSensitive))
                     .padding(.leading, 104)
             }
             .disabled(model.isMediaCopyBusy)
         case .addText:
             VStack(alignment: .leading, spacing: 10) {
                 settingRow("Text") {
-                    TextField("Text", text: $model.mediaRenameAddedText)
+                    TextField("Text", text: model.binding(\.mediaRenameAddedText))
                         .textFieldStyle(.roundedBorder)
                         .help("Use {name}, {index}, {parent}, and {date}")
                 }
                 settingRow("Position") {
-                    Picker("Position", selection: $model.mediaRenameTextPlacement) {
+                    Picker("Position", selection: model.binding(\.mediaRenameTextPlacement)) {
                         ForEach(MediaRenameTextPlacement.allCases) { placement in
                             Text(placement.title)
                                 .tag(placement)
@@ -132,7 +132,7 @@ private struct MediaRenameSettingsForm: View {
             .disabled(model.isMediaCopyBusy)
         case .changeCase:
             settingRow("Case") {
-                Picker("Case", selection: $model.mediaRenameCaseStyle) {
+                Picker("Case", selection: model.binding(\.mediaRenameCaseStyle)) {
                     ForEach(MediaRenameCaseStyle.allCases) { style in
                         Text(style.title)
                             .tag(style)
@@ -150,15 +150,15 @@ private struct MediaRenameSettingsForm: View {
 
     private var indexControls: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Stepper(value: $model.mediaRenameStartIndex, in: 0...999_999) {
+            Stepper(value: model.binding(\.mediaRenameStartIndex), in: 0...999_999) {
                 valueRow("Start", value: model.mediaRenameStartIndex)
             }
 
-            Stepper(value: $model.mediaRenameIndexStep, in: 1...999) {
+            Stepper(value: model.binding(\.mediaRenameIndexStep), in: 1...999) {
                 valueRow("Step", value: model.mediaRenameIndexStep)
             }
 
-            Stepper(value: $model.mediaRenameIndexPadding, in: 1...8) {
+            Stepper(value: model.binding(\.mediaRenameIndexPadding), in: 1...8) {
                 valueRow("Digits", value: model.mediaRenameIndexPadding)
             }
         }

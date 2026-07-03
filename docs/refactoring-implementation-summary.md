@@ -1,17 +1,17 @@
 # Refactoring implementation summary
 
 This summarizes the current state of the `EncoderViewModel` decomposition after
-the `SettingsPersistence` extraction slice.
+the restore coordinator and SwiftUI binding-surface slice.
 
 ## Current status
 
-- `main` is one local implementation commit ahead of `origin/main` after this
+- `main` is two local implementation commits ahead of `origin/main` after this
   slice.
-- `swift test` passes locally: 146 tests, 0 failures.
+- `swift test` passes locally: 150 tests, 0 failures.
 - The critical correctness fixes from the original review are closed.
 - The implementation is in a healthy intermediate state: execution-heavy logic
-  and settings persistence plumbing have moved out of `EncoderViewModel`, but
-  prompts, authorization, and restore orchestration still keep the view model
+  restore orchestration, and settings persistence plumbing have moved out of
+  `EncoderViewModel`, but prompts and authorization still keep the view model
   large.
 
 ## Implemented
@@ -33,19 +33,30 @@ the `SettingsPersistence` extraction slice.
   directory and UUID helpers, media rename settings/history blob
   encode/decode, media copy source-root persistence, and corrupt-blob sidecar
   preservation. The view model still owns SwiftUI-bound `@Published` state.
+- `RestoreCoordinator` owns restore-plan build/apply tasks, cancellation state,
+  live progress snapshots, unresolved-file copying, unresolved-file JSON
+  export status, restored-file callbacks, and restore status messages.
+- `RestoreUnresolvedExporter` owns unresolved-file export document encoding,
+  JSON URL normalization, and default export naming.
+- `EncoderViewModel.binding(_:)` provides an explicit SwiftUI binding surface
+  for mutable settings; views no longer depend on direct `$model.*` projected
+  bindings.
 - Characterization coverage was added around encoding, folder sync, media file
   management, versioned decoding, file path transactions, and pure planners.
 - View-model persistence characterization coverage now pins encoding settings,
   HEVC/video load order, folder-sync settings, media copy settings, media
   rename settings/history, and selected preset normalization.
+- Restore coordinator characterization coverage now pins plan publication,
+  apply-result reporting, unresolved-file copy collision handling, and
+  unresolved-file JSON export.
 
 ## Still remaining
 
-- `EncoderViewModel` is still about 5,690 lines and remains the main
+- `EncoderViewModel` is still about 5,500 lines and remains the main
   maintainability risk.
 - Settings persistence keys and primitive reads/writes are extracted, but the
-  view model still has many `@Published didSet` persistence hooks because the
-  SwiftUI binding surface remains intentionally stable.
+  view model still has many `@Published didSet` persistence hooks because state
+  still lives on the view-model facade.
 - Encoding preflight and file-access authorization still live in the view
   model because they interact with SwiftUI-bound settings and AppKit prompts.
 - Folder-sync validation, bookmark authorization, persistence, and collision
@@ -53,11 +64,10 @@ the `SettingsPersistence` extraction slice.
 - Media source/destination panels, job document save/load, prompt construction,
   trash ledger persistence hooks, and compatibility accessors remain in the
   view model.
-- Restore-from-backup planning/apply/export orchestration is still a coherent
-  domain inside the view model.
-- `ContentView` remains large and directly binds many settings through
-  `$model.*`, so a full `SettingsStore` extraction is high-risk without widget
-  coverage.
+- Restore-from-backup AppKit folder/save panels still live in the view model.
+- `ContentView` remains large, so a full `SettingsStore` extraction is still
+  high-risk without widget or UI coverage, even though direct `$model.*`
+  bindings have been replaced.
 
 ## Assessment
 
@@ -77,14 +87,16 @@ which has a large dependency surface.
    Update the plan after each slice so branch status, test count, and remaining
    work stay accurate.
 
-2. Consider `RestoreCoordinator` next.
-   Restore planning, applying, exporting unresolved items, and copying
-   unresolved files form a clean domain boundary still inside
-   `EncoderViewModel`.
+2. Continue shrinking AppKit-facing view-model responsibilities.
+   Folder/save panels, security-scoped bookmark authorization, prompt
+   construction, and document save/load paths are now the largest coherent
+   groups still inside `EncoderViewModel`.
 
 3. Defer full `SettingsStore`.
-   Do not rebind `ContentView` to `$model.settings.*` until there is widget or
-   UI coverage around the current bindings.
+   The explicit `model.binding(_:)` API gives views a stable binding surface,
+   but the underlying settings state still lives on `EncoderViewModel`.
+   Introduce a real store only with widget or UI coverage around the current
+   bindings.
 
 4. Gradually tighten coordinator dependencies.
    Replace long callback lists with small dependency structs or narrow protocols

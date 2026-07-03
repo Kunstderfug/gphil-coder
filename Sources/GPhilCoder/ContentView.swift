@@ -354,7 +354,7 @@ struct ContentView: View {
 
             GroupBox("Behavior") {
                 VStack(alignment: .leading, spacing: 11) {
-                    Picker("Destination layout", selection: $model.syncDestinationLayout) {
+                    Picker("Destination layout", selection: model.binding(\.syncDestinationLayout)) {
                         ForEach(model.syncDestinationLayoutOptions) { layout in
                             Text(layout.title).tag(layout)
                         }
@@ -368,11 +368,11 @@ struct ContentView: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
 
-                    Toggle("Overwrite destination files", isOn: $model.syncOverwriteExisting)
+                    Toggle("Overwrite destination files", isOn: model.binding(\.syncOverwriteExisting))
                         .disabled(model.isFolderSyncBusy)
-                    Toggle("Sync deletions", isOn: $model.syncDeleteDestinationItems)
+                    Toggle("Sync deletions", isOn: model.binding(\.syncDeleteDestinationItems))
                         .disabled(model.isFolderSyncBusy)
-                    Toggle("Auto-sync while app is open", isOn: $model.syncAutoSyncEnabled)
+                    Toggle("Auto-sync while app is open", isOn: model.binding(\.syncAutoSyncEnabled))
                         .disabled(model.isFolderSyncBusy)
 
                     Text(model.syncWatcherStatusTitle)
@@ -385,7 +385,7 @@ struct ContentView: View {
 
             GroupBox("File Types") {
                 VStack(alignment: .leading, spacing: 10) {
-                    Picker("Sync files", selection: $model.syncFileFilter) {
+                    Picker("Sync files", selection: model.binding(\.syncFileFilter)) {
                         ForEach(model.syncFileFilterOptions) { filter in
                             Label(filter.title, systemImage: filter.symbolName)
                                 .tag(filter)
@@ -396,7 +396,7 @@ struct ContentView: View {
                     .arrowCursorOnHover()
 
                     if model.syncFileFilter == .custom {
-                        TextField("wav, flac, mp4", text: $model.syncCustomFileExtensions)
+                        TextField("wav, flac, mp4", text: model.binding(\.syncCustomFileExtensions))
                             .textFieldStyle(.roundedBorder)
                             .disabled(model.isFolderSyncBusy)
                     }
@@ -654,7 +654,7 @@ struct ContentView: View {
 
                     GroupBox("Filter") {
                         VStack(alignment: .leading, spacing: 10) {
-                            Picker("Media type", selection: $model.mediaCopyFilter) {
+                            Picker("Media type", selection: model.binding(\.mediaCopyFilter)) {
                                 ForEach(model.availableMediaFileFilters) { filter in
                                     Label(filter.title, systemImage: filter.symbolName)
                                         .tag(filter)
@@ -711,7 +711,7 @@ struct ContentView: View {
                                     .foregroundStyle(.secondary)
                                     .frame(width: 46, alignment: .trailing)
 
-                                TextField("Any file name", text: $model.mediaFileNameFilterQuery)
+                                TextField("Any file name", text: model.binding(\.mediaFileNameFilterQuery))
                                     .textFieldStyle(.roundedBorder)
                                     .disabled(model.isMediaCopyBusy)
                                     .help("Match files whose names contain this text")
@@ -1782,7 +1782,7 @@ struct ContentView: View {
 
                     GroupBox("Output") {
                         VStack(alignment: .leading, spacing: 12) {
-                            Picker("", selection: $model.outputMode) {
+                            Picker("", selection: model.binding(\.outputMode)) {
                                 ForEach(OutputMode.allCases) { mode in
                                     Text(mode.title).tag(mode)
                                 }
@@ -1812,7 +1812,7 @@ struct ContentView: View {
                                     }
                                     .disabled(model.isEncoding)
 
-                                    Toggle("Preserve subfolders", isOn: $model.preserveSubfolders)
+                                    Toggle("Preserve subfolders", isOn: model.binding(\.preserveSubfolders))
                                         .disabled(model.isEncoding)
                                 }
                             } else {
@@ -1837,12 +1837,12 @@ struct ContentView: View {
 
                             formatEncodingControls
 
-                            Stepper(value: $model.parallelJobs, in: 1...model.processorLimit) {
+                            Stepper(value: model.binding(\.parallelJobs), in: 1...model.processorLimit) {
                                 SettingValue(title: "Parallel jobs", value: "\(model.parallelJobs)")
                             }
                             .disabled(model.isEncoding)
 
-                            Stepper(value: $model.ffmpegThreads, in: 0...model.processorLimit) {
+                            Stepper(value: model.binding(\.ffmpegThreads), in: 0...model.processorLimit) {
                                 SettingValue(
                                     title: "FFmpeg threads",
                                     value: model.ffmpegThreads == 0 ? "Auto" : "\(model.ffmpegThreads)"
@@ -1852,7 +1852,7 @@ struct ContentView: View {
 
                             Toggle(
                                 "Overwrite existing \(model.outputFormatTitle) files",
-                                isOn: $model.overwriteExisting
+                                isOn: model.binding(\.overwriteExisting)
                             )
                             .disabled(model.isEncoding)
                         }
@@ -1863,7 +1863,7 @@ struct ContentView: View {
                         VStack(alignment: .leading, spacing: 10) {
                             Toggle(
                                 "Confirm before starting \(model.encodingWorkflow.title.lowercased()) jobs",
-                                isOn: $model.confirmBeforeEncoding
+                                isOn: model.binding(\.confirmBeforeEncoding)
                             )
                             .disabled(model.isEncoding)
 
@@ -2048,7 +2048,7 @@ struct ContentView: View {
     private var outputFormatPicker: some View {
         switch model.encodingWorkflow {
         case .audio:
-            Picker("Output format", selection: $model.outputFormat) {
+            Picker("Output format", selection: model.binding(\.outputFormat)) {
                 ForEach(AudioOutputFormat.allCases) { format in
                     Text(format.title).tag(format)
                 }
@@ -2056,7 +2056,7 @@ struct ContentView: View {
             .pickerStyle(.menu)
             .disabled(model.isEncoding)
         case .video:
-            Picker("Container", selection: $model.videoOutputContainer) {
+            Picker("Container", selection: model.binding(\.videoOutputContainer)) {
                 ForEach(VideoOutputContainer.allCases) { container in
                     Text(container.title).tag(container)
                 }
@@ -2074,7 +2074,7 @@ struct ContentView: View {
         } else {
         switch model.outputFormat {
         case .mp3:
-            Picker("MP3 mode", selection: $model.mp3Mode) {
+            Picker("MP3 mode", selection: model.binding(\.mp3Mode)) {
                 ForEach(MP3EncodingMode.allCases) { mode in
                     Text(mode.title).tag(mode)
                 }
@@ -2091,7 +2091,7 @@ struct ContentView: View {
             mp3ModeControls
 
         case .ogg:
-            Picker("Ogg mode", selection: $model.oggMode) {
+            Picker("Ogg mode", selection: model.binding(\.oggMode)) {
                 ForEach(OggEncodingOptions.Mode.allCases) { mode in
                     Text(mode.title).tag(mode)
                 }
@@ -2107,7 +2107,7 @@ struct ContentView: View {
 
             switch model.oggMode {
             case .bitrate:
-                Picker("Bitrate", selection: $model.oggBitrateKbps) {
+                Picker("Bitrate", selection: model.binding(\.oggBitrateKbps)) {
                     ForEach(OggEncodingOptions.bitrateKbps, id: \.self) { bitrate in
                         Text("\(bitrate) kbps").tag(bitrate)
                     }
@@ -2124,7 +2124,7 @@ struct ContentView: View {
                 }
 
             case .quality:
-                Picker("Quality", selection: $model.oggQuality) {
+                Picker("Quality", selection: model.binding(\.oggQuality)) {
                     ForEach(OggEncodingOptions.qualities, id: \.self) { quality in
                         Text(OggEncodingOptions.qualityLabel(quality)).tag(quality)
                     }
@@ -2140,7 +2140,7 @@ struct ContentView: View {
             }
 
         case .opus:
-            Picker("Opus mode", selection: $model.opusRateMode) {
+            Picker("Opus mode", selection: model.binding(\.opusRateMode)) {
                 ForEach(OpusEncodingOptions.RateMode.allCases) { mode in
                     Text(mode.title).tag(mode)
                 }
@@ -2149,7 +2149,7 @@ struct ContentView: View {
             .disabled(model.isEncoding)
             .arrowCursorOnHover()
 
-            Picker("Bitrate", selection: $model.opusBitrateKbps) {
+            Picker("Bitrate", selection: model.binding(\.opusBitrateKbps)) {
                 ForEach(OpusEncodingOptions.bitrateKbps, id: \.self) { bitrate in
                     Text("\(bitrate) kbps").tag(bitrate)
                 }
@@ -2169,7 +2169,7 @@ struct ContentView: View {
             .fixedSize(horizontal: false, vertical: true)
 
         case .flac:
-            Picker("Compression", selection: $model.flacCompressionLevel) {
+            Picker("Compression", selection: model.binding(\.flacCompressionLevel)) {
                 ForEach(FLACEncodingOptions.compressionLevels, id: \.self) { level in
                     Text(FLACEncodingOptions.compressionLevelLabel(level)).tag(level)
                 }
@@ -2200,7 +2200,7 @@ struct ContentView: View {
 
     private var videoEncodingControls: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Picker("HEVC preset", selection: $model.hevcPreset) {
+            Picker("HEVC preset", selection: model.binding(\.hevcPreset)) {
                 ForEach(HEVCVideoPreset.allCases) { preset in
                     Text(preset.title).tag(preset)
                 }
@@ -2214,7 +2214,7 @@ struct ContentView: View {
                 .fixedSize(horizontal: false, vertical: true)
 
             if model.hevcPreset == .custom {
-                Stepper(value: $model.customVideoBitrateKbps, in: 500...100_000, step: 500) {
+                Stepper(value: model.binding(\.customVideoBitrateKbps), in: 500...100_000, step: 500) {
                     SettingValue(
                         title: "Video bitrate",
                         value: "\(model.customVideoBitrateKbps) kbps"
@@ -2225,7 +2225,7 @@ struct ContentView: View {
                 SettingValue(title: "Video bitrate", value: "\(model.videoBitrateKbps) kbps")
             }
 
-            Picker("Resolution", selection: $model.videoScaleMode) {
+            Picker("Resolution", selection: model.binding(\.videoScaleMode)) {
                 ForEach(VideoScaleMode.allCases) { mode in
                     Text(mode.title).tag(mode)
                 }
@@ -2238,7 +2238,7 @@ struct ContentView: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Picker("Audio", selection: $model.videoAudioMode) {
+            Picker("Audio", selection: model.binding(\.videoAudioMode)) {
                 ForEach(VideoAudioMode.allCases) { mode in
                     Text(mode.title).tag(mode)
                 }
@@ -2251,7 +2251,7 @@ struct ContentView: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Picker("Decode", selection: $model.videoHardwareDecodeMode) {
+            Picker("Decode", selection: model.binding(\.videoHardwareDecodeMode)) {
                 ForEach(VideoHardwareDecodeMode.allCases) { mode in
                     Text(mode.title).tag(mode)
                 }
@@ -2275,7 +2275,7 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 6) {
             Toggle(
                 "Split oversized multichannel sources",
-                isOn: $model.splitOversizedMultichannel
+                isOn: model.binding(\.splitOversizedMultichannel)
             )
             .disabled(model.isEncoding)
 
@@ -2292,7 +2292,7 @@ struct ContentView: View {
     private var mp3ModeControls: some View {
         switch model.mp3Mode {
         case .vbr:
-            Picker("Quality", selection: $model.vbrQuality) {
+            Picker("Quality", selection: model.binding(\.vbrQuality)) {
                 ForEach(MP3EncodingOptions.vbrQualities, id: \.self) { quality in
                     Text(MP3EncodingOptions.vbrQualityLabel(quality)).tag(quality)
                 }
@@ -2300,7 +2300,7 @@ struct ContentView: View {
             .disabled(model.isEncoding)
 
         case .cbr:
-            Picker("Bitrate", selection: $model.cbrBitrateKbps) {
+            Picker("Bitrate", selection: model.binding(\.cbrBitrateKbps)) {
                 ForEach(MP3EncodingOptions.bitrateKbps, id: \.self) { bitrate in
                     Text("\(bitrate) kbps").tag(bitrate)
                 }
@@ -2308,7 +2308,7 @@ struct ContentView: View {
             .disabled(model.isEncoding)
 
         case .abr:
-            Picker("Target", selection: $model.abrBitrateKbps) {
+            Picker("Target", selection: model.binding(\.abrBitrateKbps)) {
                 ForEach(MP3EncodingOptions.bitrateKbps, id: \.self) { bitrate in
                     Text("\(bitrate) kbps").tag(bitrate)
                 }
@@ -2465,7 +2465,7 @@ private struct ToolStatusView: View {
                     .accessibilityHidden(model.encodingWorkflow != .video)
             }
 
-            Picker("FFmpeg", selection: $model.ffmpegSourcePreference) {
+            Picker("FFmpeg", selection: model.binding(\.ffmpegSourcePreference)) {
                 ForEach(FFmpegSourcePreference.selectableCases) { source in
                     Text(sourceLabel(source))
                         .tag(source)
@@ -2532,7 +2532,7 @@ private struct NotificationStatusControl: View {
                 .lineLimit(1)
 
             if model.notificationPermission == .enabled {
-                Toggle("Alerts", isOn: $model.completionNotificationsEnabled)
+                Toggle("Alerts", isOn: model.binding(\.completionNotificationsEnabled))
                     .labelsHidden()
                     .controlSize(.small)
                     .toggleStyle(.switch)
