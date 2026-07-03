@@ -122,6 +122,55 @@ final class MediaFileManagerCoordinatorTests: XCTestCase {
         )
     }
 
+    func testRunMediaCopyQueueCopiesEachWorkflowUnderSourceFolder() async throws {
+        let workspace = try makeTemporaryDirectory()
+        let firstSource = try makeDirectory("FirstSource", in: workspace)
+        let secondSource = try makeDirectory("SecondSource", in: workspace)
+        let destination = try makeDirectory("Destination", in: workspace)
+        try writeFile("Audio/first.wav", in: firstSource, contents: "first")
+        try writeFile("Audio/second.wav", in: secondSource, contents: "second")
+        try writeFile("Video/clip.mov", in: secondSource, contents: "video")
+
+        let model = makeMediaFileManagerModel()
+        model.mediaCopySourceRoots = [firstSource, secondSource]
+        model.mediaCopyDestinationRoot = destination
+        model.mediaCopyFilter = .audio
+        model.deselectAllMediaCopyExtensions()
+        model.setMediaCopyExtension("wav", enabled: true)
+
+        model.addCurrentMediaCopyWorkflowToQueue()
+        XCTAssertEqual(model.mediaCopyQueueTotalCount, 2)
+
+        model.runMediaCopyQueue()
+
+        let copied = await waitUntil(timeout: 5) {
+            !model.isMediaCopyBusy
+                && model.mediaCopyProgress?.copied == 1
+                && model.statusMessage.hasPrefix("Finished 2 file copy workflows: 2 copied.")
+        }
+        XCTAssertTrue(copied)
+        XCTAssertEqual(
+            try String(
+                contentsOf: destination.appendingPathComponent("FirstSource/Audio/first.wav"),
+                encoding: .utf8
+            ),
+            "first"
+        )
+        XCTAssertEqual(
+            try String(
+                contentsOf: destination.appendingPathComponent("SecondSource/Audio/second.wav"),
+                encoding: .utf8
+            ),
+            "second"
+        )
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: destination.appendingPathComponent("SecondSource/Video/clip.mov").path
+            )
+        )
+        XCTAssertNil(model.currentMediaCopyWorkflowID)
+    }
+
     func testDeletePreviewUsesInventoryAcrossMultipleSourcesAndFileNameFilter() async throws {
         let workspace = try makeTemporaryDirectory()
         let firstSource = try makeDirectory("FirstSource", in: workspace)

@@ -122,6 +122,22 @@ final class MediaFileCoordinator {
         runCopyPreflight(copyAfterScan: true, configuration: configuration)
     }
 
+    func runQueuedWorkflows(_ workflows: [MediaCopyWorkflow]) {
+        mediaCopyTask?.cancel()
+        setCopyPlan(nil)
+        setProgress(nil)
+        setCurrentWorkflowID(nil)
+        setScanning(true)
+        setCopying(false)
+        setStatusMessage(
+            "Scanning \(workflows.count) queued file copy workflow\(workflows.count == 1 ? "" : "s")..."
+        )
+
+        mediaCopyTask = Task { [weak self] in
+            await self?.runQueuedWorkflowTask(workflows)
+        }
+    }
+
     func cancel() {
         mediaCopyTask?.cancel()
         mediaCopyTask = nil
@@ -473,6 +489,119 @@ final class MediaFileCoordinator {
         }
     }
 
+    private func runQueuedWorkflowTask(_ workflows: [MediaCopyWorkflow]) async {
+        do {
+            var workflowPlans: [(workflow: MediaCopyWorkflow, plan: MediaCopyPlan)] = []
+
+            for (index, workflow) in workflows.enumerated() {
+                guard !Task.isCancelled else { return }
+                setCurrentWorkflowID(workflow.id)
+                setStatusMessage(
+                    "Scanning queued workflow \(index + 1) of \(workflows.count)..."
+                )
+
+                let worker = Task.detached(priority: .userInitiated) {
+                    try MediaCopyPlanner.buildPlan(
+                        sourceRoot: workflow.sourceRoot,
+                        destinationRoot: workflow.destinationRootPreservingSourceFolder,
+                        filter: workflow.filter,
+                        selectedExtensions: workflow.selectedExtensions,
+                        fileNameFilter: workflow.fileNameFilter
+                    )
+                }
+                let plan = try await withTaskCancellationHandler {
+                    try await worker.value
+                } onCancel: {
+                    worker.cancel()
+                }
+                workflowPlans.append((workflow, plan))
+            }
+
+            guard !Task.isCancelled else { return }
+
+            setScanning(false)
+
+            let nonEmptyWorkflowPlans = workflowPlans.filter(\.plan.hasCopyableContent)
+            guard !nonEmptyWorkflowPlans.isEmpty else {
+                let completionMessage = "No files found in the queued file copy workflows."
+                setCurrentWorkflowID(nil)
+                mediaCopyTask = nil
+                setStatusMessage(completionMessage)
+                notifyCompletion("File copy queue finished", completionMessage)
+                return
+            }
+
+            let nonEmptyPlans = nonEmptyWorkflowPlans.map(\.plan)
+            guard let resolution = promptConflictResolution(nonEmptyPlans) else {
+                setCurrentWorkflowID(nil)
+                mediaCopyTask = nil
+                setStatusMessage("File copy queue cancelled.")
+                return
+            }
+
+            setCopying(true)
+            setStatusMessage(
+                "Copying \(nonEmptyWorkflowPlans.count) queued workflow\(nonEmptyWorkflowPlans.count == 1 ? "" : "s")..."
+            )
+
+            var aggregateResult = MediaCopyResult(
+                total: nonEmptyPlans.reduce(0) { $0 + $1.candidates.count }
+            )
+
+            for workflowPlan in nonEmptyWorkflowPlans {
+                guard !Task.isCancelled else {
+                    aggregateResult.cancelled = true
+                    break
+                }
+
+                setCurrentWorkflowID(workflowPlan.workflow.id)
+                setCopyPlan(workflowPlan.plan)
+                let result = await copyMediaCopyPlan(
+                    workflowPlan.plan,
+                    conflictResolution: resolution
+                )
+
+                aggregateResult.copied += result.copied
+                aggregateResult.skippedExisting += result.skippedExisting
+                aggregateResult.failed += result.failed
+                aggregateResult.failedNames.append(contentsOf: result.failedNames)
+                aggregateResult.createdDirectories += result.createdDirectories
+                aggregateResult.failedDirectories += result.failedDirectories
+                aggregateResult.failedDirectoryNames.append(
+                    contentsOf: result.failedDirectoryNames
+                )
+                aggregateResult.cancelled = aggregateResult.cancelled || result.cancelled
+            }
+
+            guard !Task.isCancelled else { return }
+
+            setCopying(false)
+            setCurrentWorkflowID(nil)
+            mediaCopyTask = nil
+            let completionMessage = Self.mediaCopyQueueResultStatusMessage(
+                aggregateResult,
+                workflowCount: nonEmptyWorkflowPlans.count
+            )
+            setStatusMessage(completionMessage)
+            notifyCompletion("File copy queue finished", completionMessage)
+        } catch is CancellationError {
+            guard !Task.isCancelled else { return }
+            setScanning(false)
+            setCopying(false)
+            setCurrentWorkflowID(nil)
+            mediaCopyTask = nil
+            setStatusMessage("File copy queue cancelled.")
+        } catch {
+            guard !Task.isCancelled else { return }
+            setProgress(nil)
+            setScanning(false)
+            setCopying(false)
+            setCurrentWorkflowID(nil)
+            mediaCopyTask = nil
+            setStatusMessage("Could not run file copy queue: \(error.localizedDescription)")
+        }
+    }
+
     private func copyMediaCopyPlan(
         _ plan: MediaCopyPlan,
         conflictResolution: MediaCopyConflictResolution
@@ -657,5 +786,37 @@ final class MediaFileCoordinator {
         }
         details.append("totaling \(plan.totalSizeBytes.formattedFileSize)")
         return details.joined(separator: ", ") + "."
+    }
+
+    private static func mediaCopyQueueResultStatusMessage(
+        _ result: MediaCopyResult,
+        workflowCount: Int
+    ) -> String {
+        if result.cancelled {
+            return "File copy queue cancelled after \(result.copied) copied file\(result.copied == 1 ? "" : "s")."
+        }
+
+        var details = [
+            "Finished \(workflowCount) file copy workflow\(workflowCount == 1 ? "" : "s"): \(result.copied) copied."
+        ]
+        if result.createdDirectories > 0 {
+            details.append(
+                "\(result.createdDirectories) folder\(result.createdDirectories == 1 ? "" : "s") created."
+            )
+        }
+        if result.skippedExisting > 0 {
+            details.append("\(result.skippedExisting) existing file\(result.skippedExisting == 1 ? "" : "s") skipped.")
+        }
+        if result.failed > 0 {
+            details.append(
+                "\(result.failed) failed: \(result.failedNames.prefix(3).joined(separator: ", "))\(result.failedNames.count > 3 ? "..." : "")."
+            )
+        }
+        if result.failedDirectories > 0 {
+            details.append(
+                "\(result.failedDirectories) folder failure\(result.failedDirectories == 1 ? "" : "s")."
+            )
+        }
+        return details.joined(separator: " ")
     }
 }

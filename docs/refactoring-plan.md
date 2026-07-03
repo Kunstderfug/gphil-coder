@@ -85,7 +85,7 @@ outputs.
 
 ### Residual
 
-`EncoderViewModel` is still large (about 6,950 lines) with **69 `didSet`
+`EncoderViewModel` is still large (about 6,670 lines) with **69 `didSet`
 observers**. The security-scope/bookmark logic (~27 call sites), encoding run
 loop, and folder-sync run loop are extracted. The remaining view-model code is
 mostly entry/configuration wrappers plus two larger domains:
@@ -99,9 +99,9 @@ mostly entry/configuration wrappers plus two larger domains:
   Folder validation, bookmark authorization, persistence, and collision checks
   remain on the view model because they interact with UI prompts and stored
   `syncFolderPairs`; execution delegates to `FolderSyncCoordinator`.
-- **MediaFileManager** — queued copy execution, filtered delete execution,
-  filtered rename execution, undo/redo execution, and their prompt/history
-  side effects (the largest remaining domain).
+- **MediaFileManager** — filtered delete execution, filtered rename execution,
+  undo/redo execution, and their prompt/history side effects (the largest
+  remaining domain).
 - **SettingsStore** — the 69 `@Published didSet → UserDefaults.standard`
   writes plus the `isLoadingPersistedSettings` guard dance. A full state-owning
   store is still deferred; the safer next move is a persistence-helper
@@ -234,26 +234,25 @@ full `swift test` green (140 tests).
 
 ### Step 5 — Extract `MediaFileCoordinator` (medium-high risk) — IN PROGRESS
 
-Second slice landed: `Sources/GPhilCoder/MediaFileCoordinator.swift` now owns
-`scanMediaCopyFiles()`, immediate `copyFilteredMediaFiles()` execution, media
-inventory scanning, and delete/rename preview rebuilds via
-`MediaCopyRunConfiguration`, `MediaPreviewConfiguration`, and setter/prompt
-callbacks. `EncoderViewModel` keeps the public SwiftUI-bound entry points,
-published state, validation alert, conflict/trash/rename prompts, and
-completion notification hook.
+Current Step 5 slices landed: `Sources/GPhilCoder/MediaFileCoordinator.swift`
+now owns `scanMediaCopyFiles()`, immediate `copyFilteredMediaFiles()`
+execution, queued copy execution, media inventory scanning, and delete/rename
+preview rebuilds via `MediaCopyRunConfiguration`, `MediaPreviewConfiguration`,
+and setter/prompt callbacks. `EncoderViewModel` keeps the public SwiftUI-bound
+entry points, published state, validation alert, conflict/trash/rename prompts,
+and completion notification hook.
 
-Still pending in this step: queued copy execution, filtered delete execution,
-filtered rename execution, undo/redo execution, deeper debounce/invalidation
-mechanics, and status helpers that are still used by the remaining view-model
-media paths.
+Still pending in this step: filtered delete execution, filtered rename
+execution, undo/redo execution, deeper debounce/invalidation mechanics, and
+status helpers that are still used by the remaining view-model media paths.
 
 Same no-UI-rewrite shape as Steps 2-3. New
 `Sources/GPhilCoder/MediaFileCoordinator.swift`.
 
 - **Moved in:** media file inventory scan/cache, delete/rename preview
-  rebuilds, and copy scan/copy run loop.
-- **Still move in:** queued copy run loop, filtered delete run loop,
-  filtered rename run loop, rename undo/redo run loop, `mediaCopyTask`,
+  rebuilds, copy scan/copy run loop, and queued copy run loop.
+- **Still move in:** filtered delete run loop, filtered rename run loop,
+  rename undo/redo run loop, `mediaCopyTask`,
   `mediaFileNameFilterRefreshTask`, and the media copy/rename status helpers.
 - **Keep on the view model for now:** `@Published` media settings, plans,
   progress, busy flags, queue, and rename settings; `NSOpenPanel`/`NSSavePanel`
