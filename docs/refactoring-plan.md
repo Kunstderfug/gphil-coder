@@ -1,15 +1,15 @@
 # Refactoring plan: EncoderViewModel decomposition
 
-> **Status as of commit `77e9f40` plus Steps 1-5 implementation.** Update this
-> file as each step lands.
+> **Status after the `SettingsPersistence` extraction slice.** Update this file
+> as each step lands.
 > This document records what the 2026-07 code-review-driven refactor
 > accomplished and what remains, so the next maintainer doesn't have to
 > re-derive the sequencing decisions.
 
 ## Current status
 
-- **Branch:** `main`, 3 commits ahead of `origin/main`.
-- **Build:** clean. **Tests:** 141 pass (baseline before the refactor was 51).
+- **Branch:** `main`, one local implementation commit ahead of `origin/main`.
+- **Build:** clean. **Tests:** 146 pass (baseline before the refactor was 51).
 - **No open correctness bugs** — all three Critical issues from the code review
   are closed.
 
@@ -20,7 +20,7 @@
 | 1 | Temp-write-then-replace in `FFmpegEncoder` (truncated output on cancel/failure) | Critical | ✅ Done |
 | 2 | Stale security-scoped bookmark fix | Critical | ✅ Done (absorbed into `BookmarkStore`) |
 | 3 | Silent-decode hardening, all 4 persisted payloads | Critical | ✅ Done |
-| 4 | God-Object decomposition of `EncoderViewModel` | Important | 🔶 Steps 1-5 done; remaining settings extraction pending or deferred |
+| 4 | God-Object decomposition of `EncoderViewModel` | Important | 🔶 Steps 1-6 done; restore orchestration still pending |
 | 5 | Move `RestorePlanner` to `GPhilCoderCore` | Important | ✅ Done |
 | 6 | Move FFmpeg pure functions to `GPhilCoderCore` | Important | ✅ Done |
 
@@ -68,6 +68,11 @@ New `GPhilCoder` (App) files:
   completion callbacks. `EncoderViewModel` keeps compatibility accessors, entry
   points, panels/prompts, trash ledger hooks, settings persistence writes, and
   completion notifications.
+- `SettingsPersistence.swift` — owns `UserDefaults` key constants,
+  scalar/default read-write helpers, directory and UUID persistence,
+  media-copy source-root path persistence, media rename settings/history
+  encode/decode, and corrupt-blob sidecar preservation. `EncoderViewModel`
+  keeps the SwiftUI-bound `@Published` settings surface.
 
 Step 1 characterization coverage:
 
@@ -85,6 +90,10 @@ Step 1 characterization coverage:
   tests for media copy scan filtering, no-conflict copy execution, destination
   conflict detection, delete preview inventory use across multiple source
   roots, rename preview rebuilds, and rename conflict blocking.
+- `Tests/GPhilCoderTests/EncoderViewModelPersistenceTests.swift` — view-model
+  persistence characterization for encoding settings, HEVC/video load order,
+  folder-sync settings, media copy settings, media rename settings/history, and
+  selected preset normalization.
 
 The cancellation characterization test exposed an extra coordinator bug:
 `cancelEncoding()` cancelled the parent task but did not reliably terminate
@@ -95,11 +104,11 @@ outputs.
 
 ### Residual
 
-`EncoderViewModel` is still large (about 5,883 lines) with **48 `didSet`
-observers**. The security-scope/bookmark logic (~27 call sites), encoding run
-loop, folder-sync run loop, and media file-management state/execution are
-extracted. The remaining view-model code is mostly entry/configuration wrappers
-plus two larger domains:
+`EncoderViewModel` is still large (about 5,690 lines) with many `didSet`
+observers. The security-scope/bookmark logic (~27 call sites), encoding run
+loop, folder-sync run loop, media file-management state/execution, and
+settings persistence primitives are extracted. The remaining view-model code is
+mostly entry/configuration wrappers plus two larger domains:
 
 - **Encoding entry/preflight** — `startEncoding`/`cancelEncoding`/
   `confirmEncodingPreflight` still live on the view model because they assemble
@@ -114,10 +123,10 @@ plus two larger domains:
   document save/load, prompt construction, trash/rename persistence hooks, and
   compatibility accessors remain on the view model while state and execution
   live in `MediaFileCoordinator`.
-- **SettingsStore** — the 48 `@Published didSet → UserDefaults.standard`
-  writes plus the `isLoadingPersistedSettings` guard dance. A full state-owning
-  store is still deferred; the safer next move is a persistence-helper
-  extraction that leaves all `@Published` properties on `EncoderViewModel`.
+- **SettingsStore** — a full state-owning store is still deferred. The
+  persistence helper is extracted, but the `@Published didSet` hooks and
+  `isLoadingPersistedSettings` load-order guard remain on `EncoderViewModel`
+  so `ContentView` bindings stay stable.
 
 ---
 
@@ -333,16 +342,14 @@ The conversion-path scripts (`scripts/test_audio_conversions.sh`,
 
 ---
 
-## Open sequencing question
+## Current next step
 
-Step 1 is the keystone — it's what makes Steps 2–3 safe. But it adds a test
-dependency on system `ffmpeg` (gated with `XCTSkipUnless`).
+The original sequencing question is resolved: characterization coverage landed
+first, then the encoding, folder-sync, media-file, and settings-persistence
+boundaries were extracted.
 
-- **Option A (recommended):** Do Step 1 first as its own PR, then Steps 2 and 3
-  each as separate PRs. Slowest but safest; each PR is independently
-  revertible and the test net grows before the risky surgery.
-- **Option B:** Skip Step 1, do Steps 2–3 carefully with only the existing 124
-  tests as the net. Faster, but a regression in `runJobs` or `runFolderSync`
-  could land undetected since nothing currently exercises those paths headless.
-
-**Recommendation: Option A.**
+The next implementation slice should be `RestoreCoordinator`, because restore
+planning/apply/export orchestration is the largest coherent domain still
+inside `EncoderViewModel`. Keep `ContentView` bindings stable and avoid a full
+`SettingsStore` until widget or UI coverage exists around the current binding
+surface.

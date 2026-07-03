@@ -6,63 +6,7 @@ import UniformTypeIdentifiers
 
 @MainActor
 final class EncoderViewModel: ObservableObject {
-    private enum DefaultsKey {
-        static let lastInputDirectoryPath = "lastInputDirectoryPath"
-        static let outputMode = "outputMode"
-        static let exportFolderPath = "exportFolderPath"
-        static let encodingWorkflow = "encodingWorkflow"
-        static let selectedInputExtensions = "selectedInputExtensions"
-        static let selectedVideoInputExtensions = "selectedVideoInputExtensions"
-        static let preserveSubfolders = "preserveSubfolders"
-        static let overwriteExisting = "overwriteExisting"
-        static let confirmBeforeEncoding = "confirmBeforeEncoding"
-        static let outputFormat = "outputFormat"
-        static let videoOutputContainer = "videoOutputContainer"
-        static let hevcPreset = "hevcPreset"
-        static let customVideoBitrateKbps = "customVideoBitrateKbps"
-        static let videoScaleMode = "videoScaleMode"
-        static let videoAudioMode = "videoAudioMode"
-        static let videoHardwareDecodeMode = "videoHardwareDecodeMode"
-        static let mp3Mode = "mp3Mode"
-        static let vbrQuality = "vbrQuality"
-        static let cbrBitrateKbps = "cbrBitrateKbps"
-        static let abrBitrateKbps = "abrBitrateKbps"
-        static let oggMode = "oggMode"
-        static let oggQuality = "oggQuality"
-        static let oggBitrateKbps = "oggBitrateKbps"
-        static let opusRateMode = "opusRateMode"
-        static let opusBitrateKbps = "opusBitrateKbps"
-        static let flacCompressionLevel = "flacCompressionLevel"
-        static let splitOversizedMultichannel = "splitOversizedMultichannel"
-        static let parallelJobs = "parallelJobs"
-        static let ffmpegThreads = "ffmpegThreads"
-        static let ffmpegSourcePreference = "ffmpegSourcePreference"
-        static let encodingPresets = "encodingPresets"
-        static let selectedAudioEncodingPresetID = "selectedAudioEncodingPresetID"
-        static let selectedVideoEncodingPresetID = "selectedVideoEncodingPresetID"
-        static let trashedSourceRecords = "trashedSourceRecords"
-        static let restoreDeletedFolderPath = "restoreDeletedFolderPath"
-        static let restoreBackupRootPath = "restoreBackupRootPath"
-        static let restoreDestinationRootPath = "restoreDestinationRootPath"
-        static let fileManagementMode = "fileManagementMode"
-        static let mediaCopySourceRootPath = "mediaCopySourceRootPath"
-        static let mediaCopySourceRootPaths = "mediaCopySourceRootPaths"
-        static let mediaCopyDestinationRootPath = "mediaCopyDestinationRootPath"
-        static let mediaCopyFilter = "mediaCopyFilter"
-        static let mediaCopyAudioExtensions = "mediaCopyAudioExtensions"
-        static let mediaCopyVideoExtensions = "mediaCopyVideoExtensions"
-        static let mediaFileNameFilterQuery = "mediaFileNameFilterQuery"
-        static let mediaRenameSettings = "mediaRenameSettings"
-        static let mediaRenameHistory = "mediaRenameHistory"
-        static let syncFolderPairs = "syncFolderPairs"
-        static let syncOverwriteExisting = "syncOverwriteExisting"
-        static let syncDeleteDestinationItems = "syncDeleteDestinationItems"
-        static let syncAutoSyncEnabled = "syncAutoSyncEnabled"
-        static let syncDestinationLayout = "syncDestinationLayout"
-        static let syncFileFilter = "syncFileFilter"
-        static let syncCustomFileExtensions = "syncCustomFileExtensions"
-        static let completionNotificationsEnabled = "completionNotificationsEnabled"
-    }
+    private typealias DefaultsKey = SettingsPersistence.Key
 
     private static let mediaRenameHistoryLimit = 20
     private static let mediaPreviewLimit = 300
@@ -127,24 +71,6 @@ final class EncoderViewModel: ObservableObject {
         var failedNames: [String] = []
     }
 
-    private struct MediaRenameHistoryDocument: Codable, Sendable {
-        static let currentVersion = 1
-
-        var version = Self.currentVersion
-        var undoStack: [MediaRenameHistoryTransaction]
-        var redoStack: [MediaRenameHistoryTransaction]
-    }
-
-    /// Versioned wrapper around `MediaRenameSettings`, mirroring the
-    /// `VersionedBlob` envelope shape so a corrupt blob can be distinguished
-    /// from a missing one.
-    private struct MediaRenameSettingsDocument: Codable, Sendable {
-        static let currentVersion = 1
-
-        var version = Self.currentVersion
-        var settings: MediaRenameSettings
-    }
-
     @Published private(set) var inputs: [AudioInputItem] = []
     @Published private(set) var jobs: [EncodeJob] = []
     @Published var jobStateFilter: JobState?
@@ -206,7 +132,7 @@ final class EncoderViewModel: ObservableObject {
             let oldValue = mediaFileCoordinator.fileManagementMode
             guard oldValue != newValue else { return }
             mediaFileCoordinator.fileManagementMode = newValue
-            UserDefaults.standard.set(newValue.rawValue, forKey: DefaultsKey.fileManagementMode)
+            settingsPersistence.set(newValue.rawValue, forKey: DefaultsKey.fileManagementMode)
             guard !isLoadingPersistedSettings else { return }
             refreshActiveFileManagementPreviewIfNeeded()
         }
@@ -234,7 +160,7 @@ final class EncoderViewModel: ObservableObject {
         set {
             let oldValue = mediaFileCoordinator.mediaCopyFilter
             mediaFileCoordinator.mediaCopyFilter = newValue
-            UserDefaults.standard.set(newValue.rawValue, forKey: DefaultsKey.mediaCopyFilter)
+            settingsPersistence.set(newValue.rawValue, forKey: DefaultsKey.mediaCopyFilter)
             invalidateMediaCopyPlanIfChanged(from: oldValue, to: newValue)
         }
     }
@@ -265,7 +191,7 @@ final class EncoderViewModel: ObservableObject {
         set {
             let oldValue = mediaFileCoordinator.mediaFileNameFilterQuery
             mediaFileCoordinator.mediaFileNameFilterQuery = newValue
-            UserDefaults.standard.set(newValue, forKey: DefaultsKey.mediaFileNameFilterQuery)
+            settingsPersistence.set(newValue, forKey: DefaultsKey.mediaFileNameFilterQuery)
             handleMediaFileNameFilterChanged(
                 from: oldValue.trimmingCharacters(in: .whitespacesAndNewlines),
                 to: newValue.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -325,18 +251,18 @@ final class EncoderViewModel: ObservableObject {
     @Published private(set) var editingSyncPairID: UUID?
     @Published var completionNotificationsEnabled = true {
         didSet {
-            UserDefaults.standard.set(
+            settingsPersistence.set(
                 completionNotificationsEnabled,
                 forKey: DefaultsKey.completionNotificationsEnabled
             )
         }
     }
     @Published var syncOverwriteExisting = true {
-        didSet { UserDefaults.standard.set(syncOverwriteExisting, forKey: DefaultsKey.syncOverwriteExisting) }
+        didSet { settingsPersistence.set(syncOverwriteExisting, forKey: DefaultsKey.syncOverwriteExisting) }
     }
     @Published var syncDeleteDestinationItems = true {
         didSet {
-            UserDefaults.standard.set(
+            settingsPersistence.set(
                 syncDeleteDestinationItems,
                 forKey: DefaultsKey.syncDeleteDestinationItems
             )
@@ -345,7 +271,7 @@ final class EncoderViewModel: ObservableObject {
     }
     @Published var syncDestinationLayout: SyncDestinationLayout = .originSubfolder {
         didSet {
-            UserDefaults.standard.set(
+            settingsPersistence.set(
                 syncDestinationLayout.rawValue,
                 forKey: DefaultsKey.syncDestinationLayout
             )
@@ -354,13 +280,13 @@ final class EncoderViewModel: ObservableObject {
     }
     @Published var syncFileFilter: SyncFileFilter = .all {
         didSet {
-            UserDefaults.standard.set(syncFileFilter.rawValue, forKey: DefaultsKey.syncFileFilter)
+            settingsPersistence.set(syncFileFilter.rawValue, forKey: DefaultsKey.syncFileFilter)
             resetFolderSyncPlan()
         }
     }
     @Published var syncCustomFileExtensions = "" {
         didSet {
-            UserDefaults.standard.set(
+            settingsPersistence.set(
                 syncCustomFileExtensions,
                 forKey: DefaultsKey.syncCustomFileExtensions
             )
@@ -371,7 +297,7 @@ final class EncoderViewModel: ObservableObject {
     }
     @Published var syncAutoSyncEnabled = true {
         didSet {
-            UserDefaults.standard.set(syncAutoSyncEnabled, forKey: DefaultsKey.syncAutoSyncEnabled)
+            settingsPersistence.set(syncAutoSyncEnabled, forKey: DefaultsKey.syncAutoSyncEnabled)
             configureFolderSyncWatcher()
         }
     }
@@ -522,7 +448,7 @@ final class EncoderViewModel: ObservableObject {
 
     @Published private(set) var selectedInputExtensions: Set<String> = AudioFormat.inputExtensions {
         didSet {
-            UserDefaults.standard.set(
+            settingsPersistence.set(
                 selectedInputExtensions.sorted(),
                 forKey: DefaultsKey.selectedInputExtensions
             )
@@ -531,7 +457,7 @@ final class EncoderViewModel: ObservableObject {
 
     @Published private(set) var selectedVideoInputExtensions: Set<String> = VideoFormat.inputExtensions {
         didSet {
-            UserDefaults.standard.set(
+            settingsPersistence.set(
                 selectedVideoInputExtensions.sorted(),
                 forKey: DefaultsKey.selectedVideoInputExtensions
             )
@@ -540,7 +466,7 @@ final class EncoderViewModel: ObservableObject {
 
     @Published var encodingWorkflow: EncodingWorkflow = .audio {
         didSet {
-            UserDefaults.standard.set(
+            settingsPersistence.set(
                 encodingWorkflow.rawValue,
                 forKey: DefaultsKey.encodingWorkflow
             )
@@ -553,48 +479,48 @@ final class EncoderViewModel: ObservableObject {
     }
 
     @Published var outputMode: OutputMode = .sourceFolders {
-        didSet { UserDefaults.standard.set(outputMode.rawValue, forKey: DefaultsKey.outputMode) }
+        didSet { settingsPersistence.set(outputMode.rawValue, forKey: DefaultsKey.outputMode) }
     }
 
     @Published var exportFolder: URL? {
         didSet {
             if let exportFolder {
-                UserDefaults.standard.set(
+                settingsPersistence.set(
                     exportFolder.standardizedFileURL.path(percentEncoded: false),
                     forKey: DefaultsKey.exportFolderPath)
             } else {
-                UserDefaults.standard.removeObject(forKey: DefaultsKey.exportFolderPath)
+                settingsPersistence.removeObject(forKey: DefaultsKey.exportFolderPath)
             }
         }
     }
 
     @Published var preserveSubfolders = true {
         didSet {
-            UserDefaults.standard.set(preserveSubfolders, forKey: DefaultsKey.preserveSubfolders)
+            settingsPersistence.set(preserveSubfolders, forKey: DefaultsKey.preserveSubfolders)
         }
     }
 
     @Published var overwriteExisting = false {
         didSet {
-            UserDefaults.standard.set(overwriteExisting, forKey: DefaultsKey.overwriteExisting)
+            settingsPersistence.set(overwriteExisting, forKey: DefaultsKey.overwriteExisting)
         }
     }
 
     @Published var confirmBeforeEncoding = true {
         didSet {
-            UserDefaults.standard.set(confirmBeforeEncoding, forKey: DefaultsKey.confirmBeforeEncoding)
+            settingsPersistence.set(confirmBeforeEncoding, forKey: DefaultsKey.confirmBeforeEncoding)
         }
     }
 
     @Published var outputFormat: AudioOutputFormat = .mp3 {
         didSet {
-            UserDefaults.standard.set(outputFormat.rawValue, forKey: DefaultsKey.outputFormat)
+            settingsPersistence.set(outputFormat.rawValue, forKey: DefaultsKey.outputFormat)
         }
     }
 
     @Published var videoOutputContainer: VideoOutputContainer = .mp4 {
         didSet {
-            UserDefaults.standard.set(
+            settingsPersistence.set(
                 videoOutputContainer.rawValue,
                 forKey: DefaultsKey.videoOutputContainer
             )
@@ -603,7 +529,7 @@ final class EncoderViewModel: ObservableObject {
 
     @Published var hevcPreset: HEVCVideoPreset = .balanced1080p {
         didSet {
-            UserDefaults.standard.set(hevcPreset.rawValue, forKey: DefaultsKey.hevcPreset)
+            settingsPersistence.set(hevcPreset.rawValue, forKey: DefaultsKey.hevcPreset)
             if !isLoadingPersistedSettings {
                 videoScaleMode = hevcPreset.defaultScaleMode
             }
@@ -612,7 +538,7 @@ final class EncoderViewModel: ObservableObject {
 
     @Published var customVideoBitrateKbps = 8_000 {
         didSet {
-            UserDefaults.standard.set(
+            settingsPersistence.set(
                 customVideoBitrateKbps,
                 forKey: DefaultsKey.customVideoBitrateKbps
             )
@@ -621,19 +547,19 @@ final class EncoderViewModel: ObservableObject {
 
     @Published var videoScaleMode: VideoScaleMode = HEVCVideoPreset.balanced1080p.defaultScaleMode {
         didSet {
-            UserDefaults.standard.set(videoScaleMode.rawValue, forKey: DefaultsKey.videoScaleMode)
+            settingsPersistence.set(videoScaleMode.rawValue, forKey: DefaultsKey.videoScaleMode)
         }
     }
 
     @Published var videoAudioMode: VideoAudioMode = .copy {
         didSet {
-            UserDefaults.standard.set(videoAudioMode.rawValue, forKey: DefaultsKey.videoAudioMode)
+            settingsPersistence.set(videoAudioMode.rawValue, forKey: DefaultsKey.videoAudioMode)
         }
     }
 
     @Published var videoHardwareDecodeMode: VideoHardwareDecodeMode = .auto {
         didSet {
-            UserDefaults.standard.set(
+            settingsPersistence.set(
                 videoHardwareDecodeMode.rawValue,
                 forKey: DefaultsKey.videoHardwareDecodeMode
             )
@@ -641,53 +567,53 @@ final class EncoderViewModel: ObservableObject {
     }
 
     @Published var mp3Mode: MP3EncodingMode = .vbr {
-        didSet { UserDefaults.standard.set(mp3Mode.rawValue, forKey: DefaultsKey.mp3Mode) }
+        didSet { settingsPersistence.set(mp3Mode.rawValue, forKey: DefaultsKey.mp3Mode) }
     }
 
     @Published var vbrQuality = 2 {
-        didSet { UserDefaults.standard.set(vbrQuality, forKey: DefaultsKey.vbrQuality) }
+        didSet { settingsPersistence.set(vbrQuality, forKey: DefaultsKey.vbrQuality) }
     }
 
     @Published var cbrBitrateKbps = 320 {
-        didSet { UserDefaults.standard.set(cbrBitrateKbps, forKey: DefaultsKey.cbrBitrateKbps) }
+        didSet { settingsPersistence.set(cbrBitrateKbps, forKey: DefaultsKey.cbrBitrateKbps) }
     }
 
     @Published var abrBitrateKbps = 192 {
-        didSet { UserDefaults.standard.set(abrBitrateKbps, forKey: DefaultsKey.abrBitrateKbps) }
+        didSet { settingsPersistence.set(abrBitrateKbps, forKey: DefaultsKey.abrBitrateKbps) }
     }
 
     @Published var oggMode: OggEncodingOptions.Mode = .bitrate {
-        didSet { UserDefaults.standard.set(oggMode.rawValue, forKey: DefaultsKey.oggMode) }
+        didSet { settingsPersistence.set(oggMode.rawValue, forKey: DefaultsKey.oggMode) }
     }
 
     @Published var oggQuality = 6 {
-        didSet { UserDefaults.standard.set(oggQuality, forKey: DefaultsKey.oggQuality) }
+        didSet { settingsPersistence.set(oggQuality, forKey: DefaultsKey.oggQuality) }
     }
 
     @Published var oggBitrateKbps = 256 {
-        didSet { UserDefaults.standard.set(oggBitrateKbps, forKey: DefaultsKey.oggBitrateKbps) }
+        didSet { settingsPersistence.set(oggBitrateKbps, forKey: DefaultsKey.oggBitrateKbps) }
     }
 
     @Published var opusRateMode: OpusEncodingOptions.RateMode = .vbr {
         didSet {
-            UserDefaults.standard.set(opusRateMode.rawValue, forKey: DefaultsKey.opusRateMode)
+            settingsPersistence.set(opusRateMode.rawValue, forKey: DefaultsKey.opusRateMode)
         }
     }
 
     @Published var opusBitrateKbps = 192 {
-        didSet { UserDefaults.standard.set(opusBitrateKbps, forKey: DefaultsKey.opusBitrateKbps) }
+        didSet { settingsPersistence.set(opusBitrateKbps, forKey: DefaultsKey.opusBitrateKbps) }
     }
 
     @Published var flacCompressionLevel = 8 {
         didSet {
-            UserDefaults.standard.set(
+            settingsPersistence.set(
                 flacCompressionLevel, forKey: DefaultsKey.flacCompressionLevel)
         }
     }
 
     @Published var splitOversizedMultichannel = true {
         didSet {
-            UserDefaults.standard.set(
+            settingsPersistence.set(
                 splitOversizedMultichannel,
                 forKey: DefaultsKey.splitOversizedMultichannel
             )
@@ -695,16 +621,16 @@ final class EncoderViewModel: ObservableObject {
     }
 
     @Published var parallelJobs = max(1, min(4, ProcessInfo.processInfo.activeProcessorCount)) {
-        didSet { UserDefaults.standard.set(parallelJobs, forKey: DefaultsKey.parallelJobs) }
+        didSet { settingsPersistence.set(parallelJobs, forKey: DefaultsKey.parallelJobs) }
     }
 
     @Published var ffmpegThreads = 0 {
-        didSet { UserDefaults.standard.set(ffmpegThreads, forKey: DefaultsKey.ffmpegThreads) }
+        didSet { settingsPersistence.set(ffmpegThreads, forKey: DefaultsKey.ffmpegThreads) }
     }
 
     @Published var ffmpegSourcePreference: FFmpegSourcePreference = .bundled {
         didSet {
-            UserDefaults.standard.set(
+            settingsPersistence.set(
                 ffmpegSourcePreference.rawValue,
                 forKey: DefaultsKey.ffmpegSourcePreference
             )
@@ -718,6 +644,7 @@ final class EncoderViewModel: ObservableObject {
     private var restoreApplyTask: Task<Void, Never>?
     private var isUpdatingSyncPairStatus = false
     private var isLoadingPersistedSettings = false
+    private let settingsPersistence = SettingsPersistence()
     private let securityScopes = SecurityScopeManager()
     private let bookmarks = BookmarkStore()
     private var cancellables: Set<AnyCancellable> = []
@@ -4480,9 +4407,7 @@ final class EncoderViewModel: ObservableObject {
         isLoadingPersistedSettings = true
         defer { isLoadingPersistedSettings = false }
 
-        let defaults = UserDefaults.standard
-
-        if let data = defaults.data(forKey: DefaultsKey.trashedSourceRecords) {
+        if let data = settingsPersistence.data(forKey: DefaultsKey.trashedSourceRecords) {
             switch VersionedBlob.decodeEnvelope(
                 from: data, currentVersion: 1, allowLegacyBareArray: true
             ) as Result<[TrashedSourceRecord], DecodeProblem> {
@@ -4493,57 +4418,36 @@ final class EncoderViewModel: ObservableObject {
                 statusMessage =
                     "Could not read saved trash records — they were saved by a newer version of GPhilCoder and were kept. Restore-from-Trash may be unavailable until you upgrade."
             case .failure(.corrupt):
-                preserveCorruptBlob(data, name: "trashed-source-records")
+                settingsPersistence.preserveCorruptBlob(data, name: "trashed-source-records")
                 statusMessage =
                     "Could not read saved trash records — the data appears damaged and was preserved to a backup file. Contact support before relying on Trash restore."
             }
         }
-        if let data = defaults.data(forKey: DefaultsKey.mediaRenameHistory) {
-            // The rename-history document already carries its own version, so
-            // route it through the shared helper to surface a corrupt blob
-            // rather than silently discarding undo/redo history.
-            let result = VersionedBlob.decode(
-                from: data,
-                currentVersion: MediaRenameHistoryDocument.currentVersion,
-                decodePayload: { data in
-                    let document = try JSONDecoder().decode(
-                        MediaRenameHistoryDocument.self, from: data
-                    )
-                    guard document.version == MediaRenameHistoryDocument.currentVersion else {
-                        // Re-throw as a version mismatch the envelope check missed
-                        // (the document decodes structurally but reports a new version).
-                        throw DecodeProblem.versionMismatch(
-                            found: document.version,
-                            supported: MediaRenameHistoryDocument.currentVersion
-                        )
-                    }
-                    return [document]
-                }
-            ) as Result<[MediaRenameHistoryDocument], DecodeProblem>
-            switch result {
-            case .success(let documents):
-                if let document = documents.first {
-                    mediaRenameUndoStack = Array(
-                        document.undoStack.suffix(Self.mediaRenameHistoryLimit)
-                    )
-                    mediaRenameRedoStack = Array(
-                        document.redoStack.suffix(Self.mediaRenameHistoryLimit)
-                    )
-                }
+        if let data = settingsPersistence.data(forKey: DefaultsKey.mediaRenameHistory) {
+            switch settingsPersistence.decodeMediaRenameHistory(from: data) {
+            case .success(let document?):
+                mediaRenameUndoStack = Array(
+                    document.undoStack.suffix(Self.mediaRenameHistoryLimit)
+                )
+                mediaRenameRedoStack = Array(
+                    document.redoStack.suffix(Self.mediaRenameHistoryLimit)
+                )
+            case .success(nil):
+                break
             case .failure(.versionMismatch):
                 statusMessage =
                     "Could not read rename history — it was saved by a newer version of GPhilCoder and was kept."
             case .failure(.corrupt):
-                preserveCorruptBlob(data, name: "media-rename-history")
+                settingsPersistence.preserveCorruptBlob(data, name: "media-rename-history")
                 statusMessage =
                     "Could not read rename history — the data appears damaged and was preserved to a backup file."
             }
         }
-        loadMediaRenameSettings(from: defaults)
-        loadEncodingPresets(from: defaults)
+        loadMediaRenameSettings()
+        loadEncodingPresets()
         loadPendingTrashSourceRecords()
 
-        if let rawValue = defaults.string(forKey: DefaultsKey.ffmpegSourcePreference),
+        if let rawValue = settingsPersistence.string(forKey: DefaultsKey.ffmpegSourcePreference),
             let value = FFmpegSourcePreference(rawValue: rawValue),
             FFmpegSourcePreference.selectableCases.contains(value)
         {
@@ -4554,130 +4458,135 @@ final class EncoderViewModel: ObservableObject {
             ffmpegSourcePreference = .system
         }
 
-        if let rawValue = defaults.string(forKey: DefaultsKey.fileManagementMode),
+        if let rawValue = settingsPersistence.string(forKey: DefaultsKey.fileManagementMode),
             let value = FileManagementMode(rawValue: rawValue)
         {
             fileManagementMode = value
         }
 
-        if let rawValue = defaults.string(forKey: DefaultsKey.outputMode),
+        if let rawValue = settingsPersistence.string(forKey: DefaultsKey.outputMode),
             let persistedOutputMode = OutputMode(rawValue: rawValue)
         {
             outputMode = persistedOutputMode
         }
 
-        if let rawValue = defaults.string(forKey: DefaultsKey.encodingWorkflow),
+        if let rawValue = settingsPersistence.string(forKey: DefaultsKey.encodingWorkflow),
             let persistedWorkflow = EncodingWorkflow(rawValue: rawValue)
         {
             encodingWorkflow = persistedWorkflow
         }
 
-        exportFolder = persistedDirectoryURL(forKey: DefaultsKey.exportFolderPath)
+        exportFolder = settingsPersistence.directoryURL(forKey: DefaultsKey.exportFolderPath)
         if outputMode == .exportFolder, exportFolder == nil {
             outputMode = .sourceFolders
         }
 
-        restoreDeletedFolder = persistedDirectoryURL(forKey: DefaultsKey.restoreDeletedFolderPath)
-        restoreBackupRoot = persistedDirectoryURL(forKey: DefaultsKey.restoreBackupRootPath)
-        restoreDestinationRoot = persistedDirectoryURL(
+        restoreDeletedFolder = settingsPersistence.directoryURL(
+            forKey: DefaultsKey.restoreDeletedFolderPath
+        )
+        restoreBackupRoot = settingsPersistence.directoryURL(forKey: DefaultsKey.restoreBackupRootPath)
+        restoreDestinationRoot = settingsPersistence.directoryURL(
             forKey: DefaultsKey.restoreDestinationRootPath
         )
-        if let paths = defaults.array(forKey: DefaultsKey.mediaCopySourceRootPaths) as? [String] {
+        if let paths = settingsPersistence.stringArray(forKey: DefaultsKey.mediaCopySourceRootPaths) {
             mediaCopySourceRoots = paths.compactMap { directoryURLIfExists(atPath: $0) }
-        } else if let sourceRoot = persistedDirectoryURL(forKey: DefaultsKey.mediaCopySourceRootPath) {
+        } else if let sourceRoot = settingsPersistence.directoryURL(
+            forKey: DefaultsKey.mediaCopySourceRootPath
+        ) {
             mediaCopySourceRoots = [sourceRoot]
         }
-        mediaCopyDestinationRoot = persistedDirectoryURL(
+        mediaCopyDestinationRoot = settingsPersistence.directoryURL(
             forKey: DefaultsKey.mediaCopyDestinationRootPath
         )
-        if let rawValue = defaults.string(forKey: DefaultsKey.mediaCopyFilter),
+        if let rawValue = settingsPersistence.string(forKey: DefaultsKey.mediaCopyFilter),
             let value = MediaFileFilter(rawValue: rawValue)
         {
             mediaCopyFilter = value
         }
         mediaFileNameFilterQuery =
-            defaults.string(forKey: DefaultsKey.mediaFileNameFilterQuery) ?? ""
-        if let extensions = defaults.array(forKey: DefaultsKey.mediaCopyAudioExtensions) as? [String] {
+            settingsPersistence.string(forKey: DefaultsKey.mediaFileNameFilterQuery) ?? ""
+        if let extensions = settingsPersistence.stringArray(forKey: DefaultsKey.mediaCopyAudioExtensions) {
             mediaCopyAudioExtensions = Set(extensions.map { $0.lowercased() })
                 .intersection(MediaFileFilter.audio.fileExtensions)
         }
-        if let extensions = defaults.array(forKey: DefaultsKey.mediaCopyVideoExtensions) as? [String] {
+        if let extensions = settingsPersistence.stringArray(forKey: DefaultsKey.mediaCopyVideoExtensions) {
             mediaCopyVideoExtensions = Set(extensions.map { $0.lowercased() })
                 .intersection(MediaFileFilter.video.fileExtensions)
         }
 
-        if let value = persistedBool(forKey: DefaultsKey.syncOverwriteExisting) {
+        if let value = settingsPersistence.bool(forKey: DefaultsKey.syncOverwriteExisting) {
             syncOverwriteExisting = value
         }
-        if let value = persistedBool(forKey: DefaultsKey.syncDeleteDestinationItems) {
+        if let value = settingsPersistence.bool(forKey: DefaultsKey.syncDeleteDestinationItems) {
             syncDeleteDestinationItems = value
         }
-        if let value = persistedBool(forKey: DefaultsKey.syncAutoSyncEnabled) {
+        if let value = settingsPersistence.bool(forKey: DefaultsKey.syncAutoSyncEnabled) {
             syncAutoSyncEnabled = value
         }
-        if let rawValue = defaults.string(forKey: DefaultsKey.syncDestinationLayout),
+        if let rawValue = settingsPersistence.string(forKey: DefaultsKey.syncDestinationLayout),
             let value = SyncDestinationLayout(rawValue: rawValue)
         {
             syncDestinationLayout = value
         }
-        if let rawValue = defaults.string(forKey: DefaultsKey.syncFileFilter),
+        if let rawValue = settingsPersistence.string(forKey: DefaultsKey.syncFileFilter),
             let value = SyncFileFilter(rawValue: rawValue)
         {
             syncFileFilter = value
         }
         syncCustomFileExtensions =
-            defaults.string(forKey: DefaultsKey.syncCustomFileExtensions) ?? ""
-        if let value = persistedBool(forKey: DefaultsKey.completionNotificationsEnabled) {
+            settingsPersistence.string(forKey: DefaultsKey.syncCustomFileExtensions) ?? ""
+        if let value = settingsPersistence.bool(forKey: DefaultsKey.completionNotificationsEnabled) {
             completionNotificationsEnabled = value
         }
-        loadSyncFolderPairs(from: defaults)
+        loadSyncFolderPairs()
 
-        if let selectedInputExtensions = defaults.array(forKey: DefaultsKey.selectedInputExtensions)
-            as? [String]
+        if let selectedInputExtensions = settingsPersistence.stringArray(
+            forKey: DefaultsKey.selectedInputExtensions
+        )
         {
             setSelectedInputExtensions(Set(selectedInputExtensions))
         }
-        if let selectedVideoInputExtensions = defaults.array(
+        if let selectedVideoInputExtensions = settingsPersistence.stringArray(
             forKey: DefaultsKey.selectedVideoInputExtensions
-        ) as? [String] {
+        ) {
             setSelectedVideoInputExtensions(Set(selectedVideoInputExtensions))
         }
 
-        if let value = persistedBool(forKey: DefaultsKey.preserveSubfolders) {
+        if let value = settingsPersistence.bool(forKey: DefaultsKey.preserveSubfolders) {
             preserveSubfolders = value
         }
 
-        if let value = persistedBool(forKey: DefaultsKey.overwriteExisting) {
+        if let value = settingsPersistence.bool(forKey: DefaultsKey.overwriteExisting) {
             overwriteExisting = value
         }
 
-        if let value = persistedBool(forKey: DefaultsKey.confirmBeforeEncoding) {
+        if let value = settingsPersistence.bool(forKey: DefaultsKey.confirmBeforeEncoding) {
             confirmBeforeEncoding = value
         }
 
-        if let rawValue = defaults.string(forKey: DefaultsKey.outputFormat),
+        if let rawValue = settingsPersistence.string(forKey: DefaultsKey.outputFormat),
             let persistedOutputFormat = AudioOutputFormat(rawValue: rawValue)
         {
             outputFormat = persistedOutputFormat
         }
 
-        if let rawValue = defaults.string(forKey: DefaultsKey.videoOutputContainer),
+        if let rawValue = settingsPersistence.string(forKey: DefaultsKey.videoOutputContainer),
             let persistedVideoContainer = VideoOutputContainer(rawValue: rawValue)
         {
             videoOutputContainer = persistedVideoContainer
         }
 
-        if let rawValue = defaults.string(forKey: DefaultsKey.hevcPreset),
+        if let rawValue = settingsPersistence.string(forKey: DefaultsKey.hevcPreset),
             let persistedHEVCPreset = HEVCVideoPreset(rawValue: rawValue)
         {
             hevcPreset = persistedHEVCPreset
         }
 
-        if let value = persistedInt(forKey: DefaultsKey.customVideoBitrateKbps) {
+        if let value = settingsPersistence.int(forKey: DefaultsKey.customVideoBitrateKbps) {
             customVideoBitrateKbps = max(500, min(value, 100_000))
         }
 
-        if let rawValue = defaults.string(forKey: DefaultsKey.videoScaleMode),
+        if let rawValue = settingsPersistence.string(forKey: DefaultsKey.videoScaleMode),
             let persistedVideoScaleMode = VideoScaleMode(rawValue: rawValue)
         {
             videoScaleMode = persistedVideoScaleMode
@@ -4685,116 +4594,93 @@ final class EncoderViewModel: ObservableObject {
             videoScaleMode = hevcPreset.defaultScaleMode
         }
 
-        if let rawValue = defaults.string(forKey: DefaultsKey.videoAudioMode),
+        if let rawValue = settingsPersistence.string(forKey: DefaultsKey.videoAudioMode),
             let persistedVideoAudioMode = VideoAudioMode(rawValue: rawValue)
         {
             videoAudioMode = persistedVideoAudioMode
         }
 
-        if let rawValue = defaults.string(forKey: DefaultsKey.videoHardwareDecodeMode),
+        if let rawValue = settingsPersistence.string(forKey: DefaultsKey.videoHardwareDecodeMode),
             let persistedVideoHardwareDecodeMode = VideoHardwareDecodeMode(rawValue: rawValue)
         {
             videoHardwareDecodeMode = persistedVideoHardwareDecodeMode
         }
 
-        if let rawValue = defaults.string(forKey: DefaultsKey.mp3Mode),
+        if let rawValue = settingsPersistence.string(forKey: DefaultsKey.mp3Mode),
             let persistedMP3Mode = MP3EncodingMode(rawValue: rawValue)
         {
             mp3Mode = persistedMP3Mode
         }
 
-        if let value = persistedInt(forKey: DefaultsKey.vbrQuality),
+        if let value = settingsPersistence.int(forKey: DefaultsKey.vbrQuality),
             MP3EncodingOptions.vbrQualities.contains(value)
         {
             vbrQuality = value
         }
 
-        if let value = persistedInt(forKey: DefaultsKey.cbrBitrateKbps),
+        if let value = settingsPersistence.int(forKey: DefaultsKey.cbrBitrateKbps),
             MP3EncodingOptions.bitrateKbps.contains(value)
         {
             cbrBitrateKbps = value
         }
 
-        if let value = persistedInt(forKey: DefaultsKey.abrBitrateKbps),
+        if let value = settingsPersistence.int(forKey: DefaultsKey.abrBitrateKbps),
             MP3EncodingOptions.bitrateKbps.contains(value)
         {
             abrBitrateKbps = value
         }
 
-        if let rawValue = defaults.string(forKey: DefaultsKey.oggMode),
+        if let rawValue = settingsPersistence.string(forKey: DefaultsKey.oggMode),
             let value = OggEncodingOptions.Mode(rawValue: rawValue)
         {
             oggMode = value
         }
 
-        if let value = persistedInt(forKey: DefaultsKey.oggQuality),
+        if let value = settingsPersistence.int(forKey: DefaultsKey.oggQuality),
             OggEncodingOptions.qualities.contains(value)
         {
             oggQuality = value
         }
 
-        if let value = persistedInt(forKey: DefaultsKey.oggBitrateKbps),
+        if let value = settingsPersistence.int(forKey: DefaultsKey.oggBitrateKbps),
             OggEncodingOptions.bitrateKbps.contains(value)
         {
             oggBitrateKbps = value
         }
 
-        if let rawValue = defaults.string(forKey: DefaultsKey.opusRateMode),
+        if let rawValue = settingsPersistence.string(forKey: DefaultsKey.opusRateMode),
             let value = OpusEncodingOptions.RateMode(rawValue: rawValue)
         {
             opusRateMode = value
         }
 
-        if let value = persistedInt(forKey: DefaultsKey.opusBitrateKbps),
+        if let value = settingsPersistence.int(forKey: DefaultsKey.opusBitrateKbps),
             OpusEncodingOptions.bitrateKbps.contains(value)
         {
             opusBitrateKbps = value
         }
 
-        if let value = persistedInt(forKey: DefaultsKey.flacCompressionLevel),
+        if let value = settingsPersistence.int(forKey: DefaultsKey.flacCompressionLevel),
             FLACEncodingOptions.compressionLevels.contains(value)
         {
             flacCompressionLevel = value
         }
 
-        if let value = persistedBool(forKey: DefaultsKey.splitOversizedMultichannel) {
+        if let value = settingsPersistence.bool(forKey: DefaultsKey.splitOversizedMultichannel) {
             splitOversizedMultichannel = value
         }
 
-        if let value = persistedInt(forKey: DefaultsKey.parallelJobs) {
+        if let value = settingsPersistence.int(forKey: DefaultsKey.parallelJobs) {
             parallelJobs = max(1, min(value, processorLimit))
         }
 
-        if let value = persistedInt(forKey: DefaultsKey.ffmpegThreads) {
+        if let value = settingsPersistence.int(forKey: DefaultsKey.ffmpegThreads) {
             ffmpegThreads = max(0, min(value, processorLimit))
         }
     }
 
-    private func persistedBool(forKey key: String) -> Bool? {
-        guard UserDefaults.standard.object(forKey: key) != nil else { return nil }
-        return UserDefaults.standard.bool(forKey: key)
-    }
-
-    private func persistedInt(forKey key: String) -> Int? {
-        guard UserDefaults.standard.object(forKey: key) != nil else { return nil }
-        return UserDefaults.standard.integer(forKey: key)
-    }
-
-    private func persistedDirectoryURL(forKey key: String) -> URL? {
-        guard let path = UserDefaults.standard.string(forKey: key) else { return nil }
-
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
-            isDirectory.boolValue
-        else {
-            return nil
-        }
-
-        return URL(fileURLWithPath: path, isDirectory: true)
-    }
-
     private func lastInputDirectoryURL() -> URL? {
-        persistedDirectoryURL(forKey: DefaultsKey.lastInputDirectoryPath)
+        settingsPersistence.directoryURL(forKey: DefaultsKey.lastInputDirectoryPath)
     }
 
     private func rememberInputDirectory(fromFiles urls: [URL]) {
@@ -4804,49 +4690,23 @@ final class EncoderViewModel: ObservableObject {
 
     private func rememberInputDirectory(_ url: URL?) {
         guard let url else { return }
-        UserDefaults.standard.set(
-            url.standardizedFileURL.path(percentEncoded: false),
-            forKey: DefaultsKey.lastInputDirectoryPath
-        )
+        settingsPersistence.persistDirectory(url, forKey: DefaultsKey.lastInputDirectoryPath)
     }
 
     private func persistOptionalDirectory(_ url: URL?, forKey key: String) {
-        guard let url else {
-            UserDefaults.standard.removeObject(forKey: key)
-            return
-        }
-        UserDefaults.standard.set(
-            url.standardizedFileURL.path(percentEncoded: false),
-            forKey: key
-        )
+        settingsPersistence.persistOptionalDirectory(url, forKey: key)
     }
 
     private func persistedUUID(forKey key: String) -> UUID? {
-        guard let value = UserDefaults.standard.string(forKey: key) else { return nil }
-        return UUID(uuidString: value)
+        settingsPersistence.uuid(forKey: key)
     }
 
     private func persistOptionalUUID(_ id: UUID?, forKey key: String) {
-        guard !isLoadingPersistedSettings else { return }
-        guard let id else {
-            UserDefaults.standard.removeObject(forKey: key)
-            return
-        }
-        UserDefaults.standard.set(id.uuidString, forKey: key)
+        settingsPersistence.persistOptionalUUID(id, forKey: key, isLoading: isLoadingPersistedSettings)
     }
 
     private func persistMediaCopySourceRoots() {
-        let paths = mediaCopySourceRoots.map {
-            $0.standardizedFileURL.path(percentEncoded: false)
-        }
-
-        if paths.isEmpty {
-            UserDefaults.standard.removeObject(forKey: DefaultsKey.mediaCopySourceRootPaths)
-            UserDefaults.standard.removeObject(forKey: DefaultsKey.mediaCopySourceRootPath)
-        } else {
-            UserDefaults.standard.set(paths, forKey: DefaultsKey.mediaCopySourceRootPaths)
-            UserDefaults.standard.set(paths[0], forKey: DefaultsKey.mediaCopySourceRootPath)
-        }
+        settingsPersistence.persistMediaCopySourceRootPaths(mediaCopySourceRoots)
     }
 
     private func selectedExtensions(for filter: MediaFileFilter) -> Set<String>? {
@@ -4872,7 +4732,7 @@ final class EncoderViewModel: ObservableObject {
     }
 
     private func persistMediaCopyExtensions(_ extensions: Set<String>, forKey key: String) {
-        UserDefaults.standard.set(extensions.sorted(), forKey: key)
+        settingsPersistence.set(extensions.sorted(), forKey: key)
     }
 
     private func chooseDirectory(title: String, prompt: String, initialURL: URL?) -> URL? {
@@ -5125,14 +4985,14 @@ final class EncoderViewModel: ObservableObject {
         guard !isLoadingPersistedSettings else { return }
         do {
             let data = try SyncFolderPairPersistence.encode(syncFolderPairs)
-            UserDefaults.standard.set(data, forKey: DefaultsKey.syncFolderPairs)
+            settingsPersistence.set(data, forKey: DefaultsKey.syncFolderPairs)
         } catch {
             statusMessage = "Could not save sync pairs: \(error.localizedDescription)"
         }
     }
 
-    private func loadSyncFolderPairs(from defaults: UserDefaults) {
-        guard let data = defaults.data(forKey: DefaultsKey.syncFolderPairs) else {
+    private func loadSyncFolderPairs() {
+        guard let data = settingsPersistence.data(forKey: DefaultsKey.syncFolderPairs) else {
             return
         }
 
@@ -5267,47 +5127,45 @@ final class EncoderViewModel: ObservableObject {
 
     private func persistTrashedSourceRecords() {
         if trashedSourceRecords.isEmpty {
-            UserDefaults.standard.removeObject(forKey: DefaultsKey.trashedSourceRecords)
+            settingsPersistence.removeObject(forKey: DefaultsKey.trashedSourceRecords)
             return
         }
 
         if let data = try? VersionedBlob.encode(trashedSourceRecords, currentVersion: 1) {
-            UserDefaults.standard.set(data, forKey: DefaultsKey.trashedSourceRecords)
+            settingsPersistence.set(data, forKey: DefaultsKey.trashedSourceRecords)
         }
     }
 
     private func persistMediaRenameHistory() {
         if mediaRenameUndoStack.isEmpty && mediaRenameRedoStack.isEmpty {
-            UserDefaults.standard.removeObject(forKey: DefaultsKey.mediaRenameHistory)
+            settingsPersistence.removeObject(forKey: DefaultsKey.mediaRenameHistory)
             return
         }
 
-        let document = MediaRenameHistoryDocument(
+        if let data = settingsPersistence.encodeMediaRenameHistory(
             undoStack: mediaRenameUndoStack,
             redoStack: mediaRenameRedoStack
-        )
-        if let data = try? JSONEncoder().encode(document) {
-            UserDefaults.standard.set(data, forKey: DefaultsKey.mediaRenameHistory)
+        ) {
+            settingsPersistence.set(data, forKey: DefaultsKey.mediaRenameHistory)
         }
     }
 
     private func persistMediaRenameSettings() {
         let settings = currentMediaRenameSettings()
-        let document = MediaRenameSettingsDocument(settings: settings)
-        if let data = try? JSONEncoder().encode(document) {
-            UserDefaults.standard.set(data, forKey: DefaultsKey.mediaRenameSettings)
+        if let data = settingsPersistence.encodeMediaRenameSettings(settings) {
+            settingsPersistence.set(data, forKey: DefaultsKey.mediaRenameSettings)
         }
     }
 
     private func persistEncodingPresets() {
         let document = EncodingPresetDocument(presets: encodingPresets)
         if let data = try? JSONEncoder().encode(document) {
-            UserDefaults.standard.set(data, forKey: DefaultsKey.encodingPresets)
+            settingsPersistence.set(data, forKey: DefaultsKey.encodingPresets)
         }
     }
 
-    private func loadEncodingPresets(from defaults: UserDefaults) {
-        if let data = defaults.data(forKey: DefaultsKey.encodingPresets) {
+    private func loadEncodingPresets() {
+        if let data = settingsPersistence.data(forKey: DefaultsKey.encodingPresets) {
             switch EncodingPresetDocument.decode(from: data) {
             case .success(let presets):
                 encodingPresets = presets
@@ -5337,51 +5195,33 @@ final class EncoderViewModel: ObservableObject {
         selectedVideoEncodingPresetID = normalized.videoID
         // Persist even during the loading window so stale IDs don't linger in
         // the plist and get re-cleared on every launch.
-        forcePersistOptionalUUID(normalized.audioID, forKey: DefaultsKey.selectedAudioEncodingPresetID)
-        forcePersistOptionalUUID(normalized.videoID, forKey: DefaultsKey.selectedVideoEncodingPresetID)
+        settingsPersistence.forcePersistOptionalUUID(
+            normalized.audioID,
+            forKey: DefaultsKey.selectedAudioEncodingPresetID
+        )
+        settingsPersistence.forcePersistOptionalUUID(
+            normalized.videoID,
+            forKey: DefaultsKey.selectedVideoEncodingPresetID
+        )
     }
 
-    private func forcePersistOptionalUUID(_ id: UUID?, forKey key: String) {
-        if let id {
-            UserDefaults.standard.set(id.uuidString, forKey: key)
-        } else {
-            UserDefaults.standard.removeObject(forKey: key)
+    private func loadMediaRenameSettings() {
+        guard let data = settingsPersistence.data(forKey: DefaultsKey.mediaRenameSettings) else {
+            return
         }
-    }
 
-    private func loadMediaRenameSettings(from defaults: UserDefaults) {
-        guard let data = defaults.data(forKey: DefaultsKey.mediaRenameSettings) else { return }
-
-        // Rename settings are a single struct, not an array. Wrap a decode
-        // through the shared helper so a corrupt blob surfaces instead of
-        // silently reverting the user's last-used rename configuration.
-        let result = VersionedBlob.decode(
-            from: data,
-            currentVersion: MediaRenameSettingsDocument.currentVersion,
-            decodePayload: { data in
-                [try JSONDecoder().decode(MediaRenameSettingsDocument.self, from: data).settings]
-            },
-            legacyBareArray: { data in
-                // Legacy shape was a bare MediaRenameSettings struct.
-                guard let settings = try? JSONDecoder().decode(
-                    MediaRenameSettings.self, from: data
-                ) else { return nil }
-                return [settings]
-            }
-        ) as Result<[MediaRenameSettings], DecodeProblem>
-
-        switch result {
-        case .success(let settings) where !settings.isEmpty:
-            applyMediaRenameSettings(settings[0])
+        switch settingsPersistence.decodeMediaRenameSettings(from: data) {
+        case .success(let settings?):
+            applyMediaRenameSettings(settings)
+        case .success(nil):
+            break
         case .failure(.versionMismatch):
             statusMessage =
                 "Could not read rename settings — they were saved by a newer version of GPhilCoder and were kept."
         case .failure(.corrupt):
-            preserveCorruptBlob(data, name: "media-rename-settings")
+            settingsPersistence.preserveCorruptBlob(data, name: "media-rename-settings")
             statusMessage =
                 "Could not read rename settings — the data appears damaged and was preserved to a backup file."
-        case .success:
-            break
         }
     }
 
@@ -5416,7 +5256,7 @@ final class EncoderViewModel: ObservableObject {
             statusMessage =
                 "Could not read the trash emergency journal — it was saved by a newer version of GPhilCoder and was kept."
         case .failure(.corrupt):
-            preserveCorruptBlob(data, name: "trash-emergency-journal")
+            settingsPersistence.preserveCorruptBlob(data, name: "trash-emergency-journal")
             statusMessage =
                 "Could not read the trash emergency journal — the data appears damaged and was preserved to a backup file. If you recently moved files to Trash, contact support before clearing it."
         }
@@ -5516,39 +5356,6 @@ final class EncoderViewModel: ObservableObject {
             withIntermediateDirectories: true
         )
         return directoryURL.appendingPathComponent(TrashEmergencyJournal.fileName)
-    }
-
-    /// Preserves a corrupt persisted blob to a timestamped `.corrupt` sidecar
-    /// in Application Support so the user (or support) can recover it later.
-    /// Used when a decode surfaces `.corrupt` for safety-critical payloads
-    /// (trash records, rename history, the trash emergency journal).
-    private func preserveCorruptBlob(_ data: Data, name: String) {
-        do {
-            let baseURL = try FileManager.default.url(
-                for: .applicationSupportDirectory,
-                in: .userDomainMask,
-                appropriateFor: nil,
-                create: true
-            )
-            let directoryURL = baseURL.appendingPathComponent(
-                TrashEmergencyJournal.directoryName,
-                isDirectory: true
-            )
-            try FileManager.default.createDirectory(
-                at: directoryURL,
-                withIntermediateDirectories: true
-            )
-            let timestamp = ISO8601DateFormatter().string(from: Date())
-                .replacingOccurrences(of: ":", with: "-")
-            let sidecar = directoryURL.appendingPathComponent(
-                "\(name)-\(timestamp).corrupt",
-                isDirectory: false
-            )
-            try data.write(to: sidecar, options: [.atomic])
-        } catch {
-            // Best-effort: surfacing already happened via statusMessage. Do not
-            // raise a further error from this recovery path.
-        }
     }
 
     private func setSelectedInputExtensions(_ extensions: Set<String>) {

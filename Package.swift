@@ -21,7 +21,8 @@ let package = Package(
         ),
         .testTarget(
             name: "GPhilCoderTests",
-            dependencies: ["GPhilCoderCore", "GPhilCoder"]
+            dependencies: ["GPhilCoderCore", "GPhilCoder"],
+            exclude: ["TESTING.md"]
         )
     ]
 )
