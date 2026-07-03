@@ -1,23 +1,6 @@
 import Foundation
 import GPhilCoderCore
 
-struct MediaCopyResult: Sendable {
-    var total: Int
-    var copied = 0
-    var skippedExisting = 0
-    var failed = 0
-    var failedNames: [String] = []
-    var createdDirectories = 0
-    var failedDirectories = 0
-    var failedDirectoryNames: [String] = []
-    var cancelled = false
-
-    init(total: Int = 0, cancelled: Bool = false) {
-        self.total = total
-        self.cancelled = cancelled
-    }
-}
-
 struct MediaCopyRunConfiguration {
     let sourceRoot: URL?
     let destinationRoot: URL?
@@ -47,28 +30,65 @@ struct MediaPreviewConfiguration {
 
 @MainActor
 final class MediaFileCoordinator {
-    private let setCopyPlan: @MainActor (MediaCopyPlan?) -> Void
-    private let setDeletePlan: @MainActor (MediaDeletePlan?) -> Void
-    private let setRenamePlan: @MainActor (MediaRenamePlan?) -> Void
-    private let setRenamePreviewStale: @MainActor (Bool) -> Void
-    private let setProgress: @MainActor (MediaCopyProgress?) -> Void
-    private let setScanning: @MainActor (Bool) -> Void
-    private let setCopying: @MainActor (Bool) -> Void
-    private let setDeleting: @MainActor (Bool) -> Void
-    private let setRenaming: @MainActor (Bool) -> Void
-    private let setCurrentWorkflowID: @MainActor (UUID?) -> Void
-    private let setStatusMessage: @MainActor (String) -> Void
-    private let resetForCopyRun: @MainActor () -> Void
-    private let setInventory: @MainActor (_ inventory: [MediaFileInventoryRecord], _ sourceRootPaths: [String]) -> Void
-    private let getInventory: @MainActor () -> [MediaFileInventoryRecord]
-    private let getInventorySourceRootPaths: @MainActor () -> [String]
-    private let getActiveMode: @MainActor () -> FileManagementMode
-    private let makePreviewConfiguration: @MainActor () -> MediaPreviewConfiguration
-    private let validateFolders: @MainActor (_ sourceRoot: URL, _ destinationRoot: URL) -> Bool
-    private let promptConflictResolution: @MainActor ([MediaCopyPlan]) -> MediaCopyConflictResolution?
-    private let notifyCompletion: @MainActor (_ title: String, _ body: String) -> Void
+    let setCopyPlan: @MainActor (MediaCopyPlan?) -> Void
+    let setDeletePlan: @MainActor (MediaDeletePlan?) -> Void
+    let setRenamePlan: @MainActor (MediaRenamePlan?) -> Void
+    let setRenamePreviewStale: @MainActor (Bool) -> Void
+    let setProgress: @MainActor (MediaCopyProgress?) -> Void
+    let setScanning: @MainActor (Bool) -> Void
+    let setCopying: @MainActor (Bool) -> Void
+    let setDeleting: @MainActor (Bool) -> Void
+    let setRenaming: @MainActor (Bool) -> Void
+    let setCurrentWorkflowID: @MainActor (UUID?) -> Void
+    let setRenameProgressVerb: @MainActor (String) -> Void
+    let setStatusMessage: @MainActor (String) -> Void
+    let resetForCopyRun: @MainActor () -> Void
+    let getDeletePlan: @MainActor () -> MediaDeletePlan?
+    let getRenamePlan: @MainActor () -> MediaRenamePlan?
+    let getRenamePreviewStale: @MainActor () -> Bool
+    let getLastUndoTransaction: @MainActor () -> MediaRenameHistoryTransaction?
+    let getLastRedoTransaction: @MainActor () -> MediaRenameHistoryTransaction?
+    let setInventory: @MainActor (_ inventory: [MediaFileInventoryRecord], _ sourceRootPaths: [String]) -> Void
+    let getInventory: @MainActor () -> [MediaFileInventoryRecord]
+    let getInventorySourceRootPaths: @MainActor () -> [String]
+    let getActiveMode: @MainActor () -> FileManagementMode
+    let makePreviewConfiguration: @MainActor () -> MediaPreviewConfiguration
+    let validateFolders: @MainActor (_ sourceRoot: URL, _ destinationRoot: URL) -> Bool
+    let promptConflictResolution: @MainActor ([MediaCopyPlan]) -> MediaCopyConflictResolution?
+    let promptTrash: @MainActor (
+        _ itemCount: Int,
+        _ totalSize: Int64,
+        _ sourceRootCount: Int,
+        _ filter: MediaFileFilter,
+        _ selectedExtensions: Set<String>,
+        _ fileNameFilter: MediaFileNameFilter
+    ) -> Bool
+    let promptRename: @MainActor (_ itemCount: Int, _ unchangedCount: Int) -> Bool
+    let promptRenameHistory: @MainActor (
+        _ transaction: MediaRenameHistoryTransaction,
+        _ direction: MediaRenameHistoryDirection
+    ) -> Bool
+    let recordPendingTrashIntents: @MainActor ([TrashableFileItem]) throws -> [UUID: PendingTrashSourceRecord]
+    let moveTrashItemAndRecord: @MainActor (
+        _ item: TrashableFileItem,
+        _ pendingRecord: PendingTrashSourceRecord
+    ) throws -> TrashMoveRecordResult
+    let removePendingTrashRecords: @MainActor (Set<UUID>) throws -> Void
+    let removePendingTrashRecordIfOriginalStillExists: @MainActor (PendingTrashSourceRecord) -> Void
+    let removeInputsAndResetJobs: @MainActor (_ movedPaths: Set<String>) -> Void
+    let resetJobsForMediaMutation: @MainActor () -> Void
+    let pushRenameUndoTransaction: @MainActor (MediaRenameHistoryTransaction) -> Void
+    let pushRenameRedoTransaction: @MainActor (MediaRenameHistoryTransaction) -> Void
+    let clearRenameRedoStack: @MainActor () -> Void
+    let completeRenameHistoryAction: @MainActor (
+        _ transaction: MediaRenameHistoryTransaction,
+        _ direction: MediaRenameHistoryDirection,
+        _ result: MediaRenameHistoryResult
+    ) -> Void
+    let notifyCompletion: @MainActor (_ title: String, _ body: String) -> Void
 
-    private var mediaCopyTask: Task<Void, Never>?
+    var mediaCopyTask: Task<Void, Never>?
+    var mediaFileNameFilterRefreshTask: Task<Void, Never>?
 
     init(
         setCopyPlan: @escaping @MainActor (MediaCopyPlan?) -> Void,
@@ -81,8 +101,14 @@ final class MediaFileCoordinator {
         setDeleting: @escaping @MainActor (Bool) -> Void,
         setRenaming: @escaping @MainActor (Bool) -> Void,
         setCurrentWorkflowID: @escaping @MainActor (UUID?) -> Void,
+        setRenameProgressVerb: @escaping @MainActor (String) -> Void,
         setStatusMessage: @escaping @MainActor (String) -> Void,
         resetForCopyRun: @escaping @MainActor () -> Void,
+        getDeletePlan: @escaping @MainActor () -> MediaDeletePlan?,
+        getRenamePlan: @escaping @MainActor () -> MediaRenamePlan?,
+        getRenamePreviewStale: @escaping @MainActor () -> Bool,
+        getLastUndoTransaction: @escaping @MainActor () -> MediaRenameHistoryTransaction?,
+        getLastRedoTransaction: @escaping @MainActor () -> MediaRenameHistoryTransaction?,
         setInventory: @escaping @MainActor (_ inventory: [MediaFileInventoryRecord], _ sourceRootPaths: [String]) -> Void,
         getInventory: @escaping @MainActor () -> [MediaFileInventoryRecord],
         getInventorySourceRootPaths: @escaping @MainActor () -> [String],
@@ -90,6 +116,36 @@ final class MediaFileCoordinator {
         makePreviewConfiguration: @escaping @MainActor () -> MediaPreviewConfiguration,
         validateFolders: @escaping @MainActor (_ sourceRoot: URL, _ destinationRoot: URL) -> Bool,
         promptConflictResolution: @escaping @MainActor ([MediaCopyPlan]) -> MediaCopyConflictResolution?,
+        promptTrash: @escaping @MainActor (
+            _ itemCount: Int,
+            _ totalSize: Int64,
+            _ sourceRootCount: Int,
+            _ filter: MediaFileFilter,
+            _ selectedExtensions: Set<String>,
+            _ fileNameFilter: MediaFileNameFilter
+        ) -> Bool,
+        promptRename: @escaping @MainActor (_ itemCount: Int, _ unchangedCount: Int) -> Bool,
+        promptRenameHistory: @escaping @MainActor (
+            _ transaction: MediaRenameHistoryTransaction,
+            _ direction: MediaRenameHistoryDirection
+        ) -> Bool,
+        recordPendingTrashIntents: @escaping @MainActor ([TrashableFileItem]) throws -> [UUID: PendingTrashSourceRecord],
+        moveTrashItemAndRecord: @escaping @MainActor (
+            _ item: TrashableFileItem,
+            _ pendingRecord: PendingTrashSourceRecord
+        ) throws -> TrashMoveRecordResult,
+        removePendingTrashRecords: @escaping @MainActor (Set<UUID>) throws -> Void,
+        removePendingTrashRecordIfOriginalStillExists: @escaping @MainActor (PendingTrashSourceRecord) -> Void,
+        removeInputsAndResetJobs: @escaping @MainActor (_ movedPaths: Set<String>) -> Void,
+        resetJobsForMediaMutation: @escaping @MainActor () -> Void,
+        pushRenameUndoTransaction: @escaping @MainActor (MediaRenameHistoryTransaction) -> Void,
+        pushRenameRedoTransaction: @escaping @MainActor (MediaRenameHistoryTransaction) -> Void,
+        clearRenameRedoStack: @escaping @MainActor () -> Void,
+        completeRenameHistoryAction: @escaping @MainActor (
+            _ transaction: MediaRenameHistoryTransaction,
+            _ direction: MediaRenameHistoryDirection,
+            _ result: MediaRenameHistoryResult
+        ) -> Void,
         notifyCompletion: @escaping @MainActor (_ title: String, _ body: String) -> Void
     ) {
         self.setCopyPlan = setCopyPlan
@@ -102,8 +158,14 @@ final class MediaFileCoordinator {
         self.setDeleting = setDeleting
         self.setRenaming = setRenaming
         self.setCurrentWorkflowID = setCurrentWorkflowID
+        self.setRenameProgressVerb = setRenameProgressVerb
         self.setStatusMessage = setStatusMessage
         self.resetForCopyRun = resetForCopyRun
+        self.getDeletePlan = getDeletePlan
+        self.getRenamePlan = getRenamePlan
+        self.getRenamePreviewStale = getRenamePreviewStale
+        self.getLastUndoTransaction = getLastUndoTransaction
+        self.getLastRedoTransaction = getLastRedoTransaction
         self.setInventory = setInventory
         self.getInventory = getInventory
         self.getInventorySourceRootPaths = getInventorySourceRootPaths
@@ -111,6 +173,19 @@ final class MediaFileCoordinator {
         self.makePreviewConfiguration = makePreviewConfiguration
         self.validateFolders = validateFolders
         self.promptConflictResolution = promptConflictResolution
+        self.promptTrash = promptTrash
+        self.promptRename = promptRename
+        self.promptRenameHistory = promptRenameHistory
+        self.recordPendingTrashIntents = recordPendingTrashIntents
+        self.moveTrashItemAndRecord = moveTrashItemAndRecord
+        self.removePendingTrashRecords = removePendingTrashRecords
+        self.removePendingTrashRecordIfOriginalStillExists = removePendingTrashRecordIfOriginalStillExists
+        self.removeInputsAndResetJobs = removeInputsAndResetJobs
+        self.resetJobsForMediaMutation = resetJobsForMediaMutation
+        self.pushRenameUndoTransaction = pushRenameUndoTransaction
+        self.pushRenameRedoTransaction = pushRenameRedoTransaction
+        self.clearRenameRedoStack = clearRenameRedoStack
+        self.completeRenameHistoryAction = completeRenameHistoryAction
         self.notifyCompletion = notifyCompletion
     }
 
@@ -141,6 +216,7 @@ final class MediaFileCoordinator {
     func cancel() {
         mediaCopyTask?.cancel()
         mediaCopyTask = nil
+        cancelFileNameFilterRefresh()
         setScanning(false)
         setCopying(false)
         setDeleting(false)
@@ -752,7 +828,7 @@ final class MediaFileCoordinator {
             "Found \(plan.candidateCount) file\(plan.candidateCount == 1 ? "" : "s") matching \(scopeDescription), totaling \(plan.totalSizeBytes.formattedFileSize)."
     }
 
-    private static func mediaDeleteScopeDescription(
+    static func mediaDeleteScopeDescription(
         filter: MediaFileFilter,
         selectedExtensions: Set<String>,
         fileNameFilter: MediaFileNameFilter
