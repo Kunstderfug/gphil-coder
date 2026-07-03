@@ -295,6 +295,7 @@ struct EncodeJob: Identifiable {
     var state: JobState = .queued
     var message: String = ""
     var diagnosticMessage: String = ""
+    var progressFraction: Double?
     var startedAt: Date?
     var finishedAt: Date?
 

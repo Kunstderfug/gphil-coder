@@ -149,6 +149,7 @@ final class EncodingCoordinator {
         updatedJobs[index].state = .running
         updatedJobs[index].message = "Encoding..."
         updatedJobs[index].diagnosticMessage = ""
+        updatedJobs[index].progressFraction = nil
         updatedJobs[index].startedAt = Date()
         jobs = updatedJobs
         return updatedJobs[index]
@@ -215,18 +216,22 @@ final class EncodingCoordinator {
             updatedJobs[index].state = .succeeded
             updatedJobs[index].message = summarizeFFmpegOutput(output)
             updatedJobs[index].diagnosticMessage = ""
+            updatedJobs[index].progressFraction = nil
         case .skipped(_, let message):
             updatedJobs[index].state = .skipped
             updatedJobs[index].message = message
             updatedJobs[index].diagnosticMessage = ""
+            updatedJobs[index].progressFraction = nil
         case .failure(_, let message, let diagnosticMessage):
             updatedJobs[index].state = .failed
             updatedJobs[index].message = message
             updatedJobs[index].diagnosticMessage = diagnosticMessage
+            updatedJobs[index].progressFraction = nil
         case .cancelled:
             updatedJobs[index].state = .cancelled
             updatedJobs[index].message = "Cancelled."
             updatedJobs[index].diagnosticMessage = ""
+            updatedJobs[index].progressFraction = nil
         }
 
         jobs = updatedJobs
@@ -240,6 +245,7 @@ final class EncodingCoordinator {
             return
         }
         updatedJobs[index].message = progress.message
+        updatedJobs[index].progressFraction = progress.fractionCompleted
         jobs = updatedJobs
     }
 

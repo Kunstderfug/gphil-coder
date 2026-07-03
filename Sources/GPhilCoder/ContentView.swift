@@ -3669,6 +3669,19 @@ private struct JobRow: View {
                         .lineLimit(2)
                         .textSelection(.enabled)
                 }
+
+                if let progressFraction = job.progressFraction, job.state == .running {
+                    HStack(spacing: 8) {
+                        ProgressView(value: progressFraction)
+                            .progressViewStyle(.linear)
+                        Text(progressLabel(for: progressFraction))
+                            .font(.caption.monospacedDigit().weight(.semibold))
+                            .foregroundStyle(stateColor)
+                            .frame(width: 42, alignment: .trailing)
+                    }
+                    .accessibilityLabel("Encoding progress")
+                    .accessibilityValue(progressLabel(for: progressFraction))
+                }
             }
 
             if job.state == .succeeded {
@@ -3767,6 +3780,10 @@ private struct JobRow: View {
         case .cancelled:
             .secondary
         }
+    }
+
+    private func progressLabel(for fraction: Double) -> String {
+        "\(Int((fraction * 100).rounded()))%"
     }
 }
 

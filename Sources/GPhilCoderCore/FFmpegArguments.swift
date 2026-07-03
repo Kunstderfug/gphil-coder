@@ -63,10 +63,12 @@ public enum MultichannelSplitOptions {
 public struct FFmpegProgressSnapshot: Sendable, Equatable {
     public let fps: String?
     public let speed: String?
+    public let fractionCompleted: Double?
 
-    public init(fps: String?, speed: String?) {
+    public init(fps: String?, speed: String?, fractionCompleted: Double? = nil) {
         self.fps = fps
         self.speed = speed
+        self.fractionCompleted = fractionCompleted
     }
 
     public var message: String {
@@ -82,7 +84,7 @@ public struct FFmpegProgressSnapshot: Sendable, Equatable {
 
     /// Extracts the most recent fps/speed pair from a chunk of ffmpeg output.
     /// Returns nil when no progress line is present.
-    public static func parse(from text: String) -> FFmpegProgressSnapshot? {
+    public static func parse(from text: String, duration: TimeInterval? = nil) -> FFmpegProgressSnapshot? {
         let normalized = text.replacingOccurrences(of: "\r", with: "\n")
         let lines = normalized
             .split(separator: "\n")
@@ -92,12 +94,24 @@ public struct FFmpegProgressSnapshot: Sendable, Equatable {
         for line in lines where line.contains("fps=") || line.contains("speed=") {
             let fps = firstRegexValue(in: line, pattern: #"fps=\s*([0-9.]+)"#)
             let speed = firstRegexValue(in: line, pattern: #"speed=\s*([0-9.]+x)"#)
-            if fps != nil || speed != nil {
-                return FFmpegProgressSnapshot(fps: fps, speed: speed)
+            let elapsed = firstRegexValue(in: line, pattern: #"time=\s*([0-9:.]+)"#)
+                .flatMap(parseTimestamp)
+            let fractionCompleted = progressFraction(elapsed: elapsed, duration: duration)
+            if fps != nil || speed != nil || fractionCompleted != nil {
+                return FFmpegProgressSnapshot(
+                    fps: fps,
+                    speed: speed,
+                    fractionCompleted: fractionCompleted
+                )
             }
         }
 
         return nil
+    }
+
+    public static func parseDuration(from text: String) -> TimeInterval? {
+        firstRegexValue(in: text, pattern: #"Duration:\s*([0-9:.]+)"#)
+            .flatMap(parseTimestamp)
     }
 
     private static func firstRegexValue(in text: String, pattern: String) -> String? {
@@ -110,6 +124,17 @@ public struct FFmpegProgressSnapshot: Sendable, Equatable {
             return nil
         }
         return String(text[valueRange])
+    }
+
+    private static func parseTimestamp(_ value: String) -> TimeInterval? {
+        let parts = value.split(separator: ":").compactMap { Double($0) }
+        guard parts.count == 3 else { return nil }
+        return parts[0] * 3600 + parts[1] * 60 + parts[2]
+    }
+
+    private static func progressFraction(elapsed: TimeInterval?, duration: TimeInterval?) -> Double? {
+        guard let elapsed, let duration, duration > 0 else { return nil }
+        return min(max(elapsed / duration, 0), 1)
     }
 }
 

@@ -219,6 +219,30 @@ final class FFmpegArgumentsTests: XCTestCase {
         XCTAssertEqual(snapshot?.speed, "2x")
     }
 
+    func testProgressSnapshotParsesFractionCompletedWhenDurationIsKnown() throws {
+        let snapshot = FFmpegProgressSnapshot.parse(
+            from: "frame=  100 fps= 60.0 q=0.0 size=    1024kB time=00:00:02.00 bitrate=4194.3kbits/s speed=2x\r",
+            duration: 8
+        )
+        let fractionCompleted = try XCTUnwrap(snapshot?.fractionCompleted)
+        XCTAssertEqual(fractionCompleted, 0.25, accuracy: 0.001)
+    }
+
+    func testProgressSnapshotClampsFractionCompleted() {
+        let snapshot = FFmpegProgressSnapshot.parse(
+            from: "frame=  100 fps= 60.0 q=0.0 size=    1024kB time=00:00:12.00 bitrate=4194.3kbits/s speed=2x\r",
+            duration: 8
+        )
+        XCTAssertEqual(snapshot?.fractionCompleted, 1)
+    }
+
+    func testProgressSnapshotParsesDuration() throws {
+        let duration = FFmpegProgressSnapshot.parseDuration(
+            from: "Duration: 00:01:02.50, start: 0.000000, bitrate: 1424 kb/s"
+        )
+        XCTAssertEqual(try XCTUnwrap(duration), 62.5, accuracy: 0.001)
+    }
+
     func testProgressSnapshotReturnsNilWhenNoProgressLine() {
         XCTAssertNil(FFmpegProgressSnapshot.parse(from: "Press [q] to quit"))
     }
@@ -289,4 +313,3 @@ final class FFmpegArgumentsTests: XCTestCase {
         )
     }
 }
-

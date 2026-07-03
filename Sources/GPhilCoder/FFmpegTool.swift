@@ -258,6 +258,11 @@ struct FFmpegEncoder {
         // truncated file at the user-visible output path.
         let tempOutput = temporaryOutputURL(beside: output)
         arguments.append(tempOutput.path)
+        let inputDuration = try? await FFmpegProbe.mediaDuration(
+            ffmpegURL: ffmpegURL,
+            input: input,
+            processRegistry: processRegistry
+        )
 
         return try await runInstallingTemp(temp: tempOutput, output: output) {
             try await ProcessRunner.run(
@@ -265,7 +270,12 @@ struct FFmpegEncoder {
                 arguments: arguments,
                 processRegistry: processRegistry
             ) { chunk in
-                guard let progress = FFmpegProgressSnapshot.parse(from: chunk) else { return }
+                guard let progress = FFmpegProgressSnapshot.parse(
+                    from: chunk,
+                    duration: inputDuration
+                ) else {
+                    return
+                }
                 progressHandler?(progress)
             }
         }
@@ -409,6 +419,25 @@ enum FFmpegProbe {
         }
 
         return parseAudioChannelCount(from: output)
+    }
+
+    static func mediaDuration(
+        ffmpegURL: URL,
+        input: URL,
+        processRegistry: ProcessRegistry? = nil
+    ) async throws -> TimeInterval? {
+        let output: String
+        do {
+            output = try await ProcessRunner.run(
+                executableURL: ffmpegURL,
+                arguments: ["-hide_banner", "-i", input.path],
+                processRegistry: processRegistry
+            )
+        } catch FFmpegToolError.processFailed(_, let probeOutput) {
+            output = probeOutput
+        }
+
+        return FFmpegProgressSnapshot.parseDuration(from: output)
     }
 }
 
