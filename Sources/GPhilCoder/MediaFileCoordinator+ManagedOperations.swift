@@ -4,15 +4,15 @@ import GPhilCoderCore
 @MainActor
 extension MediaFileCoordinator {
     func deleteFilteredFiles() {
-        guard getActiveMode() == .delete else { return }
+        guard fileManagementMode == .delete else { return }
 
-        guard let plan = getDeletePlan(), plan.hasDeletableContent else {
+        guard let plan = mediaDeletePlan, plan.hasDeletableContent else {
             setStatusMessage("No filtered delete preview is ready yet.")
-            refreshDeletePreviewIfNeeded(configuration: makePreviewConfiguration())
+            refreshDeletePreviewIfNeeded(configuration: mediaPreviewConfiguration)
             return
         }
 
-        let configuration = makePreviewConfiguration()
+        let configuration = mediaPreviewConfiguration
         guard deletePlan(plan, matches: configuration) else {
             setStatusMessage("Refresh the delete preview before moving files to Trash.")
             refreshDeletePreviewIfNeeded(configuration: configuration)
@@ -24,11 +24,11 @@ extension MediaFileCoordinator {
             filter: plan.filter,
             selectedExtensions: plan.selectedExtensions,
             fileNameFilter: plan.fileNameFilter,
-            inventory: getInventory()
+            inventory: mediaFileInventory
         )
         guard fullPlan.hasDeletableContent else {
             setStatusMessage("No filtered files are available to move to Trash.")
-            setDeletePlan(fullPlan)
+            mediaDeletePlan = fullPlan
             return
         }
 
@@ -56,11 +56,11 @@ extension MediaFileCoordinator {
         }
 
         mediaCopyTask?.cancel()
-        setProgress(nil)
-        setScanning(false)
-        setCopying(false)
-        setDeleting(true)
-        setRenaming(false)
+        mediaCopyProgress = nil
+        isMediaCopyScanning = false
+        isMediaCopying = false
+        isMediaDeleting = true
+        isMediaRenaming = false
         let progressStartedAt = Date()
         setProgress(
             MediaCopyProgress(
@@ -89,7 +89,7 @@ extension MediaFileCoordinator {
 
             guard !Task.isCancelled else { return }
 
-            setDeleting(false)
+            isMediaDeleting = false
             mediaCopyTask = nil
             let completionMessage = Self.mediaTrashResultStatusMessage(
                 result,
@@ -103,15 +103,15 @@ extension MediaFileCoordinator {
     }
 
     func renameFilteredFiles() {
-        guard getActiveMode() == .rename else { return }
+        guard fileManagementMode == .rename else { return }
 
-        guard let plan = getRenamePlan() else {
+        guard let plan = mediaRenamePlan else {
             setStatusMessage("No rename preview is ready yet.")
-            refreshRenamePreviewIfNeeded(configuration: makePreviewConfiguration())
+            refreshRenamePreviewIfNeeded(configuration: mediaPreviewConfiguration)
             return
         }
 
-        guard !getRenamePreviewStale() else {
+        guard !isMediaRenamePreviewStale else {
             setStatusMessage("Refresh the rename preview before applying these settings.")
             return
         }
@@ -122,21 +122,21 @@ extension MediaFileCoordinator {
             selectedExtensions: plan.selectedExtensions,
             fileNameFilter: plan.fileNameFilter,
             settings: plan.settings,
-            inventory: getInventory()
+            inventory: mediaFileInventory
         )
 
         guard fullPlan.blockedCount == 0 else {
             setStatusMessage(
                 "Resolve \(fullPlan.blockedCount) rename conflict\(fullPlan.blockedCount == 1 ? "" : "s") before applying."
             )
-            setRenamePlan(fullPlan)
+            mediaRenamePlan = fullPlan
             return
         }
 
         let items = fullPlan.readyItems
         guard !items.isEmpty else {
             setStatusMessage("No files need renaming.")
-            setRenamePlan(fullPlan)
+            mediaRenamePlan = fullPlan
             return
         }
 
@@ -146,12 +146,12 @@ extension MediaFileCoordinator {
         }
 
         mediaCopyTask?.cancel()
-        setProgress(nil)
-        setScanning(false)
-        setCopying(false)
-        setDeleting(false)
-        setRenaming(true)
-        setRenameProgressVerb("renamed")
+        mediaCopyProgress = nil
+        isMediaCopyScanning = false
+        isMediaCopying = false
+        isMediaDeleting = false
+        isMediaRenaming = true
+        mediaRenameProgressVerb = "renamed"
         let progressStartedAt = Date()
         setProgress(
             MediaCopyProgress(
@@ -175,16 +175,16 @@ extension MediaFileCoordinator {
 
             guard !Task.isCancelled else { return }
 
-            setRenaming(false)
+            isMediaRenaming = false
             mediaCopyTask = nil
             if !result.historyItems.isEmpty {
-                pushRenameUndoTransaction(
+                pushMediaRenameUndoTransaction(
                     MediaRenameHistoryTransaction(
                         actionTitle: plan.settings.operation.title,
                         items: result.historyItems
                     )
                 )
-                clearRenameRedoStack()
+                mediaRenameRedoStack.removeAll()
             }
             let completionMessage = Self.mediaRenameResultStatusMessage(result)
             setStatusMessage(completionMessage)
@@ -193,14 +193,14 @@ extension MediaFileCoordinator {
     }
 
     func runRenameHistoryAction(_ direction: MediaRenameHistoryDirection) {
-        guard getActiveMode() == .rename else { return }
+        guard fileManagementMode == .rename else { return }
 
         let transaction: MediaRenameHistoryTransaction?
         switch direction {
         case .undo:
-            transaction = getLastUndoTransaction()
+            transaction = mediaRenameUndoStack.last
         case .redo:
-            transaction = getLastRedoTransaction()
+            transaction = mediaRenameRedoStack.last
         }
 
         guard let transaction, !transaction.items.isEmpty else {
@@ -214,12 +214,12 @@ extension MediaFileCoordinator {
         }
 
         mediaCopyTask?.cancel()
-        setProgress(nil)
-        setScanning(false)
-        setCopying(false)
-        setDeleting(false)
-        setRenaming(true)
-        setRenameProgressVerb(direction.progressVerb)
+        mediaCopyProgress = nil
+        isMediaCopyScanning = false
+        isMediaCopying = false
+        isMediaDeleting = false
+        isMediaRenaming = true
+        mediaRenameProgressVerb = direction.progressVerb
         let progressStartedAt = Date()
         setProgress(
             MediaCopyProgress(
@@ -248,12 +248,12 @@ extension MediaFileCoordinator {
 
             guard !Task.isCancelled else { return }
 
-            setRenaming(false)
+            isMediaRenaming = false
             mediaCopyTask = nil
             completeRenameHistoryAction(transaction, direction, result)
             moveMediaInventoryRecords(result.movedItems, direction: direction)
-            setRenamePlan(nil)
-            setRenamePreviewStale(false)
+            mediaRenamePlan = nil
+            isMediaRenamePreviewStale = false
             let completionMessage = Self.mediaRenameHistoryResultStatusMessage(
                 result,
                 direction: direction
@@ -349,7 +349,7 @@ extension MediaFileCoordinator {
                 updatedAt: Date(),
                 currentName: item.name
             )
-            setProgress(progress)
+            mediaCopyProgress = progress
             let speedDetail = progress.bytesPerSecond
                 .map { " at \($0.formattedMegabytesPerSecond)" } ?? ""
             setStatusMessage(
@@ -360,20 +360,18 @@ extension MediaFileCoordinator {
         if !movedPaths.isEmpty {
             removeInputsAndResetJobs(movedPaths)
             removeMediaInventoryRecords(matching: movedPaths)
-            if let mediaDeletePlan = getDeletePlan() {
-                setDeletePlan(
-                    MediaDeletePlan(
-                        sourceRoots: mediaDeletePlan.sourceRoots,
-                        filter: mediaDeletePlan.filter,
-                        selectedExtensions: mediaDeletePlan.selectedExtensions,
-                        fileNameFilter: mediaDeletePlan.fileNameFilter,
-                        candidates: mediaDeletePlan.candidates.filter {
-                            !movedPaths.contains($0.sourceURL.standardizedFileURL.path)
-                        },
-                        candidateCount: max(0, mediaDeletePlan.candidateCount - movedPaths.count),
-                        totalSizeBytes: max(0, mediaDeletePlan.totalSizeBytes - movedBytes),
-                        scannedAt: Date()
-                    )
+            if let mediaDeletePlan = mediaDeletePlan {
+                self.mediaDeletePlan = MediaDeletePlan(
+                    sourceRoots: mediaDeletePlan.sourceRoots,
+                    filter: mediaDeletePlan.filter,
+                    selectedExtensions: mediaDeletePlan.selectedExtensions,
+                    fileNameFilter: mediaDeletePlan.fileNameFilter,
+                    candidates: mediaDeletePlan.candidates.filter {
+                        !movedPaths.contains($0.sourceURL.standardizedFileURL.path)
+                    },
+                    candidateCount: max(0, mediaDeletePlan.candidateCount - movedPaths.count),
+                    totalSizeBytes: max(0, mediaDeletePlan.totalSizeBytes - movedBytes),
+                    scannedAt: Date()
                 )
             }
         }
@@ -460,25 +458,23 @@ extension MediaFileCoordinator {
 
         if !renamedSourcePaths.isEmpty {
             moveMediaInventoryRecords(result.historyItems, direction: .redo)
-            if let mediaRenamePlan = getRenamePlan() {
+            if let mediaRenamePlan = mediaRenamePlan {
                 let remainingItems = mediaRenamePlan.items.filter {
                     !renamedSourcePaths.contains($0.sourceURL.standardizedFileURL.path)
                 }
-                setRenamePlan(
-                    MediaRenamePlan(
-                        sourceRoots: mediaRenamePlan.sourceRoots,
-                        filter: mediaRenamePlan.filter,
-                        selectedExtensions: mediaRenamePlan.selectedExtensions,
-                        fileNameFilter: mediaRenamePlan.fileNameFilter,
-                        settings: mediaRenamePlan.settings,
-                        items: remainingItems,
-                        itemCount: max(0, mediaRenamePlan.itemCount - renamedSourcePaths.count),
-                        totalSizeBytes: max(0, mediaRenamePlan.totalSizeBytes - renamedBytes),
-                        readyCount: remainingItems.filter { $0.state == .ready }.count,
-                        blockedCount: mediaRenamePlan.blockedCount,
-                        unchangedCount: mediaRenamePlan.unchangedCount,
-                        scannedAt: Date()
-                    )
+                self.mediaRenamePlan = MediaRenamePlan(
+                    sourceRoots: mediaRenamePlan.sourceRoots,
+                    filter: mediaRenamePlan.filter,
+                    selectedExtensions: mediaRenamePlan.selectedExtensions,
+                    fileNameFilter: mediaRenamePlan.fileNameFilter,
+                    settings: mediaRenamePlan.settings,
+                    items: remainingItems,
+                    itemCount: max(0, mediaRenamePlan.itemCount - renamedSourcePaths.count),
+                    totalSizeBytes: max(0, mediaRenamePlan.totalSizeBytes - renamedBytes),
+                    readyCount: remainingItems.filter { $0.state == .ready }.count,
+                    blockedCount: mediaRenamePlan.blockedCount,
+                    unchangedCount: mediaRenamePlan.unchangedCount,
+                    scannedAt: Date()
                 )
             }
             resetJobsForMediaMutation()
@@ -577,17 +573,17 @@ extension MediaFileCoordinator {
 
     private func removeMediaInventoryRecords(matching paths: Set<String>) {
         guard !paths.isEmpty else { return }
-        let nextInventory = getInventory().filter {
+        let nextInventory = mediaFileInventory.filter {
             !paths.contains($0.sourceURL.standardizedFileURL.path)
         }
-        setInventory(nextInventory, getInventorySourceRootPaths())
+        setInventory(nextInventory, mediaFileInventorySourceRootPaths)
     }
 
     private func moveMediaInventoryRecords(
         _ items: [MediaRenameHistoryItem],
         direction: MediaRenameHistoryDirection
     ) {
-        var inventory = getInventory()
+        var inventory = mediaFileInventory
         guard !items.isEmpty, !inventory.isEmpty else { return }
 
         for item in items {
@@ -631,7 +627,7 @@ extension MediaFileCoordinator {
             $0.sourceURL.path.localizedCaseInsensitiveCompare($1.sourceURL.path)
                 == .orderedAscending
         }
-        setInventory(inventory, getInventorySourceRootPaths())
+        setInventory(inventory, mediaFileInventorySourceRootPaths)
     }
 
     private func deletePlan(

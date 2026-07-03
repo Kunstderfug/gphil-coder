@@ -8,7 +8,7 @@
 
 ## Current status
 
-- **Branch:** `main`, 12 commits ahead of `origin/main`.
+- **Branch:** `main`, 3 commits ahead of `origin/main`.
 - **Build:** clean. **Tests:** 141 pass (baseline before the refactor was 51).
 - **No open correctness bugs** — all three Critical issues from the code review
   are closed.
@@ -53,16 +53,21 @@ New `GPhilCoder` (App) files:
 - `FolderSyncCoordinator.swift` — owns the folder-sync scan/apply run loop,
   auto-sync debounce, FSEvents watcher, pending rerun flag, and completion
   messaging callbacks while `EncoderViewModel` keeps the published UI surface.
-- `MediaFileCoordinator.swift` — owns media copy scan, immediate copy
-  execution, queued copy execution, media inventory scan/cache coordination,
-  delete/rename preview rebuilds, and shared file-management cancellation.
+- `MediaFileCoordinator.swift` — owns media file-management UI state, media copy
+  scan, immediate copy execution, queued copy execution, media inventory
+  scan/cache coordination, delete/rename preview rebuilds, and shared
+  file-management cancellation.
 - `MediaFileCoordinatorTypes.swift` — shared file-management result, trash,
   and rename-history DTOs used by the coordinator and view model.
+- `MediaFileCoordinator+State.swift` — coordinator-owned derived media state,
+  selected-extension/configuration helpers, inventory mutation, and rename
+  history stack management.
 - `MediaFileCoordinator+ManagedOperations.swift` — owns filtered delete
   execution, filtered rename execution, rename undo/redo execution, media
   filename-filter debounce, managed-operation progress/status updates, and
-  completion callbacks. `EncoderViewModel` keeps published UI state, prompts,
-  queue configuration, trash/rename persistence hooks, and settings writes.
+  completion callbacks. `EncoderViewModel` keeps compatibility accessors, entry
+  points, panels/prompts, trash ledger hooks, settings persistence writes, and
+  completion notifications.
 
 Step 1 characterization coverage:
 
@@ -90,10 +95,11 @@ outputs.
 
 ### Residual
 
-`EncoderViewModel` is still large (about 5,887 lines) with **69 `didSet`
+`EncoderViewModel` is still large (about 5,883 lines) with **48 `didSet`
 observers**. The security-scope/bookmark logic (~27 call sites), encoding run
-loop, and folder-sync run loop are extracted. The remaining view-model code is
-mostly entry/configuration wrappers plus two larger domains:
+loop, folder-sync run loop, and media file-management state/execution are
+extracted. The remaining view-model code is mostly entry/configuration wrappers
+plus two larger domains:
 
 - **Encoding entry/preflight** — `startEncoding`/`cancelEncoding`/
   `confirmEncodingPreflight` still live on the view model because they assemble
@@ -104,11 +110,11 @@ mostly entry/configuration wrappers plus two larger domains:
   Folder validation, bookmark authorization, persistence, and collision checks
   remain on the view model because they interact with UI prompts and stored
   `syncFolderPairs`; execution delegates to `FolderSyncCoordinator`.
-- **MediaFileManager entry/configuration** — UI-bound settings, source/destination
-  selection, queue/job document save/load, prompt construction, trash/rename
-  persistence hooks, and history stack mutation remain on the view model while
-  execution delegates to `MediaFileCoordinator`.
-- **SettingsStore** — the 69 `@Published didSet → UserDefaults.standard`
+- **MediaFileManager entry/integration** — source/destination panels, queue/job
+  document save/load, prompt construction, trash/rename persistence hooks, and
+  compatibility accessors remain on the view model while state and execution
+  live in `MediaFileCoordinator`.
+- **SettingsStore** — the 48 `@Published didSet → UserDefaults.standard`
   writes plus the `isLoadingPersistedSettings` guard dance. A full state-owning
   store is still deferred; the safer next move is a persistence-helper
   extraction that leaves all `@Published` properties on `EncoderViewModel`.
@@ -236,41 +242,44 @@ delete-to-Trash, rename apply, undo, and redo because those paths currently
 cross `NSAlert` confirmation and/or macOS Trash behavior.
 
 **Gate:** `swift test --filter MediaFileManagerCoordinatorTests` green, then
-full `swift test` green (140 tests).
+full `swift test` green (141 tests).
 
 ### Step 5 — Extract `MediaFileCoordinator` (medium-high risk) — DONE
 
 `Sources/GPhilCoder/MediaFileCoordinator.swift`,
+`Sources/GPhilCoder/MediaFileCoordinator+State.swift`,
 `Sources/GPhilCoder/MediaFileCoordinatorTypes.swift`, and
 `Sources/GPhilCoder/MediaFileCoordinator+ManagedOperations.swift` now own
-`scanMediaCopyFiles()`, immediate `copyFilteredMediaFiles()` execution, queued
-copy execution, media inventory scanning, delete/rename preview rebuilds,
-filtered delete execution, filtered rename execution, rename undo/redo
-execution, media filename-filter debounce, `mediaCopyTask`, and
-`mediaFileNameFilterRefreshTask`.
+media file-management state, `scanMediaCopyFiles()`, immediate
+`copyFilteredMediaFiles()` execution, queued copy execution, media inventory
+scanning, delete/rename preview rebuilds, filtered delete execution, filtered
+rename execution, rename undo/redo execution, media filename-filter debounce,
+`mediaCopyTask`, and `mediaFileNameFilterRefreshTask`.
 
-The split keeps both coordinator files under 1,000 lines while preserving the
-same no-UI-rewrite shape as Steps 2-3. `EncoderViewModel` keeps the public
-SwiftUI-bound entry points, published state, validation alert,
-conflict/trash/rename prompt construction, trash ledgers, rename history
-stacks, queue/input mutation callbacks, and completion notification hook.
-
-Same no-UI-rewrite shape as Steps 2-3.
+The split keeps coordinator source files under 1,000 lines. Unlike the earlier
+Steps 2-3 shape, `MediaFileCoordinator` is now an `ObservableObject` that owns
+plans, progress, busy flags, queue state, selected media settings, rename
+settings, and rename history stacks. `EncoderViewModel` forwards object changes
+for compatibility and keeps the public SwiftUI-bound entry points, validation
+alert, conflict/trash/rename prompt construction, trash ledgers, panel
+interactions, queue/input mutation callbacks, settings persistence writes, and
+completion notification hook.
 
 - **Moved in:** media file inventory scan/cache, delete/rename preview
   rebuilds, copy scan/copy run loop, queued copy run loop, filtered delete run
   loop, filtered rename run loop, rename undo/redo run loop, media
   filename-filter debounce, `mediaCopyTask`, `mediaFileNameFilterRefreshTask`,
-  and media copy/rename/delete status helpers.
+  media copy/rename/delete status helpers, media file-management published
+  state, selected-extension/configuration helpers, and rename history stack
+  mutation.
 - **Still move in:** none for this step.
-- **Keep on the view model for now:** `@Published` media settings, plans,
-  progress, busy flags, queue, and rename settings; `NSOpenPanel`/`NSSavePanel`
-  and `NSAlert` construction; queue/input mutation callbacks; persistence
-  writes that still interact with `isLoadingPersistedSettings`.
-- **Wire via callbacks:** setters for plans/progress/busy flags/status, prompt
-  callbacks for conflict/trash/rename confirmation, persistence hooks for
-  trash ledgers and rename history, and side-effect hooks for removing or
-  restoring queue inputs.
+- **Keep on the view model for now:** `NSOpenPanel`/`NSSavePanel` and `NSAlert`
+  construction, queue/job document save/load, queue/input mutation callbacks,
+  trash ledger persistence hooks, completion notifications, and settings writes
+  that still interact with `isLoadingPersistedSettings`.
+- **Wire via callbacks:** status messaging, prompt callbacks for
+  conflict/trash/rename confirmation, persistence hooks for trash ledgers and
+  rename history, and side-effect hooks for removing or restoring queue inputs.
 
 **Gate:** `swift build` + `MediaFileManagerCoordinatorTests` + full
 `swift test` green.
@@ -279,7 +288,7 @@ Same no-UI-rewrite shape as Steps 2-3.
 
 **Recommendation: do not attempt now.**
 
-The 69 `didSet → UserDefaults` writes are the review's other target, but a
+The 48 `didSet → UserDefaults` writes are the review's other target, but a
 full state-owning extraction means either:
 
 - exposing a `@Published var settings: SettingsStore` and rewiring 34

@@ -29,30 +29,46 @@ struct MediaPreviewConfiguration {
 }
 
 @MainActor
-final class MediaFileCoordinator {
-    let setCopyPlan: @MainActor (MediaCopyPlan?) -> Void
-    let setDeletePlan: @MainActor (MediaDeletePlan?) -> Void
-    let setRenamePlan: @MainActor (MediaRenamePlan?) -> Void
-    let setRenamePreviewStale: @MainActor (Bool) -> Void
-    let setProgress: @MainActor (MediaCopyProgress?) -> Void
-    let setScanning: @MainActor (Bool) -> Void
-    let setCopying: @MainActor (Bool) -> Void
-    let setDeleting: @MainActor (Bool) -> Void
-    let setRenaming: @MainActor (Bool) -> Void
-    let setCurrentWorkflowID: @MainActor (UUID?) -> Void
-    let setRenameProgressVerb: @MainActor (String) -> Void
+final class MediaFileCoordinator: ObservableObject {
+    @Published var fileManagementMode: FileManagementMode = .copy
+    @Published var mediaCopySourceRoots: [URL] = []
+    @Published var mediaCopyDestinationRoot: URL?
+    @Published var mediaCopyFilter: MediaFileFilter = .audio
+    @Published var mediaCopyAudioExtensions: Set<String> = MediaFileFilter.audio.fileExtensions
+    @Published var mediaCopyVideoExtensions: Set<String> = MediaFileFilter.video.fileExtensions
+    @Published var mediaFileNameFilterQuery = ""
+    @Published var mediaRenameOperation: MediaRenameOperation = .pattern
+    @Published var mediaRenamePattern = "{name}"
+    @Published var mediaRenameFindText = ""
+    @Published var mediaRenameReplacementText = ""
+    @Published var mediaRenameIsCaseSensitive = false
+    @Published var mediaRenameAddedText = ""
+    @Published var mediaRenameTextPlacement: MediaRenameTextPlacement = .suffix
+    @Published var mediaRenameCaseStyle: MediaRenameCaseStyle = .titleCase
+    @Published var mediaRenameSort: MediaRenameSort = .name
+    @Published var mediaRenameStartIndex = 1
+    @Published var mediaRenameIndexStep = 1
+    @Published var mediaRenameIndexPadding = 2
+    @Published var mediaCopyPlan: MediaCopyPlan?
+    @Published var mediaDeletePlan: MediaDeletePlan?
+    @Published var mediaRenamePlan: MediaRenamePlan?
+    @Published var isMediaRenamePreviewStale = false
+    @Published var mediaCopyProgress: MediaCopyProgress?
+    @Published var isMediaCopyScanning = false
+    @Published var isMediaCopying = false
+    @Published var isMediaDeleting = false
+    @Published var isMediaRenaming = false
+    @Published var mediaRenameProgressVerb = "renamed"
+    @Published var mediaCopyQueue: [MediaCopyWorkflow] = []
+    @Published var currentMediaCopyWorkflowID: UUID?
+    @Published var mediaRenameUndoStack: [MediaRenameHistoryTransaction] = [] {
+        didSet { persistRenameHistory() }
+    }
+    @Published var mediaRenameRedoStack: [MediaRenameHistoryTransaction] = [] {
+        didSet { persistRenameHistory() }
+    }
+
     let setStatusMessage: @MainActor (String) -> Void
-    let resetForCopyRun: @MainActor () -> Void
-    let getDeletePlan: @MainActor () -> MediaDeletePlan?
-    let getRenamePlan: @MainActor () -> MediaRenamePlan?
-    let getRenamePreviewStale: @MainActor () -> Bool
-    let getLastUndoTransaction: @MainActor () -> MediaRenameHistoryTransaction?
-    let getLastRedoTransaction: @MainActor () -> MediaRenameHistoryTransaction?
-    let setInventory: @MainActor (_ inventory: [MediaFileInventoryRecord], _ sourceRootPaths: [String]) -> Void
-    let getInventory: @MainActor () -> [MediaFileInventoryRecord]
-    let getInventorySourceRootPaths: @MainActor () -> [String]
-    let getActiveMode: @MainActor () -> FileManagementMode
-    let makePreviewConfiguration: @MainActor () -> MediaPreviewConfiguration
     let validateFolders: @MainActor (_ sourceRoot: URL, _ destinationRoot: URL) -> Bool
     let promptConflictResolution: @MainActor ([MediaCopyPlan]) -> MediaCopyConflictResolution?
     let promptTrash: @MainActor (
@@ -77,43 +93,16 @@ final class MediaFileCoordinator {
     let removePendingTrashRecordIfOriginalStillExists: @MainActor (PendingTrashSourceRecord) -> Void
     let removeInputsAndResetJobs: @MainActor (_ movedPaths: Set<String>) -> Void
     let resetJobsForMediaMutation: @MainActor () -> Void
-    let pushRenameUndoTransaction: @MainActor (MediaRenameHistoryTransaction) -> Void
-    let pushRenameRedoTransaction: @MainActor (MediaRenameHistoryTransaction) -> Void
-    let clearRenameRedoStack: @MainActor () -> Void
-    let completeRenameHistoryAction: @MainActor (
-        _ transaction: MediaRenameHistoryTransaction,
-        _ direction: MediaRenameHistoryDirection,
-        _ result: MediaRenameHistoryResult
-    ) -> Void
+    let persistRenameHistory: @MainActor () -> Void
     let notifyCompletion: @MainActor (_ title: String, _ body: String) -> Void
 
     var mediaCopyTask: Task<Void, Never>?
     var mediaFileNameFilterRefreshTask: Task<Void, Never>?
+    var mediaFileInventory: [MediaFileInventoryRecord] = []
+    var mediaFileInventorySourceRootPaths: [String] = []
 
     init(
-        setCopyPlan: @escaping @MainActor (MediaCopyPlan?) -> Void,
-        setDeletePlan: @escaping @MainActor (MediaDeletePlan?) -> Void,
-        setRenamePlan: @escaping @MainActor (MediaRenamePlan?) -> Void,
-        setRenamePreviewStale: @escaping @MainActor (Bool) -> Void,
-        setProgress: @escaping @MainActor (MediaCopyProgress?) -> Void,
-        setScanning: @escaping @MainActor (Bool) -> Void,
-        setCopying: @escaping @MainActor (Bool) -> Void,
-        setDeleting: @escaping @MainActor (Bool) -> Void,
-        setRenaming: @escaping @MainActor (Bool) -> Void,
-        setCurrentWorkflowID: @escaping @MainActor (UUID?) -> Void,
-        setRenameProgressVerb: @escaping @MainActor (String) -> Void,
         setStatusMessage: @escaping @MainActor (String) -> Void,
-        resetForCopyRun: @escaping @MainActor () -> Void,
-        getDeletePlan: @escaping @MainActor () -> MediaDeletePlan?,
-        getRenamePlan: @escaping @MainActor () -> MediaRenamePlan?,
-        getRenamePreviewStale: @escaping @MainActor () -> Bool,
-        getLastUndoTransaction: @escaping @MainActor () -> MediaRenameHistoryTransaction?,
-        getLastRedoTransaction: @escaping @MainActor () -> MediaRenameHistoryTransaction?,
-        setInventory: @escaping @MainActor (_ inventory: [MediaFileInventoryRecord], _ sourceRootPaths: [String]) -> Void,
-        getInventory: @escaping @MainActor () -> [MediaFileInventoryRecord],
-        getInventorySourceRootPaths: @escaping @MainActor () -> [String],
-        getActiveMode: @escaping @MainActor () -> FileManagementMode,
-        makePreviewConfiguration: @escaping @MainActor () -> MediaPreviewConfiguration,
         validateFolders: @escaping @MainActor (_ sourceRoot: URL, _ destinationRoot: URL) -> Bool,
         promptConflictResolution: @escaping @MainActor ([MediaCopyPlan]) -> MediaCopyConflictResolution?,
         promptTrash: @escaping @MainActor (
@@ -138,39 +127,10 @@ final class MediaFileCoordinator {
         removePendingTrashRecordIfOriginalStillExists: @escaping @MainActor (PendingTrashSourceRecord) -> Void,
         removeInputsAndResetJobs: @escaping @MainActor (_ movedPaths: Set<String>) -> Void,
         resetJobsForMediaMutation: @escaping @MainActor () -> Void,
-        pushRenameUndoTransaction: @escaping @MainActor (MediaRenameHistoryTransaction) -> Void,
-        pushRenameRedoTransaction: @escaping @MainActor (MediaRenameHistoryTransaction) -> Void,
-        clearRenameRedoStack: @escaping @MainActor () -> Void,
-        completeRenameHistoryAction: @escaping @MainActor (
-            _ transaction: MediaRenameHistoryTransaction,
-            _ direction: MediaRenameHistoryDirection,
-            _ result: MediaRenameHistoryResult
-        ) -> Void,
+        persistRenameHistory: @escaping @MainActor () -> Void,
         notifyCompletion: @escaping @MainActor (_ title: String, _ body: String) -> Void
     ) {
-        self.setCopyPlan = setCopyPlan
-        self.setDeletePlan = setDeletePlan
-        self.setRenamePlan = setRenamePlan
-        self.setRenamePreviewStale = setRenamePreviewStale
-        self.setProgress = setProgress
-        self.setScanning = setScanning
-        self.setCopying = setCopying
-        self.setDeleting = setDeleting
-        self.setRenaming = setRenaming
-        self.setCurrentWorkflowID = setCurrentWorkflowID
-        self.setRenameProgressVerb = setRenameProgressVerb
         self.setStatusMessage = setStatusMessage
-        self.resetForCopyRun = resetForCopyRun
-        self.getDeletePlan = getDeletePlan
-        self.getRenamePlan = getRenamePlan
-        self.getRenamePreviewStale = getRenamePreviewStale
-        self.getLastUndoTransaction = getLastUndoTransaction
-        self.getLastRedoTransaction = getLastRedoTransaction
-        self.setInventory = setInventory
-        self.getInventory = getInventory
-        self.getInventorySourceRootPaths = getInventorySourceRootPaths
-        self.getActiveMode = getActiveMode
-        self.makePreviewConfiguration = makePreviewConfiguration
         self.validateFolders = validateFolders
         self.promptConflictResolution = promptConflictResolution
         self.promptTrash = promptTrash
@@ -182,28 +142,25 @@ final class MediaFileCoordinator {
         self.removePendingTrashRecordIfOriginalStillExists = removePendingTrashRecordIfOriginalStillExists
         self.removeInputsAndResetJobs = removeInputsAndResetJobs
         self.resetJobsForMediaMutation = resetJobsForMediaMutation
-        self.pushRenameUndoTransaction = pushRenameUndoTransaction
-        self.pushRenameRedoTransaction = pushRenameRedoTransaction
-        self.clearRenameRedoStack = clearRenameRedoStack
-        self.completeRenameHistoryAction = completeRenameHistoryAction
+        self.persistRenameHistory = persistRenameHistory
         self.notifyCompletion = notifyCompletion
     }
 
-    func scanCopyFiles(configuration: MediaCopyRunConfiguration) {
-        runCopyPreflight(copyAfterScan: false, configuration: configuration)
+    func scanCopyFiles() {
+        runCopyPreflight(copyAfterScan: false, configuration: mediaCopyRunConfiguration)
     }
 
-    func copyFilteredFiles(configuration: MediaCopyRunConfiguration) {
-        runCopyPreflight(copyAfterScan: true, configuration: configuration)
+    func copyFilteredFiles() {
+        runCopyPreflight(copyAfterScan: true, configuration: mediaCopyRunConfiguration)
     }
 
     func runQueuedWorkflows(_ workflows: [MediaCopyWorkflow]) {
         mediaCopyTask?.cancel()
-        setCopyPlan(nil)
-        setProgress(nil)
-        setCurrentWorkflowID(nil)
-        setScanning(true)
-        setCopying(false)
+        mediaCopyPlan = nil
+        mediaCopyProgress = nil
+        currentMediaCopyWorkflowID = nil
+        isMediaCopyScanning = true
+        isMediaCopying = false
         setStatusMessage(
             "Scanning \(workflows.count) queued file copy workflow\(workflows.count == 1 ? "" : "s")..."
         )
@@ -217,12 +174,12 @@ final class MediaFileCoordinator {
         mediaCopyTask?.cancel()
         mediaCopyTask = nil
         cancelFileNameFilterRefresh()
-        setScanning(false)
-        setCopying(false)
-        setDeleting(false)
-        setRenaming(false)
-        setProgress(nil)
-        setCurrentWorkflowID(nil)
+        isMediaCopyScanning = false
+        isMediaCopying = false
+        isMediaDeleting = false
+        isMediaRenaming = false
+        mediaCopyProgress = nil
+        currentMediaCopyWorkflowID = nil
     }
 
     func refreshDeletePreview(configuration: MediaPreviewConfiguration) {
@@ -233,13 +190,26 @@ final class MediaFileCoordinator {
         scanInventoryThenRefresh(.rename, configuration: configuration)
     }
 
+    func resetForCopyRun() {
+        mediaCopyPlan = nil
+        mediaDeletePlan = nil
+        mediaRenamePlan = nil
+        isMediaRenamePreviewStale = false
+        mediaCopyProgress = nil
+        currentMediaCopyWorkflowID = nil
+        isMediaCopyScanning = false
+        isMediaCopying = false
+        isMediaDeleting = false
+        isMediaRenaming = false
+    }
+
     func refreshDeletePreviewIfNeeded(configuration: MediaPreviewConfiguration) {
-        guard getActiveMode() == .delete else { return }
+        guard fileManagementMode == .delete else { return }
 
         guard !configuration.sourceRoots.isEmpty,
             hasSelectedExtensions(configuration)
         else {
-            setDeletePlan(nil)
+            mediaDeletePlan = nil
             return
         }
 
@@ -251,13 +221,13 @@ final class MediaFileCoordinator {
     }
 
     func refreshRenamePreviewIfNeeded(configuration: MediaPreviewConfiguration) {
-        guard getActiveMode() == .rename else { return }
+        guard fileManagementMode == .rename else { return }
 
         guard !configuration.sourceRoots.isEmpty,
             hasSelectedExtensions(configuration)
         else {
-            setRenamePlan(nil)
-            setRenamePreviewStale(false)
+            mediaRenamePlan = nil
+            isMediaRenamePreviewStale = false
             return
         }
 
@@ -281,13 +251,13 @@ final class MediaFileCoordinator {
             fileNameFilter: configuration.fileNameFilter,
             itemLimit: configuration.previewLimit,
             settings: configuration.renameSettings,
-            inventory: getInventory()
+            inventory: mediaFileInventory
         )
-        setCopyPlan(nil)
-        setDeletePlan(nil)
-        setRenamePlan(plan)
-        setRenamePreviewStale(false)
-        setProgress(nil)
+        mediaCopyPlan = nil
+        mediaDeletePlan = nil
+        mediaRenamePlan = plan
+        isMediaRenamePreviewStale = false
+        mediaCopyProgress = nil
         setStatusMessage(Self.mediaRenameScanStatusMessage(for: plan))
     }
 
@@ -308,8 +278,8 @@ final class MediaFileCoordinator {
 
         mediaCopyTask?.cancel()
         resetForCopyRun()
-        setScanning(true)
-        setCopying(false)
+        isMediaCopyScanning = true
+        isMediaCopying = false
 
         let filter = configuration.filter
         let selectedExtensions = configuration.selectedExtensions
@@ -341,10 +311,10 @@ final class MediaFileCoordinator {
 
         guard hasSelectedExtensions(configuration) else {
             if targetMode == .delete {
-                setDeletePlan(nil)
+                mediaDeletePlan = nil
             } else {
-                setRenamePlan(nil)
-                setRenamePreviewStale(false)
+                mediaRenamePlan = nil
+                isMediaRenamePreviewStale = false
             }
             return
         }
@@ -352,13 +322,13 @@ final class MediaFileCoordinator {
         let sourceRoots = configuration.sourceRoots
 
         mediaCopyTask?.cancel()
-        setCopyPlan(nil)
-        setProgress(nil)
-        setCurrentWorkflowID(nil)
-        setScanning(true)
-        setCopying(false)
-        setDeleting(false)
-        setRenaming(false)
+        mediaCopyPlan = nil
+        mediaCopyProgress = nil
+        currentMediaCopyWorkflowID = nil
+        isMediaCopyScanning = true
+        isMediaCopying = false
+        isMediaDeleting = false
+        isMediaRenaming = false
         setStatusMessage(
             "Scanning \(sourceRoots.count) source folder\(sourceRoots.count == 1 ? "" : "s") into memory..."
         )
@@ -392,11 +362,11 @@ final class MediaFileCoordinator {
                 inventory,
                 sourceRoots.map { $0.standardizedFileURL.path }
             )
-            setScanning(false)
+            isMediaCopyScanning = false
             mediaCopyTask = nil
 
-            let latestConfiguration = makePreviewConfiguration()
-            guard getActiveMode() == targetMode else {
+            let latestConfiguration = mediaPreviewConfiguration
+            guard fileManagementMode == targetMode else {
                 refreshDeletePreviewIfNeeded(configuration: latestConfiguration)
                 refreshRenamePreviewIfNeeded(configuration: latestConfiguration)
                 return
@@ -412,20 +382,20 @@ final class MediaFileCoordinator {
             }
         } catch is CancellationError {
             guard !Task.isCancelled else { return }
-            setScanning(false)
+            isMediaCopyScanning = false
             mediaCopyTask = nil
             setStatusMessage("File inventory scan cancelled.")
         } catch {
             guard !Task.isCancelled else { return }
             setInventory([], [])
             if targetMode == .delete {
-                setDeletePlan(nil)
+                mediaDeletePlan = nil
             } else {
-                setRenamePlan(nil)
-                setRenamePreviewStale(false)
+                mediaRenamePlan = nil
+                isMediaRenamePreviewStale = false
             }
-            setProgress(nil)
-            setScanning(false)
+            mediaCopyProgress = nil
+            isMediaCopyScanning = false
             mediaCopyTask = nil
             setStatusMessage("Could not scan source folders: \(error.localizedDescription)")
         }
@@ -443,19 +413,19 @@ final class MediaFileCoordinator {
             selectedExtensions: configuration.selectedExtensions ?? [],
             fileNameFilter: configuration.fileNameFilter,
             candidateLimit: configuration.previewLimit,
-            inventory: getInventory()
+            inventory: mediaFileInventory
         )
-        setCopyPlan(nil)
-        setDeletePlan(plan)
-        setRenamePlan(nil)
-        setRenamePreviewStale(false)
-        setProgress(nil)
+        mediaCopyPlan = nil
+        mediaDeletePlan = plan
+        mediaRenamePlan = nil
+        isMediaRenamePreviewStale = false
+        mediaCopyProgress = nil
         setStatusMessage(Self.mediaDeleteScanStatusMessage(for: plan))
     }
 
     private func inventoryMatches(_ sourceRoots: [URL]) -> Bool {
         !sourceRoots.isEmpty
-            && getInventorySourceRootPaths() == sourceRoots.map { $0.standardizedFileURL.path }
+            && mediaFileInventorySourceRootPaths == sourceRoots.map { $0.standardizedFileURL.path }
     }
 
     private func hasSelectedExtensions(_ configuration: MediaPreviewConfiguration) -> Bool {
@@ -491,8 +461,8 @@ final class MediaFileCoordinator {
 
             guard !Task.isCancelled else { return }
 
-            setCopyPlan(plan)
-            setScanning(false)
+            mediaCopyPlan = plan
+            isMediaCopyScanning = false
 
             guard copyAfterScan else {
                 setStatusMessage(Self.mediaCopyScanStatusMessage(for: plan))
@@ -515,7 +485,7 @@ final class MediaFileCoordinator {
                 return
             }
 
-            setCopying(true)
+            isMediaCopying = true
             let progressStartedAt = Date()
             setProgress(
                 MediaCopyProgress(
@@ -539,7 +509,7 @@ final class MediaFileCoordinator {
 
             guard !Task.isCancelled else { return }
 
-            setCopying(false)
+            isMediaCopying = false
             mediaCopyTask = nil
             let completionMessage = Self.mediaCopyResultStatusMessage(
                 result,
@@ -550,16 +520,16 @@ final class MediaFileCoordinator {
             notifyCompletion("File copy finished", completionMessage)
         } catch is CancellationError {
             guard !Task.isCancelled else { return }
-            setScanning(false)
-            setCopying(false)
+            isMediaCopyScanning = false
+            isMediaCopying = false
             mediaCopyTask = nil
             setStatusMessage("Media copy cancelled.")
         } catch {
             guard !Task.isCancelled else { return }
-            setCopyPlan(nil)
-            setProgress(nil)
-            setScanning(false)
-            setCopying(false)
+            mediaCopyPlan = nil
+            mediaCopyProgress = nil
+            isMediaCopyScanning = false
+            isMediaCopying = false
             mediaCopyTask = nil
             setStatusMessage("Could not prepare media copy: \(error.localizedDescription)")
         }
@@ -571,7 +541,7 @@ final class MediaFileCoordinator {
 
             for (index, workflow) in workflows.enumerated() {
                 guard !Task.isCancelled else { return }
-                setCurrentWorkflowID(workflow.id)
+                currentMediaCopyWorkflowID = workflow.id
                 setStatusMessage(
                     "Scanning queued workflow \(index + 1) of \(workflows.count)..."
                 )
@@ -595,12 +565,12 @@ final class MediaFileCoordinator {
 
             guard !Task.isCancelled else { return }
 
-            setScanning(false)
+            isMediaCopyScanning = false
 
             let nonEmptyWorkflowPlans = workflowPlans.filter(\.plan.hasCopyableContent)
             guard !nonEmptyWorkflowPlans.isEmpty else {
                 let completionMessage = "No files found in the queued file copy workflows."
-                setCurrentWorkflowID(nil)
+                currentMediaCopyWorkflowID = nil
                 mediaCopyTask = nil
                 setStatusMessage(completionMessage)
                 notifyCompletion("File copy queue finished", completionMessage)
@@ -609,13 +579,13 @@ final class MediaFileCoordinator {
 
             let nonEmptyPlans = nonEmptyWorkflowPlans.map(\.plan)
             guard let resolution = promptConflictResolution(nonEmptyPlans) else {
-                setCurrentWorkflowID(nil)
+                currentMediaCopyWorkflowID = nil
                 mediaCopyTask = nil
                 setStatusMessage("File copy queue cancelled.")
                 return
             }
 
-            setCopying(true)
+            isMediaCopying = true
             setStatusMessage(
                 "Copying \(nonEmptyWorkflowPlans.count) queued workflow\(nonEmptyWorkflowPlans.count == 1 ? "" : "s")..."
             )
@@ -630,8 +600,8 @@ final class MediaFileCoordinator {
                     break
                 }
 
-                setCurrentWorkflowID(workflowPlan.workflow.id)
-                setCopyPlan(workflowPlan.plan)
+                currentMediaCopyWorkflowID = workflowPlan.workflow.id
+                mediaCopyPlan = workflowPlan.plan
                 let result = await copyMediaCopyPlan(
                     workflowPlan.plan,
                     conflictResolution: resolution
@@ -651,8 +621,8 @@ final class MediaFileCoordinator {
 
             guard !Task.isCancelled else { return }
 
-            setCopying(false)
-            setCurrentWorkflowID(nil)
+            isMediaCopying = false
+            currentMediaCopyWorkflowID = nil
             mediaCopyTask = nil
             let completionMessage = Self.mediaCopyQueueResultStatusMessage(
                 aggregateResult,
@@ -662,17 +632,17 @@ final class MediaFileCoordinator {
             notifyCompletion("File copy queue finished", completionMessage)
         } catch is CancellationError {
             guard !Task.isCancelled else { return }
-            setScanning(false)
-            setCopying(false)
-            setCurrentWorkflowID(nil)
+            isMediaCopyScanning = false
+            isMediaCopying = false
+            currentMediaCopyWorkflowID = nil
             mediaCopyTask = nil
             setStatusMessage("File copy queue cancelled.")
         } catch {
             guard !Task.isCancelled else { return }
-            setProgress(nil)
-            setScanning(false)
-            setCopying(false)
-            setCurrentWorkflowID(nil)
+            mediaCopyProgress = nil
+            isMediaCopyScanning = false
+            isMediaCopying = false
+            currentMediaCopyWorkflowID = nil
             mediaCopyTask = nil
             setStatusMessage("Could not run file copy queue: \(error.localizedDescription)")
         }
@@ -748,7 +718,7 @@ final class MediaFileCoordinator {
                 updatedAt: progressUpdatedAt,
                 currentName: candidate.name
             )
-            setProgress(progress)
+            mediaCopyProgress = progress
             let speedDetail = progress.bytesPerSecond
                 .map { " at \($0.formattedMegabytesPerSecond)" } ?? ""
             setStatusMessage(

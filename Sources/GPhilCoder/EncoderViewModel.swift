@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import Foundation
 import GPhilCoderCore
 import UniformTypeIdentifiers
@@ -199,76 +200,126 @@ final class EncoderViewModel: ObservableObject {
     @Published private(set) var isRestorePlanning = false
     @Published private(set) var isRestoringFromPlan = false
     @Published private(set) var restorePlanStoppedWithPartialResults = false
-    @Published var fileManagementMode: FileManagementMode = .copy {
-        didSet {
-            guard oldValue != fileManagementMode else { return }
-            UserDefaults.standard.set(fileManagementMode.rawValue, forKey: DefaultsKey.fileManagementMode)
+    var fileManagementMode: FileManagementMode {
+        get { mediaFileCoordinator.fileManagementMode }
+        set {
+            let oldValue = mediaFileCoordinator.fileManagementMode
+            guard oldValue != newValue else { return }
+            mediaFileCoordinator.fileManagementMode = newValue
+            UserDefaults.standard.set(newValue.rawValue, forKey: DefaultsKey.fileManagementMode)
             guard !isLoadingPersistedSettings else { return }
             refreshActiveFileManagementPreviewIfNeeded()
         }
     }
-    @Published var mediaCopySourceRoots: [URL] = [] {
-        didSet {
+    var mediaCopySourceRoots: [URL] {
+        get { mediaFileCoordinator.mediaCopySourceRoots }
+        set {
+            let oldValue = mediaFileCoordinator.mediaCopySourceRoots
+            mediaFileCoordinator.mediaCopySourceRoots = newValue
             persistMediaCopySourceRoots()
-            invalidateMediaCopyPlanIfChanged(from: oldValue, to: mediaCopySourceRoots)
+            invalidateMediaCopyPlanIfChanged(from: oldValue, to: newValue)
         }
     }
-    @Published var mediaCopyDestinationRoot: URL? {
-        didSet {
-            persistOptionalDirectory(
-                mediaCopyDestinationRoot,
-                forKey: DefaultsKey.mediaCopyDestinationRootPath
-            )
-            invalidateMediaCopyPlanIfChanged(from: oldValue, to: mediaCopyDestinationRoot)
+    var mediaCopyDestinationRoot: URL? {
+        get { mediaFileCoordinator.mediaCopyDestinationRoot }
+        set {
+            let oldValue = mediaFileCoordinator.mediaCopyDestinationRoot
+            mediaFileCoordinator.mediaCopyDestinationRoot = newValue
+            persistOptionalDirectory(newValue, forKey: DefaultsKey.mediaCopyDestinationRootPath)
+            invalidateMediaCopyPlanIfChanged(from: oldValue, to: newValue)
         }
     }
-    @Published var mediaCopyFilter: MediaFileFilter = .audio {
-        didSet {
-            UserDefaults.standard.set(mediaCopyFilter.rawValue, forKey: DefaultsKey.mediaCopyFilter)
-            invalidateMediaCopyPlanIfChanged(from: oldValue, to: mediaCopyFilter)
+    var mediaCopyFilter: MediaFileFilter {
+        get { mediaFileCoordinator.mediaCopyFilter }
+        set {
+            let oldValue = mediaFileCoordinator.mediaCopyFilter
+            mediaFileCoordinator.mediaCopyFilter = newValue
+            UserDefaults.standard.set(newValue.rawValue, forKey: DefaultsKey.mediaCopyFilter)
+            invalidateMediaCopyPlanIfChanged(from: oldValue, to: newValue)
         }
     }
-    @Published private(set) var mediaCopyAudioExtensions: Set<String> =
-        MediaFileFilter.audio.fileExtensions
-    {
-        didSet {
-            persistMediaCopyExtensions(mediaCopyAudioExtensions, forKey: DefaultsKey.mediaCopyAudioExtensions)
+    private(set) var mediaCopyAudioExtensions: Set<String> {
+        get { mediaFileCoordinator.mediaCopyAudioExtensions }
+        set {
+            let oldValue = mediaFileCoordinator.mediaCopyAudioExtensions
+            mediaFileCoordinator.mediaCopyAudioExtensions = newValue
+            persistMediaCopyExtensions(newValue, forKey: DefaultsKey.mediaCopyAudioExtensions)
             if mediaCopyFilter == .audio {
-                invalidateMediaCopyPlanIfChanged(from: oldValue, to: mediaCopyAudioExtensions)
+                invalidateMediaCopyPlanIfChanged(from: oldValue, to: newValue)
             }
         }
     }
-    @Published private(set) var mediaCopyVideoExtensions: Set<String> =
-        MediaFileFilter.video.fileExtensions
-    {
-        didSet {
-            persistMediaCopyExtensions(mediaCopyVideoExtensions, forKey: DefaultsKey.mediaCopyVideoExtensions)
+    private(set) var mediaCopyVideoExtensions: Set<String> {
+        get { mediaFileCoordinator.mediaCopyVideoExtensions }
+        set {
+            let oldValue = mediaFileCoordinator.mediaCopyVideoExtensions
+            mediaFileCoordinator.mediaCopyVideoExtensions = newValue
+            persistMediaCopyExtensions(newValue, forKey: DefaultsKey.mediaCopyVideoExtensions)
             if mediaCopyFilter == .video {
-                invalidateMediaCopyPlanIfChanged(from: oldValue, to: mediaCopyVideoExtensions)
+                invalidateMediaCopyPlanIfChanged(from: oldValue, to: newValue)
             }
         }
     }
-    @Published var mediaFileNameFilterQuery = "" {
-        didSet {
-            UserDefaults.standard.set(mediaFileNameFilterQuery, forKey: DefaultsKey.mediaFileNameFilterQuery)
+    var mediaFileNameFilterQuery: String {
+        get { mediaFileCoordinator.mediaFileNameFilterQuery }
+        set {
+            let oldValue = mediaFileCoordinator.mediaFileNameFilterQuery
+            mediaFileCoordinator.mediaFileNameFilterQuery = newValue
+            UserDefaults.standard.set(newValue, forKey: DefaultsKey.mediaFileNameFilterQuery)
             handleMediaFileNameFilterChanged(
                 from: oldValue.trimmingCharacters(in: .whitespacesAndNewlines),
-                to: mediaFileNameFilterQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+                to: newValue.trimmingCharacters(in: .whitespacesAndNewlines)
             )
         }
     }
-    @Published private(set) var mediaCopyPlan: MediaCopyPlan?
-    @Published private(set) var mediaDeletePlan: MediaDeletePlan?
-    @Published private(set) var mediaRenamePlan: MediaRenamePlan?
-    @Published private(set) var isMediaRenamePreviewStale = false
-    @Published private(set) var mediaCopyProgress: MediaCopyProgress?
-    @Published private(set) var isMediaCopyScanning = false
-    @Published private(set) var isMediaCopying = false
-    @Published private(set) var isMediaDeleting = false
-    @Published private(set) var isMediaRenaming = false
-    @Published private(set) var mediaRenameProgressVerb = "renamed"
-    @Published private(set) var mediaCopyQueue: [MediaCopyWorkflow] = []
-    @Published private(set) var currentMediaCopyWorkflowID: UUID?
+    var mediaCopyPlan: MediaCopyPlan? {
+        get { mediaFileCoordinator.mediaCopyPlan }
+        set { mediaFileCoordinator.mediaCopyPlan = newValue }
+    }
+    var mediaDeletePlan: MediaDeletePlan? {
+        get { mediaFileCoordinator.mediaDeletePlan }
+        set { mediaFileCoordinator.mediaDeletePlan = newValue }
+    }
+    var mediaRenamePlan: MediaRenamePlan? {
+        get { mediaFileCoordinator.mediaRenamePlan }
+        set { mediaFileCoordinator.mediaRenamePlan = newValue }
+    }
+    var isMediaRenamePreviewStale: Bool {
+        get { mediaFileCoordinator.isMediaRenamePreviewStale }
+        set { mediaFileCoordinator.isMediaRenamePreviewStale = newValue }
+    }
+    var mediaCopyProgress: MediaCopyProgress? {
+        get { mediaFileCoordinator.mediaCopyProgress }
+        set { mediaFileCoordinator.mediaCopyProgress = newValue }
+    }
+    var isMediaCopyScanning: Bool {
+        get { mediaFileCoordinator.isMediaCopyScanning }
+        set { mediaFileCoordinator.isMediaCopyScanning = newValue }
+    }
+    var isMediaCopying: Bool {
+        get { mediaFileCoordinator.isMediaCopying }
+        set { mediaFileCoordinator.isMediaCopying = newValue }
+    }
+    var isMediaDeleting: Bool {
+        get { mediaFileCoordinator.isMediaDeleting }
+        set { mediaFileCoordinator.isMediaDeleting = newValue }
+    }
+    var isMediaRenaming: Bool {
+        get { mediaFileCoordinator.isMediaRenaming }
+        set { mediaFileCoordinator.isMediaRenaming = newValue }
+    }
+    var mediaRenameProgressVerb: String {
+        get { mediaFileCoordinator.mediaRenameProgressVerb }
+        set { mediaFileCoordinator.mediaRenameProgressVerb = newValue }
+    }
+    var mediaCopyQueue: [MediaCopyWorkflow] {
+        get { mediaFileCoordinator.mediaCopyQueue }
+        set { mediaFileCoordinator.mediaCopyQueue = newValue }
+    }
+    var currentMediaCopyWorkflowID: UUID? {
+        get { mediaFileCoordinator.currentMediaCopyWorkflowID }
+        set { mediaFileCoordinator.currentMediaCopyWorkflowID = newValue }
+    }
     @Published var syncDraftOriginRoot: URL?
     @Published var syncDraftDestinationRoot: URL?
     @Published private(set) var editingSyncPairID: UUID?
@@ -341,11 +392,13 @@ final class EncoderViewModel: ObservableObject {
     @Published private(set) var isSyncing = false
     @Published private(set) var isFolderSyncWatching = false
     @Published private(set) var currentSyncPairID: UUID?
-    @Published private var mediaRenameUndoStack: [MediaRenameHistoryTransaction] = [] {
-        didSet { persistMediaRenameHistory() }
+    private var mediaRenameUndoStack: [MediaRenameHistoryTransaction] {
+        get { mediaFileCoordinator.mediaRenameUndoStack }
+        set { mediaFileCoordinator.mediaRenameUndoStack = newValue }
     }
-    @Published private var mediaRenameRedoStack: [MediaRenameHistoryTransaction] = [] {
-        didSet { persistMediaRenameHistory() }
+    private var mediaRenameRedoStack: [MediaRenameHistoryTransaction] {
+        get { mediaFileCoordinator.mediaRenameRedoStack }
+        set { mediaFileCoordinator.mediaRenameRedoStack = newValue }
     }
     @Published private(set) var encodingPresets: [EncodingPreset] = [] {
         didSet {
@@ -370,41 +423,101 @@ final class EncoderViewModel: ObservableObject {
         }
     }
 
-    @Published var mediaRenameOperation: MediaRenameOperation = .pattern {
-        didSet { handleMediaRenameSettingChanged(from: oldValue, to: mediaRenameOperation) }
+    var mediaRenameOperation: MediaRenameOperation {
+        get { mediaFileCoordinator.mediaRenameOperation }
+        set {
+            let oldValue = mediaFileCoordinator.mediaRenameOperation
+            mediaFileCoordinator.mediaRenameOperation = newValue
+            handleMediaRenameSettingChanged(from: oldValue, to: newValue)
+        }
     }
-    @Published var mediaRenamePattern = "{name}" {
-        didSet { handleMediaRenameSettingChanged(from: oldValue, to: mediaRenamePattern) }
+    var mediaRenamePattern: String {
+        get { mediaFileCoordinator.mediaRenamePattern }
+        set {
+            let oldValue = mediaFileCoordinator.mediaRenamePattern
+            mediaFileCoordinator.mediaRenamePattern = newValue
+            handleMediaRenameSettingChanged(from: oldValue, to: newValue)
+        }
     }
-    @Published var mediaRenameFindText = "" {
-        didSet { handleMediaRenameSettingChanged(from: oldValue, to: mediaRenameFindText) }
+    var mediaRenameFindText: String {
+        get { mediaFileCoordinator.mediaRenameFindText }
+        set {
+            let oldValue = mediaFileCoordinator.mediaRenameFindText
+            mediaFileCoordinator.mediaRenameFindText = newValue
+            handleMediaRenameSettingChanged(from: oldValue, to: newValue)
+        }
     }
-    @Published var mediaRenameReplacementText = "" {
-        didSet { handleMediaRenameSettingChanged(from: oldValue, to: mediaRenameReplacementText) }
+    var mediaRenameReplacementText: String {
+        get { mediaFileCoordinator.mediaRenameReplacementText }
+        set {
+            let oldValue = mediaFileCoordinator.mediaRenameReplacementText
+            mediaFileCoordinator.mediaRenameReplacementText = newValue
+            handleMediaRenameSettingChanged(from: oldValue, to: newValue)
+        }
     }
-    @Published var mediaRenameIsCaseSensitive = false {
-        didSet { handleMediaRenameSettingChanged(from: oldValue, to: mediaRenameIsCaseSensitive) }
+    var mediaRenameIsCaseSensitive: Bool {
+        get { mediaFileCoordinator.mediaRenameIsCaseSensitive }
+        set {
+            let oldValue = mediaFileCoordinator.mediaRenameIsCaseSensitive
+            mediaFileCoordinator.mediaRenameIsCaseSensitive = newValue
+            handleMediaRenameSettingChanged(from: oldValue, to: newValue)
+        }
     }
-    @Published var mediaRenameAddedText = "" {
-        didSet { handleMediaRenameSettingChanged(from: oldValue, to: mediaRenameAddedText) }
+    var mediaRenameAddedText: String {
+        get { mediaFileCoordinator.mediaRenameAddedText }
+        set {
+            let oldValue = mediaFileCoordinator.mediaRenameAddedText
+            mediaFileCoordinator.mediaRenameAddedText = newValue
+            handleMediaRenameSettingChanged(from: oldValue, to: newValue)
+        }
     }
-    @Published var mediaRenameTextPlacement: MediaRenameTextPlacement = .suffix {
-        didSet { handleMediaRenameSettingChanged(from: oldValue, to: mediaRenameTextPlacement) }
+    var mediaRenameTextPlacement: MediaRenameTextPlacement {
+        get { mediaFileCoordinator.mediaRenameTextPlacement }
+        set {
+            let oldValue = mediaFileCoordinator.mediaRenameTextPlacement
+            mediaFileCoordinator.mediaRenameTextPlacement = newValue
+            handleMediaRenameSettingChanged(from: oldValue, to: newValue)
+        }
     }
-    @Published var mediaRenameCaseStyle: MediaRenameCaseStyle = .titleCase {
-        didSet { handleMediaRenameSettingChanged(from: oldValue, to: mediaRenameCaseStyle) }
+    var mediaRenameCaseStyle: MediaRenameCaseStyle {
+        get { mediaFileCoordinator.mediaRenameCaseStyle }
+        set {
+            let oldValue = mediaFileCoordinator.mediaRenameCaseStyle
+            mediaFileCoordinator.mediaRenameCaseStyle = newValue
+            handleMediaRenameSettingChanged(from: oldValue, to: newValue)
+        }
     }
-    @Published var mediaRenameSort: MediaRenameSort = .name {
-        didSet { handleMediaRenameSettingChanged(from: oldValue, to: mediaRenameSort) }
+    var mediaRenameSort: MediaRenameSort {
+        get { mediaFileCoordinator.mediaRenameSort }
+        set {
+            let oldValue = mediaFileCoordinator.mediaRenameSort
+            mediaFileCoordinator.mediaRenameSort = newValue
+            handleMediaRenameSettingChanged(from: oldValue, to: newValue)
+        }
     }
-    @Published var mediaRenameStartIndex = 1 {
-        didSet { handleMediaRenameSettingChanged(from: oldValue, to: mediaRenameStartIndex) }
+    var mediaRenameStartIndex: Int {
+        get { mediaFileCoordinator.mediaRenameStartIndex }
+        set {
+            let oldValue = mediaFileCoordinator.mediaRenameStartIndex
+            mediaFileCoordinator.mediaRenameStartIndex = newValue
+            handleMediaRenameSettingChanged(from: oldValue, to: newValue)
+        }
     }
-    @Published var mediaRenameIndexStep = 1 {
-        didSet { handleMediaRenameSettingChanged(from: oldValue, to: mediaRenameIndexStep) }
+    var mediaRenameIndexStep: Int {
+        get { mediaFileCoordinator.mediaRenameIndexStep }
+        set {
+            let oldValue = mediaFileCoordinator.mediaRenameIndexStep
+            mediaFileCoordinator.mediaRenameIndexStep = newValue
+            handleMediaRenameSettingChanged(from: oldValue, to: newValue)
+        }
     }
-    @Published var mediaRenameIndexPadding = 2 {
-        didSet { handleMediaRenameSettingChanged(from: oldValue, to: mediaRenameIndexPadding) }
+    var mediaRenameIndexPadding: Int {
+        get { mediaFileCoordinator.mediaRenameIndexPadding }
+        set {
+            let oldValue = mediaFileCoordinator.mediaRenameIndexPadding
+            mediaFileCoordinator.mediaRenameIndexPadding = newValue
+            handleMediaRenameSettingChanged(from: oldValue, to: newValue)
+        }
     }
 
     @Published private(set) var selectedInputExtensions: Set<String> = AudioFormat.inputExtensions {
@@ -607,8 +720,7 @@ final class EncoderViewModel: ObservableObject {
     private var isLoadingPersistedSettings = false
     private let securityScopes = SecurityScopeManager()
     private let bookmarks = BookmarkStore()
-    private var mediaFileInventory: [MediaFileInventoryRecord] = []
-    private var mediaFileInventorySourceRootPaths: [String] = []
+    private var cancellables: Set<AnyCancellable> = []
 
     private lazy var encodingCoordinator = EncodingCoordinator(
         getJobs: { [weak self] in
@@ -693,75 +805,8 @@ final class EncoderViewModel: ObservableObject {
     )
 
     private lazy var mediaFileCoordinator = MediaFileCoordinator(
-        setCopyPlan: { [weak self] plan in
-            self?.mediaCopyPlan = plan
-        },
-        setDeletePlan: { [weak self] plan in
-            self?.mediaDeletePlan = plan
-        },
-        setRenamePlan: { [weak self] plan in
-            self?.mediaRenamePlan = plan
-        },
-        setRenamePreviewStale: { [weak self] isStale in
-            self?.isMediaRenamePreviewStale = isStale
-        },
-        setProgress: { [weak self] progress in
-            self?.mediaCopyProgress = progress
-        },
-        setScanning: { [weak self] isScanning in
-            self?.isMediaCopyScanning = isScanning
-        },
-        setCopying: { [weak self] isCopying in
-            self?.isMediaCopying = isCopying
-        },
-        setDeleting: { [weak self] isDeleting in
-            self?.isMediaDeleting = isDeleting
-        },
-        setRenaming: { [weak self] isRenaming in
-            self?.isMediaRenaming = isRenaming
-        },
-        setCurrentWorkflowID: { [weak self] workflowID in
-            self?.currentMediaCopyWorkflowID = workflowID
-        },
-        setRenameProgressVerb: { [weak self] verb in
-            self?.mediaRenameProgressVerb = verb
-        },
         setStatusMessage: { [weak self] message in
             self?.statusMessage = message
-        },
-        resetForCopyRun: { [weak self] in
-            self?.resetForMediaCopyCoordinatorRun()
-        },
-        getDeletePlan: { [weak self] in
-            self?.mediaDeletePlan
-        },
-        getRenamePlan: { [weak self] in
-            self?.mediaRenamePlan
-        },
-        getRenamePreviewStale: { [weak self] in
-            self?.isMediaRenamePreviewStale ?? false
-        },
-        getLastUndoTransaction: { [weak self] in
-            self?.mediaRenameUndoStack.last
-        },
-        getLastRedoTransaction: { [weak self] in
-            self?.mediaRenameRedoStack.last
-        },
-        setInventory: { [weak self] inventory, sourceRootPaths in
-            self?.mediaFileInventory = inventory
-            self?.mediaFileInventorySourceRootPaths = sourceRootPaths
-        },
-        getInventory: { [weak self] in
-            self?.mediaFileInventory ?? []
-        },
-        getInventorySourceRootPaths: { [weak self] in
-            self?.mediaFileInventorySourceRootPaths ?? []
-        },
-        getActiveMode: { [weak self] in
-            self?.fileManagementMode ?? .copy
-        },
-        makePreviewConfiguration: { [weak self] in
-            self?.mediaPreviewConfiguration ?? MediaPreviewConfiguration.empty
         },
         validateFolders: { [weak self] sourceRoot, destinationRoot in
             self?.validateMediaCopyFolders(
@@ -811,21 +856,8 @@ final class EncoderViewModel: ObservableObject {
             self?.jobs.removeAll()
             self?.jobStateFilter = nil
         },
-        pushRenameUndoTransaction: { [weak self] transaction in
-            self?.pushMediaRenameUndoTransaction(transaction)
-        },
-        pushRenameRedoTransaction: { [weak self] transaction in
-            self?.pushMediaRenameRedoTransaction(transaction)
-        },
-        clearRenameRedoStack: { [weak self] in
-            self?.mediaRenameRedoStack.removeAll()
-        },
-        completeRenameHistoryAction: { [weak self] transaction, direction, result in
-            self?.completeMediaRenameHistoryAction(
-                transaction,
-                direction: direction,
-                result: result
-            )
+        persistRenameHistory: { [weak self] in
+            self?.persistMediaRenameHistory()
         },
         notifyCompletion: { [weak self] title, body in
             self?.notifyCompletionIfNeeded(title: title, body: body)
@@ -1562,7 +1594,7 @@ final class EncoderViewModel: ObservableObject {
     }
 
     var primaryMediaCopySourceRoot: URL? {
-        mediaCopySourceRoots.first
+        mediaFileCoordinator.primaryMediaCopySourceRoot
     }
 
     var mediaCopySourceSummary: String {
@@ -1650,33 +1682,15 @@ final class EncoderViewModel: ObservableObject {
     }
 
     private var currentMediaCopySelectedExtensions: Set<String> {
-        selectedExtensions(for: mediaCopyFilter) ?? []
+        mediaFileCoordinator.currentMediaCopySelectedExtensions
     }
 
     private var currentMediaFileNameFilter: MediaFileNameFilter {
-        MediaFileNameFilter(query: mediaFileNameFilterQuery)
-    }
-
-    private var mediaCopyRunConfiguration: MediaCopyRunConfiguration {
-        MediaCopyRunConfiguration(
-            sourceRoot: primaryMediaCopySourceRoot,
-            destinationRoot: mediaCopyDestinationRoot,
-            filter: mediaCopyFilter,
-            selectedExtensions: selectedExtensions(for: mediaCopyFilter),
-            fileNameFilter: currentMediaFileNameFilter,
-            previewLimit: Self.mediaPreviewLimit
-        )
+        mediaFileCoordinator.currentMediaFileNameFilter
     }
 
     private var mediaPreviewConfiguration: MediaPreviewConfiguration {
-        MediaPreviewConfiguration(
-            sourceRoots: mediaCopySourceRoots,
-            filter: mediaCopyFilter,
-            selectedExtensions: selectedExtensions(for: mediaCopyFilter),
-            fileNameFilter: currentMediaFileNameFilter,
-            renameSettings: currentMediaRenameSettings(),
-            previewLimit: Self.mediaPreviewLimit
-        )
+        mediaFileCoordinator.mediaPreviewConfiguration
     }
 
     private var syncSelectedFileExtensions: Set<String>? {
@@ -1717,33 +1731,19 @@ final class EncoderViewModel: ObservableObject {
     }
 
     private var mediaCopyHasSelectedExtensionsForCurrentFilter: Bool {
-        !mediaCopyFilter.supportsExtensionSelection || !currentMediaCopySelectedExtensions.isEmpty
+        mediaFileCoordinator.mediaCopyHasSelectedExtensionsForCurrentFilter
     }
 
     private var currentMediaCopySourceRootPaths: [String] {
-        mediaCopySourceRoots.map { $0.standardizedFileURL.path }
+        mediaFileCoordinator.currentMediaCopySourceRootPaths
     }
 
     private var mediaFileInventoryMatchesCurrentSources: Bool {
-        !mediaCopySourceRoots.isEmpty
-            && mediaFileInventorySourceRootPaths == currentMediaCopySourceRootPaths
+        mediaFileCoordinator.mediaFileInventoryMatchesCurrentSources
     }
 
     private func currentMediaRenameSettings() -> MediaRenameSettings {
-        MediaRenameSettings(
-            operation: mediaRenameOperation,
-            pattern: mediaRenamePattern,
-            findText: mediaRenameFindText,
-            replacementText: mediaRenameReplacementText,
-            isCaseSensitive: mediaRenameIsCaseSensitive,
-            addedText: mediaRenameAddedText,
-            textPlacement: mediaRenameTextPlacement,
-            caseStyle: mediaRenameCaseStyle,
-            sort: mediaRenameSort,
-            startIndex: mediaRenameStartIndex,
-            indexStep: mediaRenameIndexStep,
-            indexPadding: mediaRenameIndexPadding
-        )
+        mediaFileCoordinator.currentMediaRenameSettings()
     }
 
     var activeFilterStatusMessage: String {
@@ -1823,6 +1823,11 @@ final class EncoderViewModel: ObservableObject {
     }
 
     init() {
+        mediaFileCoordinator.objectWillChange
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+            .store(in: &cancellables)
         loadPersistedSettings()
         refreshFFmpeg()
         refreshNotificationPermission()
@@ -2573,8 +2578,7 @@ final class EncoderViewModel: ObservableObject {
         guard canClearMediaCopySources else { return }
         mediaFileCoordinator.cancelFileNameFilterRefresh()
         mediaCopySourceRoots = []
-        mediaFileInventory = []
-        mediaFileInventorySourceRootPaths = []
+        mediaFileCoordinator.clearInventory()
         mediaCopyPlan = nil
         mediaDeletePlan = nil
         mediaRenamePlan = nil
@@ -2823,11 +2827,11 @@ final class EncoderViewModel: ObservableObject {
     }
 
     func scanMediaCopyFiles() {
-        mediaFileCoordinator.scanCopyFiles(configuration: mediaCopyRunConfiguration)
+        mediaFileCoordinator.scanCopyFiles()
     }
 
     func copyFilteredMediaFiles() {
-        mediaFileCoordinator.copyFilteredFiles(configuration: mediaCopyRunConfiguration)
+        mediaFileCoordinator.copyFilteredFiles()
     }
 
     func deleteFilteredMediaFiles() {
@@ -4846,14 +4850,7 @@ final class EncoderViewModel: ObservableObject {
     }
 
     private func selectedExtensions(for filter: MediaFileFilter) -> Set<String>? {
-        switch filter {
-        case .all:
-            nil
-        case .audio:
-            mediaCopyAudioExtensions
-        case .video:
-            mediaCopyVideoExtensions
-        }
+        mediaFileCoordinator.selectedExtensions(for: filter)
     }
 
     private var currentSupportedInputExtensions: Set<String> {
@@ -5189,8 +5186,7 @@ final class EncoderViewModel: ObservableObject {
         guard !isLoadingPersistedSettings else { return }
 
         if mediaCopySourceRoots.isEmpty {
-            mediaFileInventory = []
-            mediaFileInventorySourceRootPaths = []
+            mediaFileCoordinator.clearInventory()
             mediaDeletePlan = nil
             mediaRenamePlan = nil
             isMediaRenamePreviewStale = false
