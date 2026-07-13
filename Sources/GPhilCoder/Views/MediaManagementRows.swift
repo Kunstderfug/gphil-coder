@@ -25,7 +25,7 @@ struct MediaCopyCandidateRow: View {
                         .truncationMode(.middle)
 
                     if candidate.hasDestinationConflict {
-                        Text("EXISTS")
+                        Text("CONFLICT")
                             .font(.caption2.weight(.bold))
                             .foregroundStyle(.orange)
                             .padding(.horizontal, 6)
@@ -48,6 +48,12 @@ struct MediaCopyCandidateRow: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
+
+                Text("Source: \(candidate.sourceRoot.path(percentEncoded: false))")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
         }
         .padding(12)
@@ -63,6 +69,10 @@ struct MediaCopyCandidateRow: View {
                         : Color(nsColor: .separatorColor).opacity(0.35)
                 )
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(
+            "\(candidate.name), source \(candidate.sourceRoot.lastPathComponent), destination \(candidate.destinationURL.path(percentEncoded: false))"
+        )
     }
 }
 
@@ -232,6 +242,7 @@ struct MediaCopyWorkflowRow: View {
     let workflow: MediaCopyWorkflow
     let isRunning: Bool
     let canModify: Bool
+    let repair: () -> Void
     let remove: () -> Void
 
     var body: some View {
@@ -276,6 +287,12 @@ struct MediaCopyWorkflowRow: View {
                             .lineLimit(1)
                     }
 
+                    if !workflow.repairIssues.isEmpty {
+                        Text("NEEDS REPAIR")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.orange)
+                    }
+
                     Spacer()
 
                     Text(workflow.createdAt, style: .date)
@@ -283,23 +300,58 @@ struct MediaCopyWorkflowRow: View {
                         .foregroundStyle(.secondary)
                 }
 
-                Text("\(workflow.sourceRoot.path(percentEncoded: false)) -> \(workflow.destinationRootPreservingSourceFolder.path(percentEncoded: false))")
+                Text(
+                    "\(workflow.sourceRoots.count) source folder\(workflow.sourceRoots.count == 1 ? "" : "s") -> \(workflow.destinationRoot.path(percentEncoded: false))"
+                )
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
                     .truncationMode(.middle)
                     .textSelection(.enabled)
+
+                Text(workflow.destinationLayout.title)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                ForEach(Array(workflow.sourceRoots.enumerated()), id: \.offset) { _, sourceRoot in
+                    let resolvedDestination = workflow.destinationLayout.resolvedDestinationRoot(
+                        for: sourceRoot,
+                        destinationRoot: workflow.destinationRoot
+                    )
+                    Text(
+                        "\(sourceRoot.path(percentEncoded: false)) → \(resolvedDestination.path(percentEncoded: false))"
+                    )
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+                }
             }
 
-            Button {
-                remove()
-            } label: {
-                Image(systemName: "xmark")
+            VStack(spacing: 8) {
+                if !workflow.repairIssues.isEmpty {
+                    Button {
+                        repair()
+                    } label: {
+                        Image(systemName: "wrench.and.screwdriver")
+                    }
+                    .buttonStyle(.gphilHoverBorderless)
+                    .foregroundStyle(.orange)
+                    .disabled(!canModify)
+                    .help("Relink missing source or destination folders")
+                }
+
+                Button {
+                    remove()
+                } label: {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.gphilHoverBorderless)
+                .foregroundStyle(.secondary)
+                .disabled(!canModify)
+                .help("Remove from queue")
             }
-            .buttonStyle(.gphilHoverBorderless)
-            .foregroundStyle(.secondary)
-            .disabled(!canModify)
-            .help("Remove from queue")
         }
         .padding(12)
         .background(

@@ -150,25 +150,35 @@ public enum MediaCopyItemResult: Equatable, Sendable {
 public struct MediaCopyCandidate: Identifiable, Hashable, Sendable {
     public let id: String
     public let sourceURL: URL
+    public let sourceRoot: URL
     public let destinationURL: URL
     public let relativePath: String
     public let fileSizeBytes: Int64
     public let hasDestinationConflict: Bool
+    public let isPackage: Bool
+    public let sourceEvidence: MediaCopyPathEvidence
 
     public init(
         id: String,
         sourceURL: URL,
+        sourceRoot: URL,
         destinationURL: URL,
         relativePath: String,
         fileSizeBytes: Int64,
-        hasDestinationConflict: Bool
+        hasDestinationConflict: Bool,
+        isPackage: Bool = false,
+        sourceEvidence: MediaCopyPathEvidence? = nil
     ) {
         self.id = id
         self.sourceURL = sourceURL
+        self.sourceRoot = sourceRoot
         self.destinationURL = destinationURL
         self.relativePath = relativePath
         self.fileSizeBytes = fileSizeBytes
         self.hasDestinationConflict = hasDestinationConflict
+        self.isPackage = isPackage
+        self.sourceEvidence = sourceEvidence
+            ?? MediaCopyPathEvidence.capture(at: sourceURL, recursively: isPackage)
     }
 
     public var name: String {
@@ -178,6 +188,20 @@ public struct MediaCopyCandidate: Identifiable, Hashable, Sendable {
     public var relativeDirectory: String? {
         let directory = (relativePath as NSString).deletingLastPathComponent
         return directory.isEmpty ? nil : directory
+    }
+
+    public func markingDestinationConflict() -> Self {
+        Self(
+            id: id,
+            sourceURL: sourceURL,
+            sourceRoot: sourceRoot,
+            destinationURL: destinationURL,
+            relativePath: relativePath,
+            fileSizeBytes: fileSizeBytes,
+            hasDestinationConflict: true,
+            isPackage: isPackage,
+            sourceEvidence: sourceEvidence
+        )
     }
 }
 
@@ -261,6 +285,9 @@ public struct MediaCopyPlan: Sendable {
     public let candidateCount: Int
     public let totalSizeBytes: Int64
     public let conflictCount: Int
+    public let plannedDestinationPaths: [String]
+    public let plannedDestinations: [MediaCopyPlannedDestination]
+    public let plannedDirectoryPaths: [String]
     public let scannedAt: Date
 
     public init(
@@ -274,6 +301,9 @@ public struct MediaCopyPlan: Sendable {
         candidateCount: Int? = nil,
         totalSizeBytes: Int64? = nil,
         conflictCount: Int? = nil,
+        plannedDestinationPaths: [String]? = nil,
+        plannedDestinations: [MediaCopyPlannedDestination]? = nil,
+        plannedDirectoryPaths: [String]? = nil,
         scannedAt: Date
     ) {
         self.sourceRoot = sourceRoot
@@ -286,6 +316,20 @@ public struct MediaCopyPlan: Sendable {
         self.candidateCount = candidateCount ?? candidates.count
         self.totalSizeBytes = totalSizeBytes ?? candidates.reduce(0) { $0 + $1.fileSizeBytes }
         self.conflictCount = conflictCount ?? candidates.filter(\.hasDestinationConflict).count
+        self.plannedDestinationPaths =
+            plannedDestinationPaths ?? candidates.map { $0.destinationURL.standardizedFileURL.path }
+        self.plannedDestinations = plannedDestinations
+            ?? candidates.map {
+                MediaCopyPlannedDestination(
+                    path: $0.destinationURL.standardizedFileURL.path,
+                    kind: $0.isPackage ? .package : .file
+                )
+            }
+        self.plannedDirectoryPaths = plannedDirectoryPaths
+            ?? relativeDirectories.map {
+                destinationRoot.appendingPathComponent($0, isDirectory: true)
+                    .standardizedFileURL.path
+            }
         self.scannedAt = scannedAt
     }
 
@@ -395,6 +439,11 @@ public struct MediaCopyResult: Sendable {
     public var failedDirectories: Int
     public var failedDirectoryNames: [String]
     public var cancelled: Bool
+    public var rejected: Bool
+    public var stalePlan: Bool
+    public var rollbackFailed: Bool
+    public var recoveryPath: String?
+    public var appliedDestinationEvidence: [String: MediaCopyPathEvidence]
 
     public init(
         total: Int = 0,
@@ -405,7 +454,12 @@ public struct MediaCopyResult: Sendable {
         createdDirectories: Int = 0,
         failedDirectories: Int = 0,
         failedDirectoryNames: [String] = [],
-        cancelled: Bool = false
+        cancelled: Bool = false,
+        rejected: Bool = false,
+        stalePlan: Bool = false,
+        rollbackFailed: Bool = false,
+        recoveryPath: String? = nil,
+        appliedDestinationEvidence: [String: MediaCopyPathEvidence] = [:]
     ) {
         self.total = total
         self.copied = copied
@@ -416,86 +470,11 @@ public struct MediaCopyResult: Sendable {
         self.failedDirectories = failedDirectories
         self.failedDirectoryNames = failedDirectoryNames
         self.cancelled = cancelled
-    }
-}
-
-public struct MediaCopyWorkflow: Codable, Hashable, Identifiable, Sendable {
-    private enum CodingKeys: String, CodingKey {
-        case id
-        case sourceRoot
-        case destinationRoot
-        case filter
-        case selectedExtensions
-        case fileNameFilter
-        case createdAt
-    }
-
-    public let id: UUID
-    public var sourceRoot: URL
-    public var destinationRoot: URL
-    public var filter: MediaFileFilter
-    public var selectedExtensions: Set<String>?
-    public var fileNameFilter: MediaFileNameFilter
-    public var createdAt: Date
-
-    public init(
-        id: UUID = UUID(),
-        sourceRoot: URL,
-        destinationRoot: URL,
-        filter: MediaFileFilter,
-        selectedExtensions: Set<String>? = nil,
-        fileNameFilter: MediaFileNameFilter = MediaFileNameFilter(),
-        createdAt: Date = Date()
-    ) {
-        self.id = id
-        self.sourceRoot = sourceRoot
-        self.destinationRoot = destinationRoot
-        self.filter = filter
-        self.selectedExtensions = selectedExtensions
-        self.fileNameFilter = fileNameFilter
-        self.createdAt = createdAt
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        id = try container.decode(UUID.self, forKey: .id)
-        sourceRoot = try container.decode(URL.self, forKey: .sourceRoot)
-        destinationRoot = try container.decode(URL.self, forKey: .destinationRoot)
-        filter = try container.decode(MediaFileFilter.self, forKey: .filter)
-        selectedExtensions = try container.decodeIfPresent(Set<String>.self, forKey: .selectedExtensions)
-        fileNameFilter =
-            try container.decodeIfPresent(MediaFileNameFilter.self, forKey: .fileNameFilter)
-            ?? MediaFileNameFilter()
-        createdAt = try container.decode(Date.self, forKey: .createdAt)
-    }
-
-    public var destinationRootPreservingSourceFolder: URL {
-        let sourceFolderName = sourceRoot.lastPathComponent
-        guard !sourceFolderName.isEmpty else { return destinationRoot }
-
-        if destinationRoot.lastPathComponent == sourceFolderName {
-            return destinationRoot
-        }
-
-        return destinationRoot.appendingPathComponent(sourceFolderName, isDirectory: true)
-    }
-}
-
-public struct MediaCopyJobDocument: Codable, Sendable {
-    public static let currentVersion = 1
-
-    public let version: Int
-    public let savedAt: Date
-    public let workflows: [MediaCopyWorkflow]
-
-    public init(
-        version: Int = Self.currentVersion,
-        savedAt: Date = Date(),
-        workflows: [MediaCopyWorkflow]
-    ) {
-        self.version = version
-        self.savedAt = savedAt
-        self.workflows = workflows
+        self.rejected = rejected
+        self.stalePlan = stalePlan
+        self.rollbackFailed = rollbackFailed
+        self.recoveryPath = recoveryPath
+        self.appliedDestinationEvidence = appliedDestinationEvidence
     }
 }
 
@@ -632,8 +611,15 @@ public enum MediaCopyPlanner {
         var candidateCount = 0
         var totalSizeBytes: Int64 = 0
         var conflictCount = 0
+        var plannedDestinationPaths: [String] = []
+        var plannedDestinations: [MediaCopyPlannedDestination] = []
         let fileManager = FileManager.default
-        let keys: [URLResourceKey] = [.isDirectoryKey, .isRegularFileKey, .fileSizeKey]
+        let keys: [URLResourceKey] = [
+            .isDirectoryKey,
+            .isRegularFileKey,
+            .isPackageKey,
+            .fileSizeKey,
+        ]
 
         guard
             let enumerator = fileManager.enumerator(
@@ -649,6 +635,54 @@ public enum MediaCopyPlanner {
             try Task.checkCancellation()
 
             let values = try? sourceURL.resourceValues(forKeys: Set(keys))
+
+            if values?.isPackage == true {
+                guard filter == .all,
+                    fileNameFilter.matches(fileName: sourceURL.lastPathComponent),
+                    let relativeComponents = relativePathComponents(
+                        for: sourceURL,
+                        sourceRoot: sourceRoot
+                    )
+                else {
+                    continue
+                }
+
+                let destinationURL = appendingPathComponents(
+                    relativeComponents,
+                    to: destinationRoot
+                )
+                let relativePath = relativeComponents.joined(separator: "/")
+                let destinationConflict = fileManager.fileExists(atPath: destinationURL.path)
+                let packageSize = try recursiveFileSize(at: sourceURL)
+                plannedDestinationPaths.append(destinationURL.standardizedFileURL.path)
+                plannedDestinations.append(
+                    MediaCopyPlannedDestination(
+                        path: destinationURL.standardizedFileURL.path,
+                        kind: .package
+                    )
+                )
+
+                candidateCount += 1
+                totalSizeBytes += packageSize
+                if destinationConflict {
+                    conflictCount += 1
+                }
+                if candidateLimit.map({ candidates.count < $0 }) ?? true {
+                    candidates.append(
+                        MediaCopyCandidate(
+                            id: sourceURL.standardizedFileURL.path,
+                            sourceURL: sourceURL,
+                            sourceRoot: sourceRoot,
+                            destinationURL: destinationURL,
+                            relativePath: relativePath,
+                            fileSizeBytes: packageSize,
+                            hasDestinationConflict: destinationConflict,
+                            isPackage: true
+                        )
+                    )
+                }
+                continue
+            }
 
             if filter == .all, !fileNameFilter.isActive, values?.isDirectory == true,
                 let relativeComponents = relativePathComponents(
@@ -680,6 +714,13 @@ public enum MediaCopyPlanner {
             )
             let relativePath = relativeComponents.joined(separator: "/")
             let destinationConflict = fileManager.fileExists(atPath: destinationURL.path)
+            plannedDestinationPaths.append(destinationURL.standardizedFileURL.path)
+            plannedDestinations.append(
+                MediaCopyPlannedDestination(
+                    path: destinationURL.standardizedFileURL.path,
+                    kind: .file
+                )
+            )
 
             candidateCount += 1
             totalSizeBytes += values?.fileSize.map(Int64.init) ?? 0
@@ -692,10 +733,12 @@ public enum MediaCopyPlanner {
                     MediaCopyCandidate(
                         id: sourceURL.standardizedFileURL.path,
                         sourceURL: sourceURL,
+                        sourceRoot: sourceRoot,
                         destinationURL: destinationURL,
                         relativePath: relativePath,
                         fileSizeBytes: values?.fileSize.map(Int64.init) ?? 0,
-                        hasDestinationConflict: destinationConflict
+                        hasDestinationConflict: destinationConflict,
+                        isPackage: false
                     )
                 )
             }
@@ -719,6 +762,8 @@ public enum MediaCopyPlanner {
             candidateCount: candidateCount,
             totalSizeBytes: totalSizeBytes,
             conflictCount: conflictCount,
+            plannedDestinationPaths: plannedDestinationPaths,
+            plannedDestinations: plannedDestinations,
             scannedAt: Date()
         )
     }
@@ -773,14 +818,31 @@ public enum MediaCopyPlanner {
             )
 
             if destinationExists && isDirectory.boolValue {
-                return .failed(candidate.relativePath)
+                guard candidate.isPackage else { return .failed(candidate.relativePath) }
             }
 
             if destinationExists && conflictResolution == .skipExisting {
                 return .skippedExisting
             }
 
-            if destinationExists {
+            if candidate.isPackage {
+                let tempURL = destinationDirectory.appendingPathComponent(
+                    ".gphilcoder-\(UUID().uuidString).tmp-package",
+                    isDirectory: true
+                )
+                temporaryURL = tempURL
+                try fileManager.copyItem(at: candidate.sourceURL, to: tempURL)
+                if destinationExists {
+                    _ = try fileManager.replaceItemAt(
+                        candidate.destinationURL,
+                        withItemAt: tempURL,
+                        backupItemName: nil,
+                        options: []
+                    )
+                } else {
+                    try fileManager.moveItem(at: tempURL, to: candidate.destinationURL)
+                }
+            } else if destinationExists {
                 let tempURL = destinationDirectory.appendingPathComponent(
                     ".gphilcoder-\(UUID().uuidString).tmp",
                     isDirectory: false
@@ -820,6 +882,26 @@ public enum MediaCopyPlanner {
         }
 
         return Array(itemComponents.dropFirst(rootComponents.count))
+    }
+
+    private static func recursiveFileSize(at root: URL) throws -> Int64 {
+        let keys: [URLResourceKey] = [.isRegularFileKey, .fileSizeKey]
+        guard let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: keys
+        ) else {
+            throw CocoaError(.fileReadNoSuchFile)
+        }
+
+        var total: Int64 = 0
+        for case let url as URL in enumerator {
+            try Task.checkCancellation()
+            let values = try? url.resourceValues(forKeys: Set(keys))
+            if values?.isRegularFile == true {
+                total += values?.fileSize.map(Int64.init) ?? 0
+            }
+        }
+        return total
     }
 
     static func appendingPathComponents(

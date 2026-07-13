@@ -71,7 +71,11 @@ struct GPhilCoderApp: App {
                     }
                 }
                 .keyboardShortcut(".", modifiers: [.command])
-                .disabled(!encoder.isEncoding && !encoder.isMediaCopyBusy && !encoder.isFolderSyncBusy)
+                .disabled(
+                    !encoder.isEncoding
+                        && !encoder.canCancelMediaCopy
+                        && !encoder.isFolderSyncBusy
+                )
 
                 Divider()
 

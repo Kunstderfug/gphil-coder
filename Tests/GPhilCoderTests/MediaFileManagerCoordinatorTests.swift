@@ -48,6 +48,43 @@ final class MediaFileManagerCoordinatorTests: XCTestCase {
         XCTAssertEqual(model.activeMediaActionName, "copy")
     }
 
+    func testScanMediaCopyFilesIncludesEverySelectedSourceUsingSourceFolderLayout() async throws {
+        let workspace = try makeTemporaryDirectory()
+        let firstSource = try makeDirectory("FirstSource", in: workspace)
+        let secondSource = try makeDirectory("SecondSource", in: workspace)
+        let destination = try makeDirectory("Destination", in: workspace)
+        try writeFile("Audio/first.wav", in: firstSource, contents: "first")
+        try writeFile("Audio/second.wav", in: secondSource, contents: "second")
+
+        let model = makeMediaFileManagerModel()
+        model.mediaCopySourceRoots = [firstSource, secondSource]
+        model.mediaCopyDestinationRoot = destination
+        model.mediaCopyFilter = .audio
+        model.deselectAllMediaCopyExtensions()
+        model.setMediaCopyExtension("wav", enabled: true)
+
+        model.scanMediaCopyFiles()
+
+        let scanned = await waitUntil {
+            !model.isMediaCopyBusy && model.mediaCopyMatchedCount == 2
+        }
+        XCTAssertTrue(scanned)
+        XCTAssertEqual(
+            Set(model.mediaCopyPreviewItems.map { $0.sourceURL.standardizedFileURL.path }),
+            Set([
+                firstSource.appendingPathComponent("Audio/first.wav").standardizedFileURL.path,
+                secondSource.appendingPathComponent("Audio/second.wav").standardizedFileURL.path,
+            ])
+        )
+        XCTAssertEqual(
+            Set(model.mediaCopyPreviewItems.map { $0.destinationURL.standardizedFileURL.path }),
+            Set([
+                destination.appendingPathComponent("FirstSource/Audio/first.wav").standardizedFileURL.path,
+                destination.appendingPathComponent("SecondSource/Audio/second.wav").standardizedFileURL.path,
+            ])
+        )
+    }
+
     func testCopyFilteredMediaFilesCopiesNestedAudioWithoutShowingConflictPrompt() async throws {
         let workspace = try makeTemporaryDirectory()
         let source = try makeDirectory("Source", in: workspace)
@@ -73,23 +110,85 @@ final class MediaFileManagerCoordinatorTests: XCTestCase {
         XCTAssertTrue(copied)
         XCTAssertEqual(
             try String(
-                contentsOf: destination.appendingPathComponent("Audio/Day 1/take.wav"),
+                contentsOf: destination.appendingPathComponent("Source/Audio/Day 1/take.wav"),
                 encoding: .utf8
             ),
             "source audio"
         )
         XCTAssertFalse(
             FileManager.default.fileExists(
-                atPath: destination.appendingPathComponent("Video/Day 1/clip.mov").path
+                atPath: destination.appendingPathComponent("Source/Video/Day 1/clip.mov").path
             )
         )
         XCTAssertFalse(
             FileManager.default.fileExists(
-                atPath: destination.appendingPathComponent("Notes/readme.txt").path
+                atPath: destination.appendingPathComponent("Source/Notes/readme.txt").path
             )
         )
         XCTAssertEqual(model.mediaCopyProgress?.skippedExisting, 0)
         XCTAssertEqual(model.statusMessage, "Copied 1 audio file to Destination.")
+    }
+
+    func testCopyNowUsesExplicitMergeContentsLayoutAcrossAllSources() async throws {
+        let workspace = try makeTemporaryDirectory()
+        let firstSource = try makeDirectory("FirstSource", in: workspace)
+        let secondSource = try makeDirectory("SecondSource", in: workspace)
+        let destination = try makeDirectory("Destination", in: workspace)
+        try writeFile("Audio/first.wav", in: firstSource, contents: "first")
+        try writeFile("Audio/second.wav", in: secondSource, contents: "second")
+
+        let model = makeMediaFileManagerModel()
+        model.mediaCopySourceRoots = [firstSource, secondSource]
+        model.mediaCopyDestinationRoot = destination
+        model.mediaCopyDestinationLayout = .mergeContents
+        model.mediaCopyFilter = .audio
+        model.deselectAllMediaCopyExtensions()
+        model.setMediaCopyExtension("wav", enabled: true)
+
+        model.copyFilteredMediaFiles()
+
+        let copied = await waitUntil(timeout: 5) {
+            !model.isMediaCopyBusy && model.mediaCopyProgress?.copied == 2
+        }
+        XCTAssertTrue(copied)
+        XCTAssertEqual(
+            try String(contentsOf: destination.appendingPathComponent("Audio/first.wav")),
+            "first"
+        )
+        XCTAssertEqual(
+            try String(contentsOf: destination.appendingPathComponent("Audio/second.wav")),
+            "second"
+        )
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: destination.appendingPathComponent("FirstSource/Audio/first.wav").path
+            )
+        )
+    }
+
+    func testCopyPreflightValidatesLayoutResolvedDestination() throws {
+        let workspace = try makeTemporaryDirectory()
+        let selectedDestination = try makeDirectory("Parent", in: workspace)
+        let source = try makeDirectory("Parent/Session", in: workspace)
+        try writeFile("take.wav", in: source, contents: "audio")
+
+        let model = makeMediaFileManagerModel()
+        model.mediaCopySourceRoots = [source]
+        model.mediaCopyDestinationRoot = selectedDestination
+        model.mediaCopyDestinationLayout = .sourceFolders
+        var validatedDestination: URL?
+        model.mediaCopyFolderValidationHandler = { _, destination in
+            validatedDestination = destination
+            return false
+        }
+
+        model.copyFilteredMediaFiles()
+
+        XCTAssertEqual(
+            validatedDestination?.standardizedFileURL.path,
+            source.standardizedFileURL.path
+        )
+        XCTAssertFalse(model.isMediaCopyBusy)
     }
 
     func testScanMediaCopyFilesReportsDestinationConflictsWithoutChangingFiles() async throws {
@@ -97,7 +196,7 @@ final class MediaFileManagerCoordinatorTests: XCTestCase {
         let source = try makeDirectory("Source", in: workspace)
         let destination = try makeDirectory("Destination", in: workspace)
         try writeFile("Audio/take.wav", in: source, contents: "new source")
-        try writeFile("Audio/take.wav", in: destination, contents: "existing destination")
+        try writeFile("Source/Audio/take.wav", in: destination, contents: "existing destination")
 
         let model = makeMediaFileManagerModel()
         model.mediaCopySourceRoots = [source]
@@ -115,10 +214,43 @@ final class MediaFileManagerCoordinatorTests: XCTestCase {
         XCTAssertEqual(model.mediaCopyPreviewItems.first?.hasDestinationConflict, true)
         XCTAssertEqual(
             try String(
-                contentsOf: destination.appendingPathComponent("Audio/take.wav"),
+                contentsOf: destination.appendingPathComponent("Source/Audio/take.wav"),
                 encoding: .utf8
             ),
             "existing destination"
+        )
+    }
+
+    func testCopyNowConflictDenialLeavesDestinationUnchanged() async throws {
+        let workspace = try makeTemporaryDirectory()
+        let source = try makeDirectory("Source", in: workspace)
+        let destination = try makeDirectory("Destination", in: workspace)
+        try writeFile("Audio/take.wav", in: source, contents: "new source")
+        try writeFile("Source/Audio/take.wav", in: destination, contents: "existing destination")
+
+        let model = makeMediaFileManagerModel()
+        model.mediaCopySourceRoots = [source]
+        model.mediaCopyDestinationRoot = destination
+        model.mediaCopyFilter = .audio
+        model.mediaCopyConflictResolutionHandler = { _ in nil }
+
+        model.copyFilteredMediaFiles()
+
+        let denied = await waitUntil {
+            !model.isMediaCopyBusy && model.statusMessage == "Media copy cancelled."
+        }
+        XCTAssertTrue(denied)
+        XCTAssertEqual(
+            try String(
+                contentsOf: destination.appendingPathComponent("Source/Audio/take.wav"),
+                encoding: .utf8
+            ),
+            "existing destination"
+        )
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(atPath: destination.path)
+                .filter { $0.hasPrefix(".gphilcoder-copy-") },
+            []
         )
     }
 
@@ -139,14 +271,14 @@ final class MediaFileManagerCoordinatorTests: XCTestCase {
         model.setMediaCopyExtension("wav", enabled: true)
 
         model.addCurrentMediaCopyWorkflowToQueue()
-        XCTAssertEqual(model.mediaCopyQueueTotalCount, 2)
+        XCTAssertEqual(model.mediaCopyQueueTotalCount, 1)
 
         model.runMediaCopyQueue()
 
         let copied = await waitUntil(timeout: 5) {
             !model.isMediaCopyBusy
-                && model.mediaCopyProgress?.copied == 1
-                && model.statusMessage.hasPrefix("Finished 2 file copy workflows: 2 copied.")
+                && model.mediaCopyProgress?.copied == 2
+                && model.statusMessage.hasPrefix("Finished 1 file copy workflow: 2 copied.")
         }
         XCTAssertTrue(copied)
         XCTAssertEqual(
@@ -169,6 +301,301 @@ final class MediaFileManagerCoordinatorTests: XCTestCase {
             )
         )
         XCTAssertNil(model.currentMediaCopyWorkflowID)
+    }
+
+    func testQueuedMergeWorkflowsSharingNewParentDoNotRejectOwnedChangesAsStale() async throws {
+        let workspace = try makeTemporaryDirectory()
+        let firstSource = try makeDirectory("FirstSource", in: workspace)
+        let secondSource = try makeDirectory("SecondSource", in: workspace)
+        let destination = try makeDirectory("Destination", in: workspace)
+        try writeFile("Audio/first.wav", in: firstSource, contents: "first")
+        try writeFile("Audio/second.wav", in: secondSource, contents: "second")
+        let workflows = [firstSource, secondSource].map { source in
+            MediaCopyWorkflow(
+                sourceRoots: [source],
+                destinationRoot: destination,
+                destinationLayout: .mergeContents,
+                filter: .audio
+            )
+        }
+        let model = makeMediaFileManagerModel()
+        model.replaceMediaCopyQueue(with: workflows)
+
+        model.runMediaCopyQueue()
+
+        let copied = await waitUntil(timeout: 5) {
+            !model.isMediaCopyBusy
+                && model.statusMessage.hasPrefix("Finished 2 file copy workflows: 2 copied.")
+        }
+        XCTAssertTrue(copied)
+        XCTAssertEqual(
+            try String(contentsOf: destination.appendingPathComponent("Audio/first.wav")),
+            "first"
+        )
+        XCTAssertEqual(
+            try String(contentsOf: destination.appendingPathComponent("Audio/second.wav")),
+            "second"
+        )
+    }
+
+    func testQueuedWorkflowPromptIncludesCrossWorkflowDestinationCollisions() async throws {
+        let workspace = try makeTemporaryDirectory()
+        let firstSource = try makeDirectory("FirstSource", in: workspace)
+        let secondSource = try makeDirectory("SecondSource", in: workspace)
+        let destination = try makeDirectory("Destination", in: workspace)
+        try writeFile("Audio/take.wav", in: firstSource, contents: "first")
+        try writeFile("Audio/take.wav", in: secondSource, contents: "second")
+        let workflows = [firstSource, secondSource].map { source in
+            MediaCopyWorkflow(
+                sourceRoots: [source],
+                destinationRoot: destination,
+                destinationLayout: .mergeContents,
+                filter: .audio
+            )
+        }
+        let model = makeMediaFileManagerModel()
+        model.replaceMediaCopyQueue(with: workflows)
+        var reviewedConflictCount = 0
+        model.mediaCopyConflictResolutionHandler = { plans in
+            reviewedConflictCount = plans.reduce(0) { $0 + $1.conflictCount }
+            return .skipExisting
+        }
+
+        model.runMediaCopyQueue()
+
+        let finished = await waitUntil(timeout: 5) { !model.isMediaCopyBusy }
+        XCTAssertTrue(finished)
+        XCTAssertEqual(reviewedConflictCount, 2)
+        XCTAssertEqual(
+            try String(contentsOf: destination.appendingPathComponent("Audio/take.wav")),
+            "first"
+        )
+    }
+
+    func testLaterStaleQueuedWorkflowRollsBackEarlierCompletedCopies() async throws {
+        let workspace = try makeTemporaryDirectory()
+        let firstSource = try makeDirectory("FirstSource", in: workspace)
+        let secondSource = try makeDirectory("SecondSource", in: workspace)
+        let firstDestination = try makeDirectory("FirstDestination", in: workspace)
+        let secondDestination = try makeDirectory("SecondDestination", in: workspace)
+        try writeFile("Audio/first.wav", in: firstSource, contents: "first")
+        try writeFile("Audio/second.wav", in: secondSource, contents: "second")
+        let workflows = [
+            MediaCopyWorkflow(
+                sourceRoots: [firstSource],
+                destinationRoot: firstDestination,
+                destinationLayout: .mergeContents,
+                filter: .audio
+            ),
+            MediaCopyWorkflow(
+                sourceRoots: [secondSource],
+                destinationRoot: secondDestination,
+                destinationLayout: .mergeContents,
+                filter: .audio
+            ),
+        ]
+        let staleDestination = secondDestination.appendingPathComponent("Audio/second.wav")
+        let model = makeMediaFileManagerModel()
+        model.replaceMediaCopyQueue(with: workflows)
+        model.mediaCopyConflictResolutionHandler = { _ in
+            try? FileManager.default.createDirectory(
+                at: staleDestination.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try? "external".write(
+                to: staleDestination,
+                atomically: true,
+                encoding: .utf8
+            )
+            return .skipExisting
+        }
+
+        model.runMediaCopyQueue()
+
+        let stopped = await waitUntil(timeout: 5) {
+            !model.isMediaCopyBusy
+                && model.statusMessage.contains("Completed queue changes were rolled back")
+        }
+        XCTAssertTrue(stopped)
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: firstDestination.appendingPathComponent("Audio/first.wav").path
+            )
+        )
+        XCTAssertEqual(try String(contentsOf: staleDestination), "external")
+        XCTAssertTrue(model.statusMessage.contains("stale workflow made no destination changes"))
+    }
+
+    func testQueuedNestedDestinationRebasesOwnedRootEvidence() async throws {
+        let workspace = try makeTemporaryDirectory()
+        let firstSource = try makeDirectory("FirstSource", in: workspace)
+        let secondSource = try makeDirectory("SecondSource", in: workspace)
+        let destination = try makeDirectory("Destination", in: workspace)
+        let nestedDestination = try makeDirectory("Nested", in: destination)
+        try writeFile("first.wav", in: firstSource, contents: "first")
+        try writeFile("Nested/second.wav", in: secondSource, contents: "second")
+        let workflows = [
+            MediaCopyWorkflow(
+                sourceRoots: [firstSource],
+                destinationRoot: nestedDestination,
+                destinationLayout: .mergeContents,
+                filter: .audio
+            ),
+            MediaCopyWorkflow(
+                sourceRoots: [secondSource],
+                destinationRoot: destination,
+                destinationLayout: .mergeContents,
+                filter: .audio
+            ),
+        ]
+        let model = makeMediaFileManagerModel()
+        model.replaceMediaCopyQueue(with: workflows)
+
+        model.runMediaCopyQueue()
+
+        let copied = await waitUntil(timeout: 5) {
+            !model.isMediaCopyBusy
+                && model.statusMessage.hasPrefix("Finished 2 file copy workflows: 2 copied.")
+        }
+        XCTAssertTrue(copied)
+        XCTAssertEqual(
+            try String(contentsOf: nestedDestination.appendingPathComponent("first.wav")),
+            "first"
+        )
+        XCTAssertEqual(
+            try String(contentsOf: nestedDestination.appendingPathComponent("second.wav")),
+            "second"
+        )
+    }
+
+    func testCancellingLaterQueuedWorkflowRollsBackEarlierWorkflow() async throws {
+        let workspace = try makeTemporaryDirectory()
+        let firstSource = try makeDirectory("FirstSource", in: workspace)
+        let secondSource = try makeDirectory("SecondSource", in: workspace)
+        let firstDestination = try makeDirectory("FirstDestination", in: workspace)
+        let secondDestination = try makeDirectory("SecondDestination", in: workspace)
+        try writeFile("Audio/first.wav", in: firstSource, contents: "first")
+        for index in 0..<250 {
+            try writeFile(
+                "Audio/Batch/file-\(index).wav",
+                in: secondSource,
+                contents: "second-\(index)"
+            )
+        }
+        let workflows = [
+            MediaCopyWorkflow(
+                sourceRoots: [firstSource],
+                destinationRoot: firstDestination,
+                destinationLayout: .mergeContents,
+                filter: .audio
+            ),
+            MediaCopyWorkflow(
+                sourceRoots: [secondSource],
+                destinationRoot: secondDestination,
+                destinationLayout: .mergeContents,
+                filter: .audio
+            ),
+        ]
+        let firstCopiedURL = firstDestination.appendingPathComponent("Audio/first.wav")
+        let model = makeMediaFileManagerModel()
+        model.replaceMediaCopyQueue(with: workflows)
+
+        model.runMediaCopyQueue()
+
+        let secondStarted = await waitUntil(timeout: 10) {
+            model.currentMediaCopyWorkflowID == workflows[1].id
+                && FileManager.default.fileExists(atPath: firstCopiedURL.path)
+        }
+        XCTAssertTrue(secondStarted)
+        model.cancelMediaCopy()
+
+        let rolledBack = await waitUntil(timeout: 10) {
+            !FileManager.default.fileExists(atPath: firstCopiedURL.path)
+        }
+        XCTAssertTrue(rolledBack)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: firstCopiedURL.path))
+    }
+
+    func testQueueFinalizationRemainsBusyButCannotBeCancelled() {
+        let model = makeMediaFileManagerModel()
+        model.isMediaCopyFinalizing = true
+
+        XCTAssertTrue(model.isMediaCopyBusy)
+        XCTAssertFalse(model.canCancelMediaCopy)
+
+        model.cancelMediaCopy()
+
+        XCTAssertTrue(model.isMediaCopyFinalizing)
+        XCTAssertTrue(model.isMediaCopyBusy)
+    }
+
+    func testQueuedCopyPreservesCompleteSourceSetAndMatchesImmediateLayout() async throws {
+        let workspace = try makeTemporaryDirectory()
+        let firstSource = try makeDirectory("FirstSource", in: workspace)
+        let secondSource = try makeDirectory("SecondSource", in: workspace)
+        let immediateDestination = try makeDirectory("Immediate", in: workspace)
+        let queuedDestination = try makeDirectory("Queued", in: workspace)
+        try writeFile("Audio/first.wav", in: firstSource, contents: "first")
+        try writeFile("Audio/second.wav", in: secondSource, contents: "second")
+
+        let model = makeMediaFileManagerModel()
+        model.mediaCopySourceRoots = [firstSource, secondSource]
+        model.mediaCopyDestinationRoot = immediateDestination
+        model.mediaCopyDestinationLayout = .mergeContents
+        model.mediaCopyFilter = .audio
+        model.deselectAllMediaCopyExtensions()
+        model.setMediaCopyExtension("wav", enabled: true)
+
+        model.copyFilteredMediaFiles()
+        let immediateCopied = await waitUntil(timeout: 5) {
+            !model.isMediaCopyBusy && model.mediaCopyProgress?.copied == 2
+        }
+        XCTAssertTrue(immediateCopied)
+
+        model.mediaCopyDestinationRoot = queuedDestination
+        model.addCurrentMediaCopyWorkflowToQueue()
+
+        XCTAssertEqual(model.mediaCopyQueueTotalCount, 1)
+        XCTAssertEqual(model.mediaCopyQueue.first?.sourceRoots, [firstSource, secondSource])
+        XCTAssertEqual(model.mediaCopyQueue.first?.destinationLayout, .mergeContents)
+
+        model.runMediaCopyQueue()
+        let queuedCopied = await waitUntil(timeout: 5) {
+            !model.isMediaCopyBusy
+                && model.statusMessage.hasPrefix("Finished 1 file copy workflow: 2 copied.")
+        }
+        XCTAssertTrue(queuedCopied)
+
+        for relativePath in ["Audio/first.wav", "Audio/second.wav"] {
+            XCTAssertEqual(
+                try Data(contentsOf: immediateDestination.appendingPathComponent(relativePath)),
+                try Data(contentsOf: queuedDestination.appendingPathComponent(relativePath))
+            )
+        }
+    }
+
+    func testRejectedCopyJobDataDoesNotReplaceCurrentQueue() throws {
+        let existingWorkflow = MediaCopyWorkflow(
+            sourceRoots: [URL(fileURLWithPath: "/Volumes/Current", isDirectory: true)],
+            destinationRoot: URL(fileURLWithPath: "/Volumes/Target", isDirectory: true),
+            destinationLayout: .mergeContents,
+            filter: .audio
+        )
+        let model = makeMediaFileManagerModel()
+        model.replaceMediaCopyQueue(with: [existingWorkflow])
+        let futureData = """
+            {
+              "version": \(MediaCopyJobDocument.currentVersion + 1),
+              "savedAt": "2026-07-13T00:00:00Z",
+              "workflows": []
+            }
+            """.data(using: .utf8)!
+
+        XCTAssertThrowsError(try model.loadMediaCopyJobData(futureData))
+        XCTAssertEqual(model.mediaCopyQueue, [existingWorkflow])
+
+        XCTAssertThrowsError(try model.loadMediaCopyJobData(Data("not json".utf8)))
+        XCTAssertEqual(model.mediaCopyQueue, [existingWorkflow])
     }
 
     func testDeletePreviewUsesInventoryAcrossMultipleSourcesAndFileNameFilter() async throws {
@@ -275,6 +702,7 @@ final class MediaFileManagerCoordinatorTests: XCTestCase {
             "mediaCopySourceRootPath",
             "mediaCopySourceRootPaths",
             "mediaCopyDestinationRootPath",
+            "mediaCopyDestinationLayout",
             "mediaCopyFilter",
             "mediaCopyAudioExtensions",
             "mediaCopyVideoExtensions",

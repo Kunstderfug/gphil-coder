@@ -2,8 +2,9 @@ import Foundation
 import GPhilCoderCore
 
 struct MediaCopyRunConfiguration {
-    let sourceRoot: URL?
+    let sourceRoots: [URL]
     let destinationRoot: URL?
+    let destinationLayout: MediaCopyDestinationLayout
     let filter: MediaFileFilter
     let selectedExtensions: Set<String>?
     let fileNameFilter: MediaFileNameFilter
@@ -33,6 +34,7 @@ final class MediaFileCoordinator: ObservableObject {
     @Published var fileManagementMode: FileManagementMode = .copy
     @Published var mediaCopySourceRoots: [URL] = []
     @Published var mediaCopyDestinationRoot: URL?
+    @Published var mediaCopyDestinationLayout: MediaCopyDestinationLayout = .sourceFolders
     @Published var mediaCopyFilter: MediaFileFilter = .audio
     @Published var mediaCopyAudioExtensions: Set<String> = MediaFileFilter.audio.fileExtensions
     @Published var mediaCopyVideoExtensions: Set<String> = MediaFileFilter.video.fileExtensions
@@ -49,13 +51,14 @@ final class MediaFileCoordinator: ObservableObject {
     @Published var mediaRenameStartIndex = 1
     @Published var mediaRenameIndexStep = 1
     @Published var mediaRenameIndexPadding = 2
-    @Published var mediaCopyPlan: MediaCopyPlan?
+    @Published var mediaCopyPlan: MediaCopyBatchPlan?
     @Published var mediaDeletePlan: MediaDeletePlan?
     @Published var mediaRenamePlan: MediaRenamePlan?
     @Published var isMediaRenamePreviewStale = false
     @Published var mediaCopyProgress: MediaCopyProgress?
     @Published var isMediaCopyScanning = false
     @Published var isMediaCopying = false
+    @Published var isMediaCopyFinalizing = false
     @Published var isMediaDeleting = false
     @Published var isMediaRenaming = false
     @Published var mediaRenameProgressVerb = "renamed"
@@ -70,7 +73,7 @@ final class MediaFileCoordinator: ObservableObject {
 
     let setStatusMessage: @MainActor (String) -> Void
     let validateFolders: @MainActor (_ sourceRoot: URL, _ destinationRoot: URL) -> Bool
-    let promptConflictResolution: @MainActor ([MediaCopyPlan]) -> MediaCopyConflictResolution?
+    let promptConflictResolution: @MainActor ([MediaCopyBatchPlan]) -> MediaCopyConflictResolution?
     let promptTrash: @MainActor (
         _ itemCount: Int,
         _ totalSize: Int64,
@@ -104,7 +107,7 @@ final class MediaFileCoordinator: ObservableObject {
     init(
         setStatusMessage: @escaping @MainActor (String) -> Void,
         validateFolders: @escaping @MainActor (_ sourceRoot: URL, _ destinationRoot: URL) -> Bool,
-        promptConflictResolution: @escaping @MainActor ([MediaCopyPlan]) -> MediaCopyConflictResolution?,
+        promptConflictResolution: @escaping @MainActor ([MediaCopyBatchPlan]) -> MediaCopyConflictResolution?,
         promptTrash: @escaping @MainActor (
             _ itemCount: Int,
             _ totalSize: Int64,
@@ -161,6 +164,7 @@ final class MediaFileCoordinator: ObservableObject {
         currentMediaCopyWorkflowID = nil
         isMediaCopyScanning = true
         isMediaCopying = false
+        isMediaCopyFinalizing = false
         setStatusMessage(
             "Scanning \(workflows.count) queued file copy workflow\(workflows.count == 1 ? "" : "s")..."
         )
@@ -171,6 +175,7 @@ final class MediaFileCoordinator: ObservableObject {
     }
 
     func cancel() {
+        guard !isMediaCopyFinalizing else { return }
         mediaCopyTask?.cancel()
         mediaCopyTask = nil
         cancelFileNameFilterRefresh()
@@ -265,15 +270,19 @@ final class MediaFileCoordinator: ObservableObject {
         copyAfterScan: Bool,
         configuration: MediaCopyRunConfiguration
     ) {
-        guard let sourceRoot = configuration.sourceRoot,
+        guard !configuration.sourceRoots.isEmpty,
             let destinationRoot = configuration.destinationRoot
         else {
             setStatusMessage("Choose source and destination folders before copying media files.")
             return
         }
 
-        guard validateFolders(sourceRoot, destinationRoot) else {
-            return
+        for sourceRoot in configuration.sourceRoots {
+            let resolvedDestination = configuration.destinationLayout.resolvedDestinationRoot(
+                for: sourceRoot,
+                destinationRoot: destinationRoot
+            )
+            guard validateFolders(sourceRoot, resolvedDestination) else { return }
         }
 
         mediaCopyTask?.cancel()
@@ -286,16 +295,19 @@ final class MediaFileCoordinator: ObservableObject {
         let fileNameFilter = configuration.fileNameFilter
         let candidateLimit = copyAfterScan ? nil : configuration.previewLimit
         setStatusMessage(
-            "Scanning \(filter.fileTypeName) files in \(sourceRoot.lastPathComponent)..."
+            "Scanning \(configuration.sourceRoots.count) source folder\(configuration.sourceRoots.count == 1 ? "" : "s")..."
         )
 
         mediaCopyTask = Task { [weak self] in
             await self?.runCopyTask(
-                sourceRoot: sourceRoot,
-                destinationRoot: destinationRoot,
-                filter: filter,
-                selectedExtensions: selectedExtensions,
-                fileNameFilter: fileNameFilter,
+                configuration: MediaCopyBatchConfiguration(
+                    sourceRoots: configuration.sourceRoots,
+                    destinationRoot: destinationRoot,
+                    destinationLayout: configuration.destinationLayout,
+                    filter: filter,
+                    selectedExtensions: selectedExtensions,
+                    fileNameFilter: fileNameFilter
+                ),
                 candidateLimit: candidateLimit,
                 copyAfterScan: copyAfterScan
             )
@@ -434,22 +446,14 @@ final class MediaFileCoordinator: ObservableObject {
     }
 
     private func runCopyTask(
-        sourceRoot: URL,
-        destinationRoot: URL,
-        filter: MediaFileFilter,
-        selectedExtensions: Set<String>?,
-        fileNameFilter: MediaFileNameFilter,
+        configuration: MediaCopyBatchConfiguration,
         candidateLimit: Int?,
         copyAfterScan: Bool
     ) async {
         do {
             let worker = Task.detached(priority: .userInitiated) {
-                try MediaCopyPlanner.buildPlan(
-                    sourceRoot: sourceRoot,
-                    destinationRoot: destinationRoot,
-                    filter: filter,
-                    selectedExtensions: selectedExtensions,
-                    fileNameFilter: fileNameFilter,
+                try MediaCopyBatchPlanner.buildPlan(
+                    configuration: configuration,
                     candidateLimit: candidateLimit
                 )
             }
@@ -472,9 +476,17 @@ final class MediaFileCoordinator: ObservableObject {
 
             guard plan.hasCopyableContent else {
                 let completionMessage =
-                    "No \(filter.fileTypeName) files found in \(sourceRoot.lastPathComponent)."
+                    "No \(configuration.filter.fileTypeName) files found in the selected source folders."
                 setStatusMessage(completionMessage)
                 notifyCompletion("File copy finished", completionMessage)
+                mediaCopyTask = nil
+                return
+            }
+
+            guard plan.canExecute else {
+                setStatusMessage(
+                    "Copy plan blocked by \(plan.structuralConflictCount) incompatible file, package, or folder destination\(plan.structuralConflictCount == 1 ? "" : "s"). Change the layout or source selection."
+                )
                 mediaCopyTask = nil
                 return
             }
@@ -502,19 +514,30 @@ final class MediaFileCoordinator: ObservableObject {
                 )
             )
             setStatusMessage(
-                "Copying \(plan.candidates.count) \(filter.fileTypeName) file\(plan.candidates.count == 1 ? "" : "s")..."
+                "Copying \(plan.candidateCount) \(configuration.filter.fileTypeName) file\(plan.candidateCount == 1 ? "" : "s")..."
             )
 
-            let result = await copyMediaCopyPlan(plan, conflictResolution: resolution)
+            let result = await copyMediaCopyBatchPlan(plan, conflictResolution: resolution)
 
-            guard !Task.isCancelled else { return }
+            if Task.isCancelled {
+                isMediaCopying = false
+                mediaCopyTask = nil
+                setStatusMessage(
+                    Self.mediaCopyResultStatusMessage(
+                        result,
+                        filter: configuration.filter,
+                        destinationRoot: configuration.destinationRoot
+                    )
+                )
+                return
+            }
 
             isMediaCopying = false
             mediaCopyTask = nil
             let completionMessage = Self.mediaCopyResultStatusMessage(
                 result,
-                filter: filter,
-                destinationRoot: destinationRoot
+                filter: configuration.filter,
+                destinationRoot: configuration.destinationRoot
             )
             setStatusMessage(completionMessage)
             notifyCompletion("File copy finished", completionMessage)
@@ -537,7 +560,7 @@ final class MediaFileCoordinator: ObservableObject {
 
     private func runQueuedWorkflowTask(_ workflows: [MediaCopyWorkflow]) async {
         do {
-            var workflowPlans: [(workflow: MediaCopyWorkflow, plan: MediaCopyPlan)] = []
+            var workflowPlans: [(workflow: MediaCopyWorkflow, plan: MediaCopyBatchPlan)] = []
 
             for (index, workflow) in workflows.enumerated() {
                 guard !Task.isCancelled else { return }
@@ -547,12 +570,8 @@ final class MediaFileCoordinator: ObservableObject {
                 )
 
                 let worker = Task.detached(priority: .userInitiated) {
-                    try MediaCopyPlanner.buildPlan(
-                        sourceRoot: workflow.sourceRoot,
-                        destinationRoot: workflow.destinationRootPreservingSourceFolder,
-                        filter: workflow.filter,
-                        selectedExtensions: workflow.selectedExtensions,
-                        fileNameFilter: workflow.fileNameFilter
+                    try MediaCopyBatchPlanner.buildPlan(
+                        configuration: workflow.configuration
                     )
                 }
                 let plan = try await withTaskCancellationHandler {
@@ -578,7 +597,19 @@ final class MediaFileCoordinator: ObservableObject {
             }
 
             let nonEmptyPlans = nonEmptyWorkflowPlans.map(\.plan)
-            guard let resolution = promptConflictResolution(nonEmptyPlans) else {
+            let queueReviewPlans = MediaCopyBatchPlanner.buildQueueReviewPlans(
+                from: nonEmptyPlans
+            )
+            guard queueReviewPlans.allSatisfy(\.canExecute) else {
+                currentMediaCopyWorkflowID = nil
+                mediaCopyTask = nil
+                setStatusMessage(
+                    "File copy queue blocked by incompatible file, package, or folder destinations. Change the affected workflow layout or sources."
+                )
+                return
+            }
+
+            guard let resolution = promptConflictResolution(queueReviewPlans) else {
                 currentMediaCopyWorkflowID = nil
                 mediaCopyTask = nil
                 setStatusMessage("File copy queue cancelled.")
@@ -593,6 +624,8 @@ final class MediaFileCoordinator: ObservableObject {
             var aggregateResult = MediaCopyResult(
                 total: nonEmptyPlans.reduce(0) { $0 + $1.candidates.count }
             )
+            var ownedDestinationEvidence: [String: MediaCopyPathEvidence] = [:]
+            var retainedTransactions: [MediaCopyTransactionExecutor.RetainedTransaction] = []
 
             for workflowPlan in nonEmptyWorkflowPlans {
                 guard !Task.isCancelled else {
@@ -601,11 +634,15 @@ final class MediaFileCoordinator: ObservableObject {
                 }
 
                 currentMediaCopyWorkflowID = workflowPlan.workflow.id
-                mediaCopyPlan = workflowPlan.plan
-                let result = await copyMediaCopyPlan(
-                    workflowPlan.plan,
+                let executionPlan = workflowPlan.plan.rebasingDestinationEvidence(
+                    forOwnedChanges: ownedDestinationEvidence
+                )
+                mediaCopyPlan = executionPlan
+                let execution = await copyMediaCopyBatchPlanRetainingRollback(
+                    executionPlan,
                     conflictResolution: resolution
                 )
+                let result = execution.result
 
                 aggregateResult.copied += result.copied
                 aggregateResult.skippedExisting += result.skippedExisting
@@ -617,11 +654,74 @@ final class MediaFileCoordinator: ObservableObject {
                     contentsOf: result.failedDirectoryNames
                 )
                 aggregateResult.cancelled = aggregateResult.cancelled || result.cancelled
+                aggregateResult.rejected = aggregateResult.rejected || result.rejected
+                aggregateResult.stalePlan = aggregateResult.stalePlan || result.stalePlan
+                aggregateResult.rollbackFailed =
+                    aggregateResult.rollbackFailed || result.rollbackFailed
+                aggregateResult.recoveryPath = result.recoveryPath ?? aggregateResult.recoveryPath
+                ownedDestinationEvidence.merge(
+                    result.appliedDestinationEvidence,
+                    uniquingKeysWith: { _, latest in latest }
+                )
+                if let transaction = execution.transaction {
+                    retainedTransactions.append(transaction)
+                }
+                if result.cancelled || result.rejected || result.rollbackFailed { break }
             }
 
-            guard !Task.isCancelled else { return }
+            aggregateResult.cancelled = aggregateResult.cancelled || Task.isCancelled
+            let queueDidNotComplete = aggregateResult.cancelled
+                || aggregateResult.rejected
+                || aggregateResult.rollbackFailed
+            var queueReachedCommitPoint = false
+            if queueDidNotComplete {
+                var rollbackComplete = !aggregateResult.rollbackFailed
+                for transaction in retainedTransactions.reversed() {
+                    if !(await MediaCopyTransactionExecutor.rollbackRetainedTransaction(
+                        transaction
+                    )) {
+                        rollbackComplete = false
+                        aggregateResult.recoveryPath = transaction.recoveryPath
+                    }
+                }
+                if rollbackComplete {
+                    aggregateResult.copied = 0
+                    aggregateResult.createdDirectories = 0
+                    aggregateResult.appliedDestinationEvidence = [:]
+                } else {
+                    aggregateResult.rollbackFailed = true
+                }
+            } else {
+                isMediaCopying = false
+                isMediaCopyFinalizing = true
+                currentMediaCopyWorkflowID = nil
+                queueReachedCommitPoint = true
+                for transaction in retainedTransactions {
+                    if !(await MediaCopyTransactionExecutor.finalizeRetainedTransaction(
+                        transaction
+                    )) {
+                        aggregateResult.rollbackFailed = true
+                        aggregateResult.recoveryPath = transaction.recoveryPath
+                    }
+                }
+            }
+
+            if Task.isCancelled && !queueReachedCommitPoint {
+                isMediaCopying = false
+                isMediaCopyFinalizing = false
+                currentMediaCopyWorkflowID = nil
+                mediaCopyTask = nil
+                setStatusMessage(
+                    Self.mediaCopyQueueResultStatusMessage(
+                        aggregateResult,
+                        workflowCount: nonEmptyWorkflowPlans.count
+                    )
+                )
+                return
+            }
 
             isMediaCopying = false
+            isMediaCopyFinalizing = false
             currentMediaCopyWorkflowID = nil
             mediaCopyTask = nil
             let completionMessage = Self.mediaCopyQueueResultStatusMessage(
@@ -634,6 +734,7 @@ final class MediaFileCoordinator: ObservableObject {
             guard !Task.isCancelled else { return }
             isMediaCopyScanning = false
             isMediaCopying = false
+            isMediaCopyFinalizing = false
             currentMediaCopyWorkflowID = nil
             mediaCopyTask = nil
             setStatusMessage("File copy queue cancelled.")
@@ -642,96 +743,54 @@ final class MediaFileCoordinator: ObservableObject {
             mediaCopyProgress = nil
             isMediaCopyScanning = false
             isMediaCopying = false
+            isMediaCopyFinalizing = false
             currentMediaCopyWorkflowID = nil
             mediaCopyTask = nil
             setStatusMessage("Could not run file copy queue: \(error.localizedDescription)")
         }
     }
 
-    private func copyMediaCopyPlan(
-        _ plan: MediaCopyPlan,
+    private func copyMediaCopyBatchPlan(
+        _ plan: MediaCopyBatchPlan,
         conflictResolution: MediaCopyConflictResolution
     ) async -> MediaCopyResult {
-        var result = MediaCopyResult(total: plan.candidates.count)
-        let progressStartedAt = Date()
-        let totalBytes = plan.totalSizeBytes
-        var copiedBytes: Int64 = 0
-
-        if !plan.relativeDirectories.isEmpty {
-            let failedDirectories = await Task.detached(priority: .userInitiated) {
-                MediaCopyPlanner.createDirectories(for: plan)
-            }.value
-            result.failedDirectories = failedDirectories.count
-            result.failedDirectoryNames = failedDirectories
-            result.createdDirectories = plan.relativeDirectories.count - failedDirectories.count
-        }
-
-        for (index, candidate) in plan.candidates.enumerated() {
-            if Task.isCancelled {
-                result.cancelled = true
-                break
-            }
-
-            setProgress(
-                MediaCopyProgress(
-                    completed: index,
-                    total: plan.candidates.count,
-                    copied: result.copied,
-                    skippedExisting: result.skippedExisting,
-                    failed: result.failed,
-                    copiedBytes: copiedBytes,
-                    totalBytes: totalBytes,
-                    startedAt: progressStartedAt,
-                    updatedAt: Date(),
-                    currentName: candidate.name
+        await MediaCopyTransactionExecutor.execute(
+            plan,
+            conflictResolution: conflictResolution,
+            publishProgress: { [weak self] progress in
+                guard let self else { return }
+                mediaCopyProgress = progress
+                let speedDetail = progress.bytesPerSecond
+                    .map { " at \($0.formattedMegabytesPerSecond)" } ?? ""
+                setStatusMessage(
+                    "Copied \(progress.copied), skipped \(progress.skippedExisting), failed \(progress.failed) of \(progress.total)\(speedDetail)."
                 )
-            )
-
-            let itemResult = await Task.detached(priority: .userInitiated) {
-                MediaCopyPlanner.copyCandidate(
-                    candidate,
-                    conflictResolution: conflictResolution
-                )
-            }.value
-
-            switch itemResult {
-            case .copied:
-                result.copied += 1
-                copiedBytes += candidate.fileSizeBytes
-            case .skippedExisting:
-                result.skippedExisting += 1
-            case .failed(let name):
-                result.failed += 1
-                result.failedNames.append(name)
             }
-
-            let progressUpdatedAt = Date()
-            let progress = MediaCopyProgress(
-                completed: index + 1,
-                total: plan.candidates.count,
-                copied: result.copied,
-                skippedExisting: result.skippedExisting,
-                failed: result.failed,
-                copiedBytes: copiedBytes,
-                totalBytes: totalBytes,
-                startedAt: progressStartedAt,
-                updatedAt: progressUpdatedAt,
-                currentName: candidate.name
-            )
-            mediaCopyProgress = progress
-            let speedDetail = progress.bytesPerSecond
-                .map { " at \($0.formattedMegabytesPerSecond)" } ?? ""
-            setStatusMessage(
-                "Copied \(result.copied), skipped \(result.skippedExisting), failed \(result.failed) of \(plan.candidates.count)\(speedDetail)."
-            )
-        }
-
-        return result
+        )
     }
 
-    private static func mediaCopyScanStatusMessage(for plan: MediaCopyPlan) -> String {
+    private func copyMediaCopyBatchPlanRetainingRollback(
+        _ plan: MediaCopyBatchPlan,
+        conflictResolution: MediaCopyConflictResolution
+    ) async -> MediaCopyTransactionExecutor.RetainedExecution {
+        await MediaCopyTransactionExecutor.executeRetainingRollback(
+            plan,
+            conflictResolution: conflictResolution,
+            publishProgress: { [weak self] progress in
+                guard let self else { return }
+                mediaCopyProgress = progress
+                let speedDetail = progress.bytesPerSecond
+                    .map { " at \($0.formattedMegabytesPerSecond)" } ?? ""
+                setStatusMessage(
+                    "Copied \(progress.copied), skipped \(progress.skippedExisting), failed \(progress.failed) of \(progress.total)\(speedDetail)."
+                )
+            }
+        )
+    }
+
+    private static func mediaCopyScanStatusMessage(for plan: MediaCopyBatchPlan) -> String {
         guard plan.hasCopyableContent else {
-            return "No \(plan.filter.fileTypeName) files found in \(plan.sourceRoot.lastPathComponent)."
+            return "No \(plan.filter.fileTypeName) files found in the selected source folders."
         }
 
         var details = [
@@ -745,7 +804,12 @@ final class MediaFileCoordinator: ObservableObject {
         }
         if plan.conflictCount > 0 {
             details.append(
-                "\(plan.conflictCount) existing destination file\(plan.conflictCount == 1 ? "" : "s")"
+                "\(plan.conflictCount) destination conflict\(plan.conflictCount == 1 ? "" : "s")"
+            )
+        }
+        if plan.structuralConflictCount > 0 {
+            details.append(
+                "\(plan.structuralConflictCount) incompatible destination\(plan.structuralConflictCount == 1 ? "" : "s") block execution"
             )
         }
         return details.joined(separator: ", ") + "."
@@ -756,8 +820,17 @@ final class MediaFileCoordinator: ObservableObject {
         filter: MediaFileFilter,
         destinationRoot: URL
     ) -> String {
+        if result.rollbackFailed {
+            return "File copy could not restore every destination item. Recovery data was retained at \(result.recoveryPath ?? "the Copy transaction folder")."
+        }
+        if result.stalePlan {
+            return "The source or destination changed after review. Scan and review the copy again; the destination is unchanged."
+        }
+        if result.rejected {
+            return "File copy was rejected before the reviewed batch could be applied. The destination is unchanged."
+        }
         if result.cancelled {
-            return "Media copy cancelled after \(result.copied) copied file\(result.copied == 1 ? "" : "s")."
+            return "Media copy cancelled. Transaction changes were rolled back."
         }
 
         var details = [
@@ -838,8 +911,17 @@ final class MediaFileCoordinator: ObservableObject {
         _ result: MediaCopyResult,
         workflowCount: Int
     ) -> String {
+        if result.rollbackFailed {
+            return "File copy queue stopped with incomplete recovery. Recovery data was retained at \(result.recoveryPath ?? "a Copy transaction folder")."
+        }
+        if result.stalePlan {
+            return "File copy queue stopped because a source or destination changed after review. Completed queue changes were rolled back, and the stale workflow made no destination changes. Scan and review the workflow again."
+        }
+        if result.rejected {
+            return "File copy queue stopped because a reviewed workflow could not be applied completely."
+        }
         if result.cancelled {
-            return "File copy queue cancelled after \(result.copied) copied file\(result.copied == 1 ? "" : "s")."
+            return "File copy queue cancelled. Active workflow changes were rolled back."
         }
 
         var details = [

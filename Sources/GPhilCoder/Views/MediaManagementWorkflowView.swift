@@ -50,15 +50,33 @@ struct MediaManagementWorkflowView: View {
 
                     if model.fileManagementMode == .copy {
                         GroupBox("Destination") {
-                            FolderPickerControl(
-                                title: model.mediaCopyDestinationRoot?.path(percentEncoded: false)
-                                    ?? "No destination folder selected",
-                                detail: nil,
-                                systemImage: "externaldrive",
-                                buttonTitle: "Choose destination",
-                                disabled: model.isMediaCopyBusy
-                            ) {
-                                model.chooseMediaCopyDestinationRoot()
+                            VStack(alignment: .leading, spacing: 10) {
+                                FolderPickerControl(
+                                    title: model.mediaCopyDestinationRoot?.path(percentEncoded: false)
+                                        ?? "No destination folder selected",
+                                    detail: nil,
+                                    systemImage: "externaldrive",
+                                    buttonTitle: "Choose destination",
+                                    disabled: model.isMediaCopyBusy
+                                ) {
+                                    model.chooseMediaCopyDestinationRoot()
+                                }
+
+                                Picker(
+                                    "Layout",
+                                    selection: model.binding(\.mediaCopyDestinationLayout)
+                                ) {
+                                    ForEach(MediaCopyDestinationLayout.allCases, id: \.self) { layout in
+                                        Text(layout.title).tag(layout)
+                                    }
+                                }
+                                .disabled(model.isMediaCopyBusy)
+                                .help("Choose how selected source folders are placed in the destination")
+
+                                Text(model.mediaCopyDestinationLayout.description)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
                             }
                             .padding(.vertical, 4)
                         }
@@ -327,7 +345,9 @@ struct MediaManagementWorkflowView: View {
             CenteredStatusView(
                 symbol: plan.filter.symbolName,
                 title: "No \(plan.filter.fileTypeName) files found",
-                detail: plan.sourceRoot.path(percentEncoded: false)
+                detail: plan.sourceRoots.count == 1
+                    ? plan.sourceRoots[0].path(percentEncoded: false)
+                    : "Checked \(plan.sourceRoots.count) selected source folders."
             )
         } else if let plan = model.mediaCopyPlan {
             ScrollView {
@@ -464,6 +484,8 @@ struct MediaManagementWorkflowView: View {
                             isRunning: model.currentMediaCopyWorkflowID == workflow.id,
                             canModify: !model.isMediaCopyBusy
                         ) {
+                            model.repairMediaCopyWorkflow(workflow)
+                        } remove: {
                             model.removeMediaCopyWorkflowFromQueue(workflow)
                         }
                     }
@@ -483,7 +505,7 @@ struct MediaManagementWorkflowView: View {
         )
         if model.fileManagementMode == .copy {
             StatLine(
-                title: "Existing",
+                title: "Conflicts",
                 value: "\(model.mediaCopyConflictCount)",
                 symbol: "exclamationmark.triangle",
                 color: model.mediaCopyConflictCount > 0 ? .orange : .secondary
@@ -533,7 +555,7 @@ struct MediaManagementWorkflowView: View {
             plan.conflictCount > 0
         {
             Text(
-                "\(plan.copyableWithoutOverwriteCount) file\(plan.copyableWithoutOverwriteCount == 1 ? "" : "s") can be copied without replacing existing destination files."
+                "\(plan.copyableWithoutOverwriteCount) final path\(plan.copyableWithoutOverwriteCount == 1 ? "" : "s") can be copied without replacing an existing or earlier planned item."
             )
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -579,9 +601,13 @@ struct MediaManagementWorkflowView: View {
             Button {
                 model.cancelMediaCopy()
             } label: {
-                Label("Cancel", systemImage: "stop.fill")
+                Label(
+                    model.isMediaCopyFinalizing ? "Finalizing..." : "Cancel",
+                    systemImage: model.isMediaCopyFinalizing ? "checkmark.circle" : "stop.fill"
+                )
                     .frame(maxWidth: .infinity)
             }
+            .disabled(!model.canCancelMediaCopy)
             .buttonStyle(.borderedProminent)
             .tint(.red)
             .controlSize(.large)
@@ -718,6 +744,15 @@ struct MediaManagementWorkflowView: View {
                     color: .indigo
                 )
 
+                if model.mediaCopyQueueRepairCount > 0 {
+                    StatLine(
+                        title: "Needs repair",
+                        value: "\(model.mediaCopyQueueRepairCount)",
+                        symbol: "wrench.and.screwdriver",
+                        color: .orange
+                    )
+                }
+
                 HStack(spacing: 8) {
                     Button {
                         model.loadMediaCopyJob()
@@ -851,7 +886,7 @@ struct MediaManagementWorkflowView: View {
 
         if plan.conflictCount > 0 {
             return
-                "\(plan.candidateCount) matched, \(plan.conflictCount) already exist in the destination."
+                "\(plan.candidateCount) matched, \(plan.conflictCount) destination conflict\(plan.conflictCount == 1 ? "" : "s")."
         }
 
         return "\(plan.candidateCount) matched, no destination conflicts."

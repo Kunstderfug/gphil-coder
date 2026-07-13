@@ -26,14 +26,6 @@ final class EncoderViewModel: ObservableObject {
         }
     }
 
-    private enum MediaCopyJobFile {
-        static let fileExtension = "job"
-
-        static var contentType: UTType {
-            UTType(filenameExtension: fileExtension) ?? .json
-        }
-    }
-
     enum SyncFolderPairListFile {
         static let fileExtension = "gphilcodersync"
 
@@ -131,6 +123,15 @@ final class EncoderViewModel: ObservableObject {
             invalidateMediaCopyPlanIfChanged(from: oldValue, to: newValue)
         }
     }
+    var mediaCopyDestinationLayout: MediaCopyDestinationLayout {
+        get { mediaFileCoordinator.mediaCopyDestinationLayout }
+        set {
+            let oldValue = mediaFileCoordinator.mediaCopyDestinationLayout
+            mediaFileCoordinator.mediaCopyDestinationLayout = newValue
+            settingsPersistence.set(newValue.rawValue, forKey: DefaultsKey.mediaCopyDestinationLayout)
+            invalidateMediaCopyPlanIfChanged(from: oldValue, to: newValue)
+        }
+    }
     var mediaCopyFilter: MediaFileFilter {
         get { mediaFileCoordinator.mediaCopyFilter }
         set {
@@ -174,7 +175,7 @@ final class EncoderViewModel: ObservableObject {
             )
         }
     }
-    var mediaCopyPlan: MediaCopyPlan? {
+    var mediaCopyPlan: MediaCopyBatchPlan? {
         get { mediaFileCoordinator.mediaCopyPlan }
         set { mediaFileCoordinator.mediaCopyPlan = newValue }
     }
@@ -201,6 +202,10 @@ final class EncoderViewModel: ObservableObject {
     var isMediaCopying: Bool {
         get { mediaFileCoordinator.isMediaCopying }
         set { mediaFileCoordinator.isMediaCopying = newValue }
+    }
+    var isMediaCopyFinalizing: Bool {
+        get { mediaFileCoordinator.isMediaCopyFinalizing }
+        set { mediaFileCoordinator.isMediaCopyFinalizing = newValue }
     }
     var isMediaDeleting: Bool {
         get { mediaFileCoordinator.isMediaDeleting }
@@ -305,6 +310,8 @@ final class EncoderViewModel: ObservableObject {
     var folderSyncDestructiveConfirmationHandler = FolderSyncAppKitPromptBoundary.confirmDestructivePlan
     var folderSyncDeletionEnableConfirmationHandler = FolderSyncAppKitPromptBoundary.confirmDeletionEnable
     var folderSyncPairReplacementConfirmationHandler = FolderSyncAppKitPromptBoundary.confirmPairReplacement
+    var mediaCopyConflictResolutionHandler: (([MediaCopyBatchPlan]) -> MediaCopyConflictResolution?)?
+    var mediaCopyFolderValidationHandler: ((URL, URL) -> Bool)?
     private var mediaRenameUndoStack: [MediaRenameHistoryTransaction] {
         get { mediaFileCoordinator.mediaRenameUndoStack }
         set { mediaFileCoordinator.mediaRenameUndoStack = newValue }
@@ -662,7 +669,7 @@ final class EncoderViewModel: ObservableObject {
 
     lazy var folderSyncCoordinator = makeFolderSyncCoordinator()
 
-    private lazy var mediaFileCoordinator = MediaFileCoordinator(
+    lazy var mediaFileCoordinator = MediaFileCoordinator(
         setStatusMessage: { [weak self] message in
             self?.statusMessage = message
         },
@@ -1067,8 +1074,11 @@ final class EncoderViewModel: ObservableObject {
     }
 
     var isMediaCopyBusy: Bool {
-        isMediaCopyScanning || isMediaCopying || isMediaDeleting || isMediaRenaming
+        isMediaCopyScanning || isMediaCopying || isMediaCopyFinalizing
+            || isMediaDeleting || isMediaRenaming
     }
+
+    var canCancelMediaCopy: Bool { isMediaCopyBusy && !isMediaCopyFinalizing }
 
     var isMenuBarActivityActive: Bool {
         isEncoding || isMediaCopyBusy || isFolderSyncBusy || isRestorePlanning || isRestoringFromPlan
@@ -1086,6 +1096,10 @@ final class EncoderViewModel: ObservableObject {
 
         if isMediaCopying {
             return "Copying files"
+        }
+
+        if isMediaCopyFinalizing {
+            return "Finalizing file copy"
         }
 
         if isMediaDeleting {
@@ -1290,7 +1304,9 @@ final class EncoderViewModel: ObservableObject {
     }
 
     var canRunMediaCopyQueue: Bool {
-        !mediaCopyQueue.isEmpty && !isMediaCopyBusy
+        !mediaCopyQueue.isEmpty
+            && mediaCopyQueue.allSatisfy { $0.repairIssues.isEmpty }
+            && !isMediaCopyBusy
     }
 
     var canSaveMediaCopyJob: Bool {
@@ -1372,6 +1388,10 @@ final class EncoderViewModel: ObservableObject {
 
     var mediaCopyQueueTotalCount: Int {
         mediaCopyQueue.count
+    }
+
+    var mediaCopyQueueRepairCount: Int {
+        mediaCopyQueue.filter { !$0.repairIssues.isEmpty }.count
     }
 
     var primaryMediaCopySourceRoot: URL? {
@@ -2400,168 +2420,6 @@ final class EncoderViewModel: ObservableObject {
         mediaFileCoordinator.runRenameHistoryAction(.redo)
     }
 
-    func addCurrentMediaCopyWorkflowToQueue() {
-        guard let destinationRoot = mediaCopyDestinationRoot,
-            canAddMediaCopyWorkflowToQueue
-        else {
-            statusMessage = "Choose source and destination folders before adding to the queue."
-            return
-        }
-
-        for sourceRoot in mediaCopySourceRoots {
-            guard validateMediaCopyFolders(sourceRoot: sourceRoot, destinationRoot: destinationRoot)
-            else {
-                return
-            }
-        }
-
-        let workflows = mediaCopySourceRoots.map {
-            MediaCopyWorkflow(
-                sourceRoot: $0,
-                destinationRoot: destinationRoot,
-                filter: mediaCopyFilter,
-                selectedExtensions: selectedExtensions(for: mediaCopyFilter),
-                fileNameFilter: currentMediaFileNameFilter
-            )
-        }
-        mediaCopyQueue.append(contentsOf: workflows)
-        mediaCopyPlan = nil
-        mediaCopyProgress = nil
-        statusMessage =
-            "Added \(workflows.count) workflow\(workflows.count == 1 ? "" : "s") to the file copy queue."
-    }
-
-    func removeMediaCopyWorkflowFromQueue(_ workflow: MediaCopyWorkflow) {
-        guard !isMediaCopyBusy else { return }
-        mediaCopyQueue.removeAll { $0.id == workflow.id }
-        statusMessage =
-            mediaCopyQueue.isEmpty
-            ? "File copy queue cleared."
-            : "Removed queued workflow. \(mediaCopyQueue.count) remaining."
-    }
-
-    func clearMediaCopyQueue() {
-        guard !isMediaCopyBusy else { return }
-        mediaCopyQueue.removeAll()
-        currentMediaCopyWorkflowID = nil
-        statusMessage = "File copy queue cleared."
-    }
-
-    func saveMediaCopyJob() {
-        guard canSaveMediaCopyJob else {
-            statusMessage = "Add workflows to the file copy queue before saving a job."
-            return
-        }
-
-        let panel = NSSavePanel()
-        panel.title = "Save File Copy Job"
-        panel.prompt = "Save Job"
-        panel.allowedContentTypes = [MediaCopyJobFile.contentType]
-        panel.canCreateDirectories = true
-        panel.directoryURL = mediaCopyDestinationRoot ?? primaryMediaCopySourceRoot ?? lastInputDirectoryURL()
-        panel.nameFieldStringValue = defaultMediaCopyJobFileName()
-
-        guard panel.runModal() == .OK, let selectedURL = panel.url else { return }
-
-        let url = normalizedMediaCopyJobFileURL(selectedURL)
-        let document = MediaCopyJobDocument(workflows: mediaCopyQueue)
-
-        do {
-            let encoder = JSONEncoder()
-            encoder.dateEncodingStrategy = .iso8601
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            let data = try encoder.encode(document)
-            try data.write(to: url, options: .atomic)
-            statusMessage =
-                "Saved file copy job with \(mediaCopyQueue.count) workflow\(mediaCopyQueue.count == 1 ? "" : "s") to \(url.lastPathComponent)."
-        } catch {
-            statusMessage = "Could not save file copy job: \(error.localizedDescription)"
-        }
-    }
-
-    func loadMediaCopyJob() {
-        guard !isMediaCopyBusy else { return }
-
-        let panel = NSOpenPanel()
-        panel.title = "Load File Copy Job"
-        panel.prompt = "Load Job"
-        panel.allowsMultipleSelection = false
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.canCreateDirectories = false
-        panel.allowedContentTypes = [MediaCopyJobFile.contentType, .json]
-        panel.directoryURL = mediaCopyDestinationRoot ?? primaryMediaCopySourceRoot ?? lastInputDirectoryURL()
-
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-
-        do {
-            let data = try Data(contentsOf: url)
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            let document = try decoder.decode(MediaCopyJobDocument.self, from: data)
-            let workflows = document.workflows.filter {
-                directoryURLIfExists(atPath: $0.sourceRoot.path) != nil
-                    && directoryURLIfExists(atPath: $0.destinationRoot.path) != nil
-            }
-            mediaCopyQueue = workflows
-            mediaCopyPlan = nil
-            mediaCopyProgress = nil
-            currentMediaCopyWorkflowID = nil
-
-            var details = [
-                "Loaded \(workflows.count) file copy workflow\(workflows.count == 1 ? "" : "s")."
-            ]
-            let skipped = document.workflows.count - workflows.count
-            if skipped > 0 {
-                details.append("Skipped \(skipped) workflow\(skipped == 1 ? "" : "s") with missing folders.")
-            }
-            statusMessage = details.joined(separator: " ")
-        } catch {
-            statusMessage = "Could not load file copy job: \(error.localizedDescription)"
-        }
-    }
-
-    func runMediaCopyQueue() {
-        guard canRunMediaCopyQueue else { return }
-
-        for workflow in mediaCopyQueue {
-            guard validateMediaCopyFolders(
-                sourceRoot: workflow.sourceRoot,
-                destinationRoot: workflow.destinationRootPreservingSourceFolder
-            ) else {
-                return
-            }
-        }
-
-        mediaFileCoordinator.runQueuedWorkflows(mediaCopyQueue)
-    }
-
-    func cancelMediaCopy() {
-        guard isMediaCopyBusy else { return }
-        mediaFileCoordinator.cancel()
-        isMediaCopyScanning = false
-        isMediaCopying = false
-        isMediaDeleting = false
-        isMediaRenaming = false
-        mediaRenameProgressVerb = "renamed"
-        mediaCopyProgress = nil
-        currentMediaCopyWorkflowID = nil
-        statusMessage = "File management operation cancelled."
-    }
-
-    private func resetForMediaCopyCoordinatorRun() {
-        mediaCopyPlan = nil
-        mediaDeletePlan = nil
-        mediaRenamePlan = nil
-        isMediaRenamePreviewStale = false
-        mediaCopyProgress = nil
-        currentMediaCopyWorkflowID = nil
-        isMediaCopyScanning = false
-        isMediaCopying = false
-        isMediaDeleting = false
-        isMediaRenaming = false
-    }
-
     func buildBackupRestorePlan() {
         guard canBuildBackupRestorePlan,
             let deletedFolder = restoreDeletedFolder,
@@ -2833,37 +2691,12 @@ final class EncoderViewModel: ObservableObject {
     }
 
     private func promptMediaCopyConflictResolution(
-        for plans: [MediaCopyPlan]
+        for plans: [MediaCopyBatchPlan]
     ) -> MediaCopyConflictResolution? {
-        let conflictCount = plans.reduce(0) { $0 + $1.conflictCount }
-        guard conflictCount > 0 else { return .skipExisting }
-        let candidateCount = plans.reduce(0) { $0 + $1.candidates.count }
-        let destinationDescription =
-            plans.count == 1
-            ? plans[0].destinationRoot.path(percentEncoded: false)
-            : "\(plans.count) queued destinations"
-        let fileTypeName =
-            Set(plans.map(\.filter)).count == 1
-            ? plans[0].filter.fileTypeName
-            : "queued"
-
-        let alert = NSAlert()
-        alert.messageText = "Existing files found in the destination"
-        alert.informativeText =
-            "\(conflictCount) of \(candidateCount) matching \(fileTypeName) file\(conflictCount == 1 ? "" : "s") already exist under \(destinationDescription). Choose whether to skip those files or replace them. Other destination files are not changed."
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Skip Existing")
-        alert.addButton(withTitle: "Replace Existing")
-        alert.addButton(withTitle: "Cancel")
-
-        switch alert.runModal() {
-        case .alertFirstButtonReturn:
-            return .skipExisting
-        case .alertSecondButtonReturn:
-            return .replaceExisting
-        default:
-            return nil
+        if let mediaCopyConflictResolutionHandler {
+            return mediaCopyConflictResolutionHandler(plans)
         }
+        return MediaCopyAppKitBoundary.resolveConflicts(in: plans)
     }
 
     func clearInputs() {
@@ -3173,18 +3006,8 @@ final class EncoderViewModel: ObservableObject {
         return "GPhilCoder Queue \(formatter.string(from: Date())).\(QueueFile.fileExtension)"
     }
 
-    private func defaultMediaCopyJobFileName() -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd HH.mm"
-        return "GPhilCoder File Copy \(formatter.string(from: Date())).\(MediaCopyJobFile.fileExtension)"
-    }
-
     private func normalizedQueueFileURL(_ url: URL) -> URL {
         url.pathExtension.isEmpty ? url.appendingPathExtension(QueueFile.fileExtension) : url
-    }
-
-    private func normalizedMediaCopyJobFileURL(_ url: URL) -> URL {
-        url.pathExtension.isEmpty ? url.appendingPathExtension(MediaCopyJobFile.fileExtension) : url
     }
 
     private func existingOutputURLs(for baseOutputURL: URL) -> [URL] {
@@ -3749,6 +3572,11 @@ final class EncoderViewModel: ObservableObject {
         mediaCopyDestinationRoot = settingsPersistence.directoryURL(
             forKey: DefaultsKey.mediaCopyDestinationRootPath
         )
+        if let rawValue = settingsPersistence.string(forKey: DefaultsKey.mediaCopyDestinationLayout),
+            let layout = MediaCopyDestinationLayout(rawValue: rawValue)
+        {
+            mediaCopyDestinationLayout = layout
+        }
         if let rawValue = settingsPersistence.string(forKey: DefaultsKey.mediaCopyFilter),
             let value = MediaFileFilter(rawValue: rawValue)
         {
@@ -4027,7 +3855,10 @@ final class EncoderViewModel: ObservableObject {
         return panel.urls
     }
 
-    private func validateMediaCopyFolders(sourceRoot: URL, destinationRoot: URL) -> Bool {
+    func validateMediaCopyFolders(sourceRoot: URL, destinationRoot: URL) -> Bool {
+        if let mediaCopyFolderValidationHandler {
+            return mediaCopyFolderValidationHandler(sourceRoot, destinationRoot)
+        }
         let sourceComponents = sourceRoot.standardizedFileURL.resolvingSymlinksInPath().pathComponents
         let destinationComponents =
             destinationRoot.standardizedFileURL.resolvingSymlinksInPath().pathComponents

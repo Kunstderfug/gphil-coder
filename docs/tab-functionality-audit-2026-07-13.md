@@ -12,6 +12,20 @@ This document is a decision backlog, not an implementation commitment. It separa
 - **Development opportunities:** useful completions of an existing workflow.
 - **Optional product ideas:** plausible additions that should be implemented only if real user workflows justify them.
 
+## Implementation follow-up
+
+This audit remains the historical evidence and decision backlog for revision
+`793f6b0`. Approved packages are tracked here without rewriting the original
+findings:
+
+- **Package A — Safe Sync:** implemented in code with automated verification;
+  the signed-build smoke checklist remains release acceptance work.
+- **Package B — Copy correctness:** implemented in code on 2026-07-13 with one
+  multi-source planner shared by Scan, Copy Now, and Queue; explicit destination
+  layouts; version-2 repairable jobs with version-1 migration; transactional
+  cancellation; package atomicity; and parity tests. The signed-build smoke
+  checklist remains release acceptance work.
+
 ## Audit method and limits
 
 The current checkout was built with `./scripts/build_app.sh`. A fresh local audit bundle was used to capture the default state of all seven tabs. The source, README, and current test suite were then inspected to trace what each control actually does. `swift test` passes all 156 tests.
@@ -440,8 +454,8 @@ Before using those documents for future planning, mark the old plan as archival 
 
 ## Decision worksheet
 
-- [ ] Approve Safe Sync package.
-- [ ] Approve Copy correctness package.
+- [x] Approve Safe Sync package. Implemented; signed-build smoke pending.
+- [x] Approve Copy correctness package. Implemented; signed-build smoke pending.
 - [ ] Approve Restore atomic overwrite only.
 - [ ] Approve complete Restore control/safety package.
 - [ ] Decide App Store Video direction.

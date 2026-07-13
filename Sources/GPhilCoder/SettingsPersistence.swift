@@ -44,6 +44,7 @@ struct SettingsPersistence {
         static let mediaCopySourceRootPath = "mediaCopySourceRootPath"
         static let mediaCopySourceRootPaths = "mediaCopySourceRootPaths"
         static let mediaCopyDestinationRootPath = "mediaCopyDestinationRootPath"
+        static let mediaCopyDestinationLayout = "mediaCopyDestinationLayout"
         static let mediaCopyFilter = "mediaCopyFilter"
         static let mediaCopyAudioExtensions = "mediaCopyAudioExtensions"
         static let mediaCopyVideoExtensions = "mediaCopyVideoExtensions"

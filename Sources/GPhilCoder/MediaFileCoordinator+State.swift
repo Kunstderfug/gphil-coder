@@ -4,7 +4,8 @@ import GPhilCoderCore
 @MainActor
 extension MediaFileCoordinator {
     var isBusy: Bool {
-        isMediaCopyScanning || isMediaCopying || isMediaDeleting || isMediaRenaming
+        isMediaCopyScanning || isMediaCopying || isMediaCopyFinalizing
+            || isMediaDeleting || isMediaRenaming
     }
 
     var currentMediaCopySelectedExtensions: Set<String> {
@@ -21,8 +22,9 @@ extension MediaFileCoordinator {
 
     var mediaCopyRunConfiguration: MediaCopyRunConfiguration {
         MediaCopyRunConfiguration(
-            sourceRoot: primaryMediaCopySourceRoot,
+            sourceRoots: mediaCopySourceRoots,
             destinationRoot: mediaCopyDestinationRoot,
+            destinationLayout: mediaCopyDestinationLayout,
             filter: mediaCopyFilter,
             selectedExtensions: selectedExtensions(for: mediaCopyFilter),
             fileNameFilter: currentMediaFileNameFilter,

@@ -160,3 +160,46 @@ The displayed entitlements must include
 - [ ] With VoiceOver, verify labels, values, and state changes are announced for
   deletion on/off, **REVIEW REQUIRED**, plan counts, destructive scope, progress,
   cancellation, completion, recovery mechanism, and recovery conflicts.
+
+## Copy correctness signed-build smoke checklist
+
+Use a signed, sandboxed build and disposable source/destination folders. The
+automated suite covers planning, persistence, parity, conflict denial, package
+copying, and transactional cancellation; this checklist verifies the macOS
+pickers, prompts, sandbox access, and visible path summaries.
+
+- [ ] Select two source folders containing distinct nested files. With
+  **Source folders inside destination**, Scan must show both source identities,
+  exact final paths, aggregate bytes/counts, and the two source-folder wrappers.
+- [ ] Copy Now, then repeat the same configuration through Queue into a second
+  destination. Compare both destination trees; they must be identical.
+- [ ] Repeat that parity check with **Merge source contents**, including two
+  selected files that target the same relative path. Confirm the preview and
+  conflict prompt report the collision before copying.
+- [ ] Cancel the conflict prompt. Confirm no destination file or folder changed
+  and no `.gphilcoder-copy-*` transaction folder remains.
+- [ ] Replace an existing item during a large copy, then cancel while progress
+  is active. Confirm the original destination content is restored, no partially
+  copied item remains, and no transaction folder remains.
+- [ ] Run a queue with at least two workflows and cancel during the second.
+  Confirm changes from the first workflow are also rolled back and no retained
+  queue transaction folder remains.
+- [ ] After Scan but before Copy, add, remove, or modify a planned source or
+  destination item. Confirm Copy rejects the stale plan, preserves the external
+  change, and asks for a fresh review.
+- [ ] Copy a macOS package such as a disposable `.app` bundle with multiple
+  descendants. Confirm it appears as one item and arrives complete, never as an
+  empty or partial package shell.
+- [ ] Save a job containing both source folders and the chosen layout, load it,
+  and confirm the complete source set, layout, filter, and exact destination
+  are retained.
+- [ ] Rename one saved source and load the job. Confirm the workflow remains in
+  Queue as **NEEDS REPAIR**, cannot run, and **Repair** relinks it without losing
+  the other sources or layout.
+- [ ] Load a legacy version-1 job and confirm its resolved destination tree
+  matches the former queue behavior, including the matching-leaf-name case.
+  Attempt a future-version or corrupt job and confirm the current queue remains
+  unchanged with a precise error.
+- [ ] With Full Keyboard Access and VoiceOver, verify the layout picker, Plan /
+  Queue switch, exact source/destination paths, conflict prompt, Repair, Run,
+  Cancel, and completion state are reachable and announced coherently.

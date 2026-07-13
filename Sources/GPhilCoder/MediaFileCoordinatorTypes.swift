@@ -1,23 +1,6 @@
 import Foundation
 import GPhilCoderCore
 
-struct MediaCopyResult: Sendable {
-    var total: Int
-    var copied = 0
-    var skippedExisting = 0
-    var failed = 0
-    var failedNames: [String] = []
-    var createdDirectories = 0
-    var failedDirectories = 0
-    var failedDirectoryNames: [String] = []
-    var cancelled = false
-
-    init(total: Int = 0, cancelled: Bool = false) {
-        self.total = total
-        self.cancelled = cancelled
-    }
-}
-
 struct TrashableFileItem: Identifiable, Sendable {
     let id: UUID
     let url: URL

@@ -198,6 +198,7 @@ final class EncoderViewModelPersistenceTests: XCTestCase {
         model?.fileManagementMode = .rename
         model?.mediaCopySourceRoots = [firstSource, secondSource]
         model?.mediaCopyDestinationRoot = destination
+        model?.mediaCopyDestinationLayout = .mergeContents
         model?.mediaFileNameFilterQuery = "dialogue"
         model?.mediaRenameOperation = .replaceText
         model?.mediaRenameFindText = "dialogue"
@@ -217,6 +218,7 @@ final class EncoderViewModelPersistenceTests: XCTestCase {
             [firstSource.standardizedFileURL, secondSource.standardizedFileURL]
         )
         XCTAssertEqual(restored.mediaCopyDestinationRoot?.standardizedFileURL, destination.standardizedFileURL)
+        XCTAssertEqual(restored.mediaCopyDestinationLayout, .mergeContents)
         XCTAssertEqual(restored.mediaCopyFilter, .audio)
         XCTAssertEqual(restored.mediaCopyAudioExtensions, ["wav"])
         XCTAssertEqual(restored.mediaFileNameFilterQuery, "dialogue")
@@ -387,6 +389,7 @@ final class EncoderViewModelPersistenceTests: XCTestCase {
         "mediaCopySourceRootPath",
         "mediaCopySourceRootPaths",
         "mediaCopyDestinationRootPath",
+        "mediaCopyDestinationLayout",
         "mediaCopyFilter",
         "mediaCopyAudioExtensions",
         "mediaCopyVideoExtensions",

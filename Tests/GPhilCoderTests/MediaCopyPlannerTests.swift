@@ -525,6 +525,168 @@ final class MediaCopyPlannerTests: XCTestCase {
         )
     }
 
+    func testBatchPreviewIdentifiesEachSourceAndSharesVisibleRowsAcrossSources() throws {
+        let workspace = try makeTemporaryDirectory()
+        let firstSource = workspace.appendingPathComponent("First", isDirectory: true)
+        let secondSource = workspace.appendingPathComponent("Second", isDirectory: true)
+        let destination = workspace.appendingPathComponent("Destination", isDirectory: true)
+        try FileManager.default.createDirectory(at: firstSource, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: secondSource, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        try writeFile("Audio/a.wav", in: firstSource, contents: "a")
+        try writeFile("Audio/b.wav", in: firstSource, contents: "b")
+        try writeFile("Audio/c.wav", in: secondSource, contents: "c")
+
+        let plan = try MediaCopyBatchPlanner.buildPlan(
+            configuration: MediaCopyBatchConfiguration(
+                sourceRoots: [firstSource, secondSource],
+                destinationRoot: destination,
+                filter: .audio
+            ),
+            candidateLimit: 2
+        )
+
+        XCTAssertEqual(plan.candidateCount, 3)
+        XCTAssertEqual(plan.candidates.count, 2)
+        XCTAssertEqual(Set(plan.candidates.map(\.sourceRoot)), Set([firstSource, secondSource]))
+    }
+
+    func testBatchPlanReportsCollisionsBetweenSelectedSources() throws {
+        let workspace = try makeTemporaryDirectory()
+        let firstSource = workspace.appendingPathComponent("First", isDirectory: true)
+        let secondSource = workspace.appendingPathComponent("Second", isDirectory: true)
+        let destination = workspace.appendingPathComponent("Destination", isDirectory: true)
+        try FileManager.default.createDirectory(at: firstSource, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: secondSource, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        try writeFile("Audio/take.wav", in: firstSource, contents: "first")
+        try writeFile("Audio/take.wav", in: secondSource, contents: "second")
+
+        let plan = try MediaCopyBatchPlanner.buildPlan(
+            configuration: MediaCopyBatchConfiguration(
+                sourceRoots: [firstSource, secondSource],
+                destinationRoot: destination,
+                destinationLayout: .mergeContents,
+                filter: .audio
+            )
+        )
+
+        XCTAssertEqual(plan.candidateCount, 2)
+        XCTAssertEqual(plan.conflictCount, 2)
+        XCTAssertEqual(plan.copyableWithoutOverwriteCount, 1)
+        XCTAssertTrue(plan.candidates.allSatisfy(\.hasDestinationConflict))
+    }
+
+    func testBatchPlanBlocksAncestorDestinationCollisions() throws {
+        let workspace = try makeTemporaryDirectory()
+        let firstSource = try makeDirectory("First", in: workspace)
+        let secondSource = try makeDirectory("Second", in: workspace)
+        let destination = try makeDirectory("Destination", in: workspace)
+        try writeFile("shared", in: firstSource, contents: "file")
+        try writeFile("shared/inside.txt", in: secondSource, contents: "nested")
+
+        let plan = try MediaCopyBatchPlanner.buildPlan(
+            configuration: MediaCopyBatchConfiguration(
+                sourceRoots: [firstSource, secondSource],
+                destinationRoot: destination,
+                destinationLayout: .mergeContents,
+                filter: .all
+            )
+        )
+
+        XCTAssertEqual(plan.structuralConflictCount, 3)
+        XCTAssertFalse(plan.canExecute)
+        XCTAssertTrue(plan.candidates.allSatisfy(\.hasDestinationConflict))
+    }
+
+    func testBatchPlanBlocksRegularFileReplacingAnExistingDirectory() throws {
+        let workspace = try makeTemporaryDirectory()
+        let source = try makeDirectory("Source", in: workspace)
+        let destination = try makeDirectory("Destination", in: workspace)
+        try writeFile("shared", in: source, contents: "file")
+        _ = try makeDirectory("shared", in: destination)
+
+        let plan = try MediaCopyBatchPlanner.buildPlan(
+            configuration: MediaCopyBatchConfiguration(
+                sourceRoots: [source],
+                destinationRoot: destination,
+                destinationLayout: .mergeContents,
+                filter: .all
+            )
+        )
+
+        XCTAssertEqual(plan.structuralConflictCount, 1)
+        XCTAssertFalse(plan.canExecute)
+        XCTAssertTrue(try XCTUnwrap(plan.candidates.first).hasDestinationConflict)
+    }
+
+    func testBatchPlanDetectsCaseOnlyCollisionsOnCaseInsensitiveDestination() throws {
+        let workspace = try makeTemporaryDirectory()
+        let firstSource = try makeDirectory("First", in: workspace)
+        let secondSource = try makeDirectory("Second", in: workspace)
+        let destination = try makeDirectory("Destination", in: workspace)
+        let caseSensitive = try destination.resourceValues(
+            forKeys: [.volumeSupportsCaseSensitiveNamesKey]
+        ).volumeSupportsCaseSensitiveNames ?? true
+        if caseSensitive {
+            throw XCTSkip("Case-only collision behavior requires a case-insensitive volume.")
+        }
+        try writeFile("Audio/Take.wav", in: firstSource, contents: "first")
+        try writeFile("Audio/take.wav", in: secondSource, contents: "second")
+
+        let plan = try MediaCopyBatchPlanner.buildPlan(
+            configuration: MediaCopyBatchConfiguration(
+                sourceRoots: [firstSource, secondSource],
+                destinationRoot: destination,
+                destinationLayout: .mergeContents,
+                filter: .audio
+            )
+        )
+
+        XCTAssertFalse(plan.destinationUsesCaseSensitiveNames)
+        XCTAssertEqual(plan.conflictCount, 2)
+        XCTAssertTrue(plan.candidates.allSatisfy(\.hasDestinationConflict))
+    }
+
+    func testQueueReviewDetectsCollisionsAcrossSeparatelyPlannedWorkflows() throws {
+        let workspace = try makeTemporaryDirectory()
+        let firstSource = try makeDirectory("First", in: workspace)
+        let secondSource = try makeDirectory("Second", in: workspace)
+        let destination = try makeDirectory("Destination", in: workspace)
+        try writeFile("Audio/take.wav", in: firstSource, contents: "first")
+        try writeFile("Audio/take.wav", in: secondSource, contents: "second")
+
+        let plans = try [firstSource, secondSource].map { source in
+            try MediaCopyBatchPlanner.buildPlan(
+                configuration: MediaCopyBatchConfiguration(
+                    sourceRoots: [source],
+                    destinationRoot: destination,
+                    destinationLayout: .mergeContents,
+                    filter: .audio
+                )
+            )
+        }
+        XCTAssertEqual(plans.reduce(0) { $0 + $1.conflictCount }, 0)
+
+        let queueReviewPlans = MediaCopyBatchPlanner.buildQueueReviewPlans(from: plans)
+
+        XCTAssertEqual(queueReviewPlans.count, 1)
+        XCTAssertEqual(queueReviewPlans[0].conflictCount, 2)
+        XCTAssertTrue(queueReviewPlans[0].candidates.allSatisfy(\.hasDestinationConflict))
+    }
+
+    func testSourceFoldersLayoutAlwaysPlacesSourceInsideSelectedDestination() {
+        let source = URL(fileURLWithPath: "/Origin/Session", isDirectory: true)
+        let destination = URL(fileURLWithPath: "/Delivery/Session", isDirectory: true)
+
+        XCTAssertEqual(
+            MediaCopyDestinationLayout.sourceFolders
+                .resolvedDestinationRoot(for: source, destinationRoot: destination)
+                .standardizedFileURL.path,
+            "/Delivery/Session/Session"
+        )
+    }
+
     func testCopyCandidateSkipsExistingDestinationFiles() throws {
         let sourceRoot = try makeTemporaryDirectory()
         let destinationRoot = try makeTemporaryDirectory()
@@ -567,12 +729,52 @@ final class MediaCopyPlannerTests: XCTestCase {
         XCTAssertEqual(try readFile("Audio/song.mp3", in: destinationRoot), "new")
     }
 
-    func testMediaCopyJobDocumentRoundTripsQueuedWorkflows() throws {
-        let sourceRoot = URL(fileURLWithPath: "/Volumes/Source/FESTIVAL_MEDIA_FILES", isDirectory: true)
-        let destinationRoot = URL(fileURLWithPath: "/Volumes/Target/FESTIVAL_MEDIA_FILES", isDirectory: true)
-        let workflow = MediaCopyWorkflow(
+    func testCopyTreatsMacOSPackageAsOneCompleteCandidate() throws {
+        let sourceRoot = try makeTemporaryDirectory()
+        let destinationRoot = try makeTemporaryDirectory()
+        try writeFile(
+            "Session.app/Contents/Info.plist",
+            in: sourceRoot,
+            contents: "package metadata"
+        )
+        try writeFile(
+            "Session.app/Contents/Resources/payload.dat",
+            in: sourceRoot,
+            contents: "package payload"
+        )
+
+        let plan = try MediaCopyPlanner.buildPlan(
             sourceRoot: sourceRoot,
             destinationRoot: destinationRoot,
+            filter: .all
+        )
+        let candidate = try XCTUnwrap(plan.candidates.first)
+
+        XCTAssertEqual(plan.candidateCount, 1)
+        XCTAssertEqual(plan.relativeDirectories, [])
+        XCTAssertTrue(candidate.isPackage)
+        XCTAssertEqual(
+            MediaCopyPlanner.copyCandidate(candidate, conflictResolution: .skipExisting),
+            .copied
+        )
+        XCTAssertEqual(
+            try readFile("Session.app/Contents/Info.plist", in: destinationRoot),
+            "package metadata"
+        )
+        XCTAssertEqual(
+            try readFile("Session.app/Contents/Resources/payload.dat", in: destinationRoot),
+            "package payload"
+        )
+    }
+
+    func testMediaCopyJobDocumentRoundTripsQueuedWorkflows() throws {
+        let sourceRoot = URL(fileURLWithPath: "/Volumes/Source/FESTIVAL_MEDIA_FILES", isDirectory: true)
+        let secondSourceRoot = URL(fileURLWithPath: "/Volumes/Source/SECOND_CAMERA", isDirectory: true)
+        let destinationRoot = URL(fileURLWithPath: "/Volumes/Target/FESTIVAL_MEDIA_FILES", isDirectory: true)
+        let workflow = MediaCopyWorkflow(
+            sourceRoots: [sourceRoot, secondSourceRoot],
+            destinationRoot: destinationRoot,
+            destinationLayout: .mergeContents,
             filter: .all,
             selectedExtensions: nil,
             fileNameFilter: MediaFileNameFilter(query: "take_"),
@@ -593,8 +795,9 @@ final class MediaCopyPlannerTests: XCTestCase {
 
         XCTAssertEqual(decoded.version, MediaCopyJobDocument.currentVersion)
         XCTAssertEqual(decoded.workflows.count, 1)
-        XCTAssertEqual(decoded.workflows.first?.sourceRoot, sourceRoot)
+        XCTAssertEqual(decoded.workflows.first?.sourceRoots, [sourceRoot, secondSourceRoot])
         XCTAssertEqual(decoded.workflows.first?.destinationRoot, destinationRoot)
+        XCTAssertEqual(decoded.workflows.first?.destinationLayout, .mergeContents)
         XCTAssertEqual(decoded.workflows.first?.filter, .all)
         XCTAssertNil(decoded.workflows.first?.selectedExtensions)
         XCTAssertEqual(decoded.workflows.first?.fileNameFilter, MediaFileNameFilter(query: "take_"))
@@ -647,8 +850,69 @@ final class MediaCopyPlannerTests: XCTestCase {
         let decoded = try decoder.decode(MediaCopyJobDocument.self, from: data)
 
         XCTAssertEqual(decoded.workflows.first?.filter, .audio)
+        XCTAssertEqual(decoded.version, MediaCopyJobDocument.currentVersion)
+        XCTAssertEqual(
+            decoded.workflows.first?.sourceRoots,
+            [URL(fileURLWithPath: "/Volumes/Source", isDirectory: true)]
+        )
+        XCTAssertEqual(decoded.workflows.first?.destinationLayout, .mergeContents)
+        XCTAssertEqual(
+            decoded.workflows.first?.destinationRoot.standardizedFileURL.path,
+            "/Volumes/Target/Source"
+        )
         XCTAssertNil(decoded.workflows.first?.selectedExtensions)
         XCTAssertEqual(decoded.workflows.first?.fileNameFilter, MediaFileNameFilter())
+    }
+
+    func testMediaCopyJobDocumentRejectsFutureVersionPrecisely() throws {
+        let data = """
+            {
+              "version": \(MediaCopyJobDocument.currentVersion + 1),
+              "savedAt": "2026-07-13T00:00:00Z",
+              "workflows": []
+            }
+            """.data(using: .utf8)!
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        XCTAssertThrowsError(try decoder.decode(MediaCopyJobDocument.self, from: data)) { error in
+            XCTAssertEqual(
+                error as? MediaCopyJobDocumentError,
+                .unsupportedVersion(
+                    found: MediaCopyJobDocument.currentVersion + 1,
+                    supported: MediaCopyJobDocument.currentVersion
+                )
+            )
+        }
+    }
+
+    func testSavedWorkflowRetainsMissingFoldersAndCanRelinkThem() throws {
+        let missingSource = URL(fileURLWithPath: "/Volumes/Missing/Source", isDirectory: true)
+        let missingDestination = URL(
+            fileURLWithPath: "/Volumes/Missing/Destination",
+            isDirectory: true
+        )
+        let replacementSource = try makeTemporaryDirectory()
+        let workflow = MediaCopyWorkflow(
+            sourceRoots: [missingSource],
+            destinationRoot: missingDestination,
+            destinationLayout: .mergeContents,
+            filter: .audio
+        )
+        let data = try JSONEncoder().encode(MediaCopyJobDocument(workflows: [workflow]))
+
+        let decoded = try JSONDecoder().decode(MediaCopyJobDocument.self, from: data)
+
+        let retained = try XCTUnwrap(decoded.workflows.first)
+        XCTAssertEqual(retained.repairIssues, [
+            .missingSource(missingSource),
+            .missingDestination(missingDestination),
+        ])
+
+        let relinked = retained.replacingSourceRoot(missingSource, with: replacementSource)
+        XCTAssertEqual(relinked.sourceRoots, [replacementSource])
+        XCTAssertEqual(relinked.repairIssues, [.missingDestination(missingDestination)])
+        XCTAssertEqual(relinked.destinationLayout, .mergeContents)
     }
 
     func testQueuedWorkflowDestinationPreservesSourceFolderName() {
@@ -669,7 +933,7 @@ final class MediaCopyPlannerTests: XCTestCase {
         )
     }
 
-    func testQueuedWorkflowDoesNotDuplicateSourceFolderNameWhenDestinationAlreadyMatches() {
+    func testVersionTwoSourceFoldersLayoutDoesNotUseLegacyLeafNameHeuristic() {
         let sourceRoot = URL(
             fileURLWithPath: "/Volumes/Source/FESTIVAL_MEDIA_FILES",
             isDirectory: true
@@ -686,7 +950,8 @@ final class MediaCopyPlannerTests: XCTestCase {
 
         XCTAssertEqual(
             workflow.destinationRootPreservingSourceFolder.standardizedFileURL.path,
-            matchingDestinationRoot.standardizedFileURL.path
+            matchingDestinationRoot.appendingPathComponent("FESTIVAL_MEDIA_FILES")
+                .standardizedFileURL.path
         )
     }
 
@@ -695,6 +960,12 @@ final class MediaCopyPlannerTests: XCTestCase {
             .appendingPathComponent("GPhilCoderTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         temporaryDirectories.append(url)
+        return url
+    }
+
+    private func makeDirectory(_ relativePath: String, in root: URL) throws -> URL {
+        let url = root.appendingPathComponent(relativePath, isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
     }
 
