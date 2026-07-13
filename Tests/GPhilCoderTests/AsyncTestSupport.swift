@@ -9,6 +9,7 @@ func clearViewModelDefaultsForTests() {
         "syncCustomFileExtensions",
         "syncOverwriteExisting",
         "syncDeleteDestinationItems",
+        "syncSafetyAcknowledgementVersion",
         "completionNotificationsEnabled"
     ]
     for key in keys {

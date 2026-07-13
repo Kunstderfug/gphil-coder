@@ -37,20 +37,29 @@ final class FolderSyncPlannerTests: XCTestCase {
             "Empty/Child",
             "Audio/Take 1/song.flac"
         ])
-
-        for operation in plan.operations {
-            XCTAssertEqual(FolderSyncPlanner.applyOperation(operation), .applied)
-        }
+        XCTAssertEqual(plan.operations.map(\.kind), [
+            .createDirectory,
+            .createDirectory,
+            .createDirectory,
+            .createDirectory,
+            .copyNew
+        ])
         XCTAssertTrue(
-            FileManager.default.fileExists(
-                atPath: destination.appendingPathComponent("Audio/Take 1/song.flac").path
-            )
+            plan.operations
+                .filter { $0.kind == .createDirectory }
+                .allSatisfy { $0.sourceEvidence?.isDirectory == true }
         )
-        XCTAssertTrue(
-            FileManager.default.fileExists(
-                atPath: destination.appendingPathComponent("Empty/Child").path
-            )
+        let copy = try XCTUnwrap(plan.operations.last)
+        XCTAssertEqual(
+            copy.sourceURL?.standardizedFileURL,
+            origin.appendingPathComponent("Audio/Take 1/song.flac").standardizedFileURL
         )
+        XCTAssertEqual(
+            copy.destinationURL.standardizedFileURL,
+            destination.appendingPathComponent("Audio/Take 1/song.flac").standardizedFileURL
+        )
+        XCTAssertNotNil(copy.sourceEvidence)
+        XCTAssertNil(copy.destinationEvidence)
     }
 
     func testBuildPlanUpdatesDestinationWhenOriginSizeChanges() throws {
@@ -67,16 +76,20 @@ final class FolderSyncPlannerTests: XCTestCase {
         XCTAssertEqual(plan.copyCount, 1)
         XCTAssertEqual(plan.updatedCount, 1)
         XCTAssertEqual(plan.operations.map(\.kind), [.copyUpdated])
-
-        XCTAssertEqual(FolderSyncPlanner.applyOperation(plan.operations[0]), .applied)
-        let copied = try String(
-            contentsOf: destination.appendingPathComponent("score.txt"),
-            encoding: .utf8
+        let operation = try XCTUnwrap(plan.operations.first)
+        XCTAssertEqual(
+            operation.sourceURL?.standardizedFileURL,
+            origin.appendingPathComponent("score.txt").standardizedFileURL
         )
-        XCTAssertEqual(copied, "newer larger")
+        XCTAssertEqual(
+            operation.destinationURL.standardizedFileURL,
+            destination.appendingPathComponent("score.txt").standardizedFileURL
+        )
+        XCTAssertEqual(operation.sourceEvidence?.fileSizeBytes, 12)
+        XCTAssertEqual(operation.destinationEvidence?.fileSizeBytes, 3)
     }
 
-    func testBuildPlanDeletesDestinationItemsMissingFromOriginByDefault() throws {
+    func testBuildPlanDeletesDestinationItemsMissingFromOriginWhenExplicitlyEnabled() throws {
         let origin = try makeTemporaryDirectory()
         let destination = try makeTemporaryDirectory()
         try writeFile("keep.txt", in: origin, contents: "keep")
@@ -85,20 +98,39 @@ final class FolderSyncPlannerTests: XCTestCase {
 
         let plan = try FolderSyncPlanner.buildPlan(
             originRoot: origin,
-            destinationRoot: destination
+            destinationRoot: destination,
+            syncDeletes: true
         )
 
         XCTAssertEqual(plan.deletedFileCount, 0)
         XCTAssertEqual(plan.deletedDirectoryCount, 1)
         XCTAssertEqual(plan.operations.map(\.kind), [.deleteDirectory])
         XCTAssertEqual(plan.operations.map(\.relativePath), ["Removed"])
-
-        XCTAssertEqual(FolderSyncPlanner.applyOperation(plan.operations[0]), .applied)
-        XCTAssertFalse(
-            FileManager.default.fileExists(
-                atPath: destination.appendingPathComponent("Removed").path
-            )
+        let operation = try XCTUnwrap(plan.operations.first)
+        XCTAssertNil(operation.sourceURL)
+        XCTAssertEqual(
+            operation.destinationURL.standardizedFileURL,
+            destination.appendingPathComponent("Removed").standardizedFileURL
         )
+        XCTAssertEqual(operation.destinationEvidence?.isDirectory, true)
+        XCTAssertEqual(operation.destinationEvidence?.descendantCount, 1)
+    }
+
+    func testDirectoryDeletionIncludesRecursiveDestinationBytesInThePlan() throws {
+        let origin = try makeTemporaryDirectory()
+        let destination = try makeTemporaryDirectory()
+        try writeFile("Removed/one.txt", in: destination, contents: "123")
+        try writeFile("Removed/Nested/two.txt", in: destination, contents: "4567")
+
+        let plan = try FolderSyncPlanner.buildPlan(
+            originRoot: origin,
+            destinationRoot: destination,
+            syncDeletes: true
+        )
+
+        XCTAssertEqual(plan.operations.map(\.kind), [.deleteDirectory])
+        XCTAssertEqual(plan.operations.first?.fileSizeBytes, 7)
+        XCTAssertEqual(plan.totalDeleteBytes, 7)
     }
 
     func testBuildPlanCanKeepDestinationOnlyItems() throws {
@@ -108,14 +140,28 @@ final class FolderSyncPlannerTests: XCTestCase {
 
         let plan = try FolderSyncPlanner.buildPlan(
             originRoot: origin,
-            destinationRoot: destination,
-            syncDeletes: false
+            destinationRoot: destination
         )
 
         XCTAssertFalse(plan.hasWork)
-        XCTAssertTrue(
-            FileManager.default.fileExists(
-                atPath: destination.appendingPathComponent("extra.txt").path
+        XCTAssertTrue(plan.operations.isEmpty)
+    }
+
+    func testBuildPlanRejectsAnOriginThatIsNoLongerADirectory() throws {
+        let workspace = try makeTemporaryDirectory()
+        let origin = workspace.appendingPathComponent("Origin", isDirectory: true)
+        let destination = workspace.appendingPathComponent("Destination", isDirectory: true)
+        try "not a directory".write(to: origin, atomically: true, encoding: .utf8)
+        try FileManager.default.createDirectory(
+            at: destination,
+            withIntermediateDirectories: true
+        )
+
+        XCTAssertThrowsError(
+            try FolderSyncPlanner.buildPlan(
+                originRoot: origin,
+                destinationRoot: destination,
+                syncDeletes: true
             )
         )
     }
@@ -135,20 +181,18 @@ final class FolderSyncPlannerTests: XCTestCase {
         XCTAssertEqual(plan.copyCount, 1)
         XCTAssertEqual(plan.createdDirectoryCount, 1)
         XCTAssertEqual(plan.operations.map(\.relativePath), ["Audio", "Audio/song.wav"])
-
-        for operation in plan.operations {
-            XCTAssertEqual(FolderSyncPlanner.applyOperation(operation), .applied)
-        }
-
-        XCTAssertTrue(
-            FileManager.default.fileExists(
-                atPath: destination.appendingPathComponent("Audio/song.wav").path
-            )
+        XCTAssertEqual(plan.operations.map(\.kind), [.createDirectory, .copyNew])
+        XCTAssertFalse(plan.operations.contains { operation in
+            operation.relativePath == "Docs" || operation.relativePath.hasPrefix("Docs/")
+        })
+        let copy = try XCTUnwrap(plan.operations.last)
+        XCTAssertEqual(
+            copy.sourceURL?.standardizedFileURL,
+            origin.appendingPathComponent("Audio/song.wav").standardizedFileURL
         )
-        XCTAssertFalse(
-            FileManager.default.fileExists(
-                atPath: destination.appendingPathComponent("Docs/notes.txt").path
-            )
+        XCTAssertEqual(
+            copy.destinationURL.standardizedFileURL,
+            destination.appendingPathComponent("Audio/song.wav").standardizedFileURL
         )
     }
 
@@ -161,27 +205,21 @@ final class FolderSyncPlannerTests: XCTestCase {
         let plan = try FolderSyncPlanner.buildPlan(
             originRoot: origin,
             destinationRoot: destination,
+            syncDeletes: true,
             includedFileExtensions: ["wav"]
         )
 
         XCTAssertEqual(plan.deletedFileCount, 1)
         XCTAssertEqual(plan.deletedDirectoryCount, 0)
         XCTAssertEqual(plan.operations.map(\.relativePath), ["remove.wav"])
-
-        for operation in plan.operations {
-            XCTAssertEqual(FolderSyncPlanner.applyOperation(operation), .applied)
-        }
-
-        XCTAssertTrue(
-            FileManager.default.fileExists(
-                atPath: destination.appendingPathComponent("keep.txt").path
-            )
+        let deletion = try XCTUnwrap(plan.operations.first)
+        XCTAssertEqual(deletion.kind, .deleteFile)
+        XCTAssertNil(deletion.sourceURL)
+        XCTAssertEqual(
+            deletion.destinationURL.standardizedFileURL,
+            destination.appendingPathComponent("remove.wav").standardizedFileURL
         )
-        XCTAssertFalse(
-            FileManager.default.fileExists(
-                atPath: destination.appendingPathComponent("remove.wav").path
-            )
-        )
+        XCTAssertEqual(deletion.destinationEvidence?.fileSizeBytes, 8)
     }
 
     func testMultipleOriginsCanShareDestinationUsingOriginSubfolders() throws {
@@ -196,6 +234,8 @@ final class FolderSyncPlannerTests: XCTestCase {
 
         let targetA = sharedDestination.appendingPathComponent(originA.lastPathComponent, isDirectory: true)
         let targetB = sharedDestination.appendingPathComponent(originB.lastPathComponent, isDirectory: true)
+        try FileManager.default.createDirectory(at: targetA, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: targetB, withIntermediateDirectories: true)
 
         let firstPlan = try FolderSyncPlanner.buildPlan(
             originRoot: originA,
@@ -206,37 +246,33 @@ final class FolderSyncPlannerTests: XCTestCase {
             destinationRoot: targetB
         )
 
-        for operation in firstPlan.operations + secondPlan.operations {
-            XCTAssertEqual(FolderSyncPlanner.applyOperation(operation), .applied)
-        }
-
         XCTAssertEqual(
-            try String(contentsOf: targetA.appendingPathComponent("one.txt"), encoding: .utf8),
-            "one"
+            firstPlan.operations.map(\.destinationURL.standardizedFileURL),
+            [targetA.appendingPathComponent("one.txt").standardizedFileURL]
         )
         XCTAssertEqual(
-            try String(contentsOf: targetB.appendingPathComponent("two.txt"), encoding: .utf8),
-            "two"
+            secondPlan.operations.map(\.destinationURL.standardizedFileURL),
+            [targetB.appendingPathComponent("two.txt").standardizedFileURL]
         )
+        XCTAssertEqual(firstPlan.operations.map(\.kind), [.copyNew])
+        XCTAssertEqual(secondPlan.operations.map(\.kind), [.copyNew])
 
+        try writeFile("one.txt", in: targetA, contents: "one")
+        try writeFile("two.txt", in: targetB, contents: "two")
         try FileManager.default.removeItem(at: originB.appendingPathComponent("two.txt"))
         let deletePlan = try FolderSyncPlanner.buildPlan(
             originRoot: originB,
-            destinationRoot: targetB
+            destinationRoot: targetB,
+            syncDeletes: true
         )
-        for operation in deletePlan.operations {
-            XCTAssertEqual(FolderSyncPlanner.applyOperation(operation), .applied)
-        }
-
-        XCTAssertTrue(
-            FileManager.default.fileExists(atPath: targetA.appendingPathComponent("one.txt").path)
-        )
-        XCTAssertFalse(
-            FileManager.default.fileExists(atPath: targetB.appendingPathComponent("two.txt").path)
+        XCTAssertEqual(deletePlan.operations.map(\.kind), [.deleteFile])
+        XCTAssertEqual(
+            deletePlan.operations.map(\.destinationURL.standardizedFileURL),
+            [targetB.appendingPathComponent("two.txt").standardizedFileURL]
         )
     }
 
-    func testApplyOperationSkipsExistingFilesWhenOverwriteIsOff() throws {
+    func testBuildPlanCapturesDestinationEvidenceWithoutMutatingIt() throws {
         let origin = try makeTemporaryDirectory()
         let destination = try makeTemporaryDirectory()
         try writeFile("score.txt", in: origin, contents: "new larger")
@@ -247,15 +283,177 @@ final class FolderSyncPlannerTests: XCTestCase {
             destinationRoot: destination
         )
 
+        let update = try XCTUnwrap(plan.operations.first)
+        XCTAssertEqual(update.kind, .copyUpdated)
+        XCTAssertEqual(update.sourceEvidence?.fileSizeBytes, 10)
+        XCTAssertEqual(update.destinationEvidence?.fileSizeBytes, 3)
+        XCTAssertNotEqual(
+            update.sourceEvidence?.contentSignature,
+            update.destinationEvidence?.contentSignature
+        )
         XCTAssertEqual(
-            FolderSyncPlanner.applyOperation(plan.operations[0], overwriteExisting: false),
-            .skippedExisting
+            try String(
+                contentsOf: destination.appendingPathComponent("score.txt"),
+                encoding: .utf8
+            ),
+            "old"
         )
-        let retained = try String(
-            contentsOf: destination.appendingPathComponent("score.txt"),
-            encoding: .utf8
+    }
+
+    func testBatchPlanKeepsEveryPairVisibleAndDerivesTotalsFromTheSameOperations() throws {
+        let firstOrigin = try makeTemporaryDirectory()
+        let firstDestination = try makeTemporaryDirectory()
+        let secondOrigin = try makeTemporaryDirectory()
+        let secondDestination = try makeTemporaryDirectory()
+        try writeFile("first.txt", in: firstOrigin, contents: "first")
+        try writeFile("second.txt", in: secondOrigin, contents: "second")
+
+        let firstPairID = UUID()
+        let secondPairID = UUID()
+        let batch = FolderSyncBatchPlan(
+            pairPlans: [
+                FolderSyncPairPlan(
+                    pairID: firstPairID,
+                    pairTitle: "First -> Destination",
+                    plan: try FolderSyncPlanner.buildPlan(
+                        originRoot: firstOrigin,
+                        destinationRoot: firstDestination,
+                        syncDeletes: false
+                    )
+                ),
+                FolderSyncPairPlan(
+                    pairID: secondPairID,
+                    pairTitle: "Second -> Destination",
+                    plan: try FolderSyncPlanner.buildPlan(
+                        originRoot: secondOrigin,
+                        destinationRoot: secondDestination,
+                        syncDeletes: false
+                    )
+                )
+            ]
         )
-        XCTAssertEqual(retained, "old")
+
+        XCTAssertEqual(batch.operationCount, 2)
+        XCTAssertEqual(batch.copyCount, 2)
+        XCTAssertEqual(batch.deleteCount, 0)
+        let preview = batch.preview(limit: 10)
+        XCTAssertEqual(preview.groups.map(\.pairID), [firstPairID, secondPairID])
+        XCTAssertEqual(preview.groups.map(\.totalOperationCount), [1, 1])
+        XCTAssertEqual(preview.groups.map(\.visibleOperationCount), [1, 1])
+        XCTAssertEqual(preview.groups.map(\.hiddenOperationCount), [0, 0])
+        XCTAssertEqual(preview.totalOperationCount, batch.operations.count)
+        XCTAssertEqual(preview.visibleOperationCount, 2)
+        XCTAssertEqual(preview.hiddenOperationCount, 0)
+    }
+
+    func testBatchPreviewReservesARowForLaterWorkBearingPairsBeforeUsingRowBudget() {
+        let firstPairID = UUID()
+        let secondPairID = UUID()
+        let firstPlan = makePlan(operationCount: 305, rootName: "First")
+        let secondPlan = makePlan(operationCount: 2, rootName: "Second")
+        let batch = FolderSyncBatchPlan(
+            pairPlans: [
+                FolderSyncPairPlan(
+                    pairID: firstPairID,
+                    pairTitle: "First -> Destination",
+                    plan: firstPlan
+                ),
+                FolderSyncPairPlan(
+                    pairID: secondPairID,
+                    pairTitle: "Second -> Destination",
+                    plan: secondPlan
+                )
+            ]
+        )
+
+        let preview = batch.preview(limit: 300)
+
+        XCTAssertEqual(preview.groups.map(\.pairID), [firstPairID, secondPairID])
+        XCTAssertEqual(preview.groups.map(\.totalOperationCount), [305, 2])
+        XCTAssertEqual(preview.groups.map(\.visibleOperationCount), [299, 1])
+        XCTAssertEqual(preview.groups.map(\.hiddenOperationCount), [6, 1])
+        XCTAssertEqual(preview.totalOperationCount, 307)
+        XCTAssertEqual(preview.visibleOperationCount, 300)
+        XCTAssertEqual(preview.hiddenOperationCount, 7)
+        XCTAssertEqual(
+            preview.groups[1].operations.first?.operation.relativePath,
+            "item-0.txt"
+        )
+    }
+
+    func testBatchPreviewCarriesPairPlanningFailuresAndCannotBeApplied() {
+        let origin = URL(fileURLWithPath: "/Origin")
+        let destination = URL(fileURLWithPath: "/Destination")
+        let failure = FolderSyncPairPlanningFailure(
+            pairID: UUID(),
+            pairTitle: "Origin -> Destination",
+            originRoot: origin,
+            destinationRoot: destination,
+            errorDescription: "The folder could not be read."
+        )
+        let batch = FolderSyncBatchPlan(pairPlans: [], planningFailures: [failure])
+
+        let preview = batch.preview(limit: 300)
+
+        XCTAssertEqual(preview.planningFailures.map(\.id), [failure.id])
+        XCTAssertEqual(preview.planningFailures.first?.originRoot, origin)
+        XCTAssertEqual(preview.planningFailures.first?.destinationRoot, destination)
+        XCTAssertFalse(batch.isComplete)
+        XCTAssertFalse(batch.isApplyable)
+    }
+
+    func testDirectoryOverFileConflictIsVisibleAndNeverPlannedAsADeletion() throws {
+        let origin = try makeTemporaryDirectory()
+        let destination = try makeTemporaryDirectory()
+        try writeFile("Blocked/child.txt", in: origin, contents: "new")
+        try writeFile("Blocked", in: destination, contents: "existing file")
+        let pairID = UUID()
+        let plan = try FolderSyncPlanner.buildPlan(
+            originRoot: origin,
+            destinationRoot: destination,
+            syncDeletes: true
+        )
+        let batch = FolderSyncBatchPlan(
+            pairPlans: [
+                FolderSyncPairPlan(pairID: pairID, pairTitle: "Conflict", plan: plan)
+            ]
+        )
+
+        XCTAssertFalse(plan.operations.contains { $0.kind == .deleteFile })
+        XCTAssertEqual(plan.operations.first?.destinationEvidence?.isDirectory, false)
+        XCTAssertEqual(
+            batch.operations.map { batch.disposition(for: $0, overwriteExisting: true) },
+            [.conflict, .conflict]
+        )
+    }
+
+    func testFileOverDirectoryConflictProtectsTheDirectoryAndItsDescendants() throws {
+        let origin = try makeTemporaryDirectory()
+        let destination = try makeTemporaryDirectory()
+        try writeFile("Blocked", in: origin, contents: "new file")
+        try writeFile("Blocked/keep.txt", in: destination, contents: "keep")
+        let pairID = UUID()
+        let plan = try FolderSyncPlanner.buildPlan(
+            originRoot: origin,
+            destinationRoot: destination,
+            syncDeletes: true
+        )
+        let batch = FolderSyncBatchPlan(
+            pairPlans: [
+                FolderSyncPairPlan(pairID: pairID, pairTitle: "Conflict", plan: plan)
+            ]
+        )
+
+        XCTAssertEqual(plan.operations.map(\.kind), [.copyNew])
+        XCTAssertEqual(plan.operations.first?.destinationEvidence?.isDirectory, true)
+        XCTAssertEqual(
+            batch.disposition(for: try XCTUnwrap(batch.operations.first), overwriteExisting: true),
+            .conflict
+        )
+        XCTAssertEqual(
+            try String(contentsOf: destination.appendingPathComponent("Blocked/keep.txt")),
+            "keep"
+        )
     }
 
     private func makeTemporaryDirectory() throws -> URL {
@@ -264,6 +462,37 @@ final class FolderSyncPlannerTests: XCTestCase {
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         temporaryDirectories.append(url)
         return url
+    }
+
+    private func makePlan(operationCount: Int, rootName: String) -> FolderSyncPlan {
+        let origin = URL(fileURLWithPath: "/\(rootName)-Origin", isDirectory: true)
+        let destination = URL(
+            fileURLWithPath: "/\(rootName)-Destination",
+            isDirectory: true
+        )
+        let operations = (0..<operationCount).map { index in
+            FolderSyncOperation(
+                kind: .copyNew,
+                sourceURL: origin.appendingPathComponent("item-\(index).txt"),
+                destinationURL: destination.appendingPathComponent("item-\(index).txt"),
+                relativePath: "item-\(index).txt",
+                fileSizeBytes: 1
+            )
+        }
+        return FolderSyncPlan(
+            originRoot: origin,
+            destinationRoot: destination,
+            operations: operations,
+            operationCount: operations.count,
+            copyCount: operations.count,
+            updatedCount: 0,
+            createdDirectoryCount: 0,
+            deletedFileCount: 0,
+            deletedDirectoryCount: 0,
+            totalCopyBytes: Int64(operations.count),
+            totalDeleteBytes: 0,
+            scannedAt: Date()
+        )
     }
 
     private func writeFile(_ relativePath: String, in root: URL, contents: String) throws {

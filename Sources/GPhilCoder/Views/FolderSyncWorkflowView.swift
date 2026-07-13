@@ -4,6 +4,7 @@ import SwiftUI
 
 struct FolderSyncWorkflowView: View {
     @EnvironmentObject private var model: EncoderViewModel
+    @State private var resultsSection: FolderSyncResultsSection = .plan
 
     var body: some View {
         HStack(spacing: 0) {
@@ -126,7 +127,13 @@ struct FolderSyncWorkflowView: View {
 
                     Toggle("Overwrite destination files", isOn: model.binding(\.syncOverwriteExisting))
                         .disabled(model.isFolderSyncBusy)
-                    Toggle("Sync deletions", isOn: model.binding(\.syncDeleteDestinationItems))
+                    Toggle(
+                        "Sync deletions",
+                        isOn: Binding(
+                            get: { model.syncDeleteDestinationItems },
+                            set: model.requestSyncDestinationDeletion
+                        )
+                    )
                         .disabled(model.isFolderSyncBusy)
                     Toggle("Auto-sync while app is open", isOn: model.binding(\.syncAutoSyncEnabled))
                         .disabled(model.isFolderSyncBusy)
@@ -137,6 +144,42 @@ struct FolderSyncWorkflowView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .padding(.vertical, 4)
+            }
+
+            if model.syncSafetyMigrationNeedsAcknowledgement {
+                GroupBox("Sync Safety Update") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Label(
+                            "Automatic sync is paused until you review the safer deletion behavior.",
+                            systemImage: "exclamationmark.shield"
+                        )
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(.orange)
+
+                        Text(
+                            "Destination deletion used to run automatically. Automatic plans containing a deletion now pause in full for manual review."
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                        HStack(spacing: 8) {
+                            Button("Turn deletion off") {
+                                model.acknowledgeSyncSafetyMigration(
+                                    keepDeletionEnabled: false
+                                )
+                            }
+                            .buttonStyle(.borderedProminent)
+
+                            Button("Keep deletion on") {
+                                model.acknowledgeSyncSafetyMigration(
+                                    keepDeletionEnabled: true
+                                )
+                            }
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
             }
 
             GroupBox("File Types") {
@@ -180,10 +223,16 @@ struct FolderSyncWorkflowView: View {
                         color: .teal
                     )
                     StatLine(
-                        title: "Changes",
+                        title: "Plan items",
                         value: "\(model.syncPendingOperationCount)",
                         symbol: "arrow.left.arrow.right",
                         color: .indigo
+                    )
+                    StatLine(
+                        title: "To apply",
+                        value: "\(model.syncPendingApplyOperationCount)",
+                        symbol: "checkmark.circle",
+                        color: .teal
                     )
                     StatLine(
                         title: "Copies",
@@ -197,6 +246,22 @@ struct FolderSyncWorkflowView: View {
                         symbol: "trash",
                         color: model.syncPendingDeleteCount > 0 ? .red : .secondary
                     )
+                    if model.syncPendingSkipCount > 0 {
+                        StatLine(
+                            title: "Skips",
+                            value: "\(model.syncPendingSkipCount)",
+                            symbol: "forward.end",
+                            color: .secondary
+                        )
+                    }
+                    if model.syncPendingConflictCount > 0 {
+                        StatLine(
+                            title: "Conflicts",
+                            value: "\(model.syncPendingConflictCount)",
+                            symbol: "exclamationmark.triangle",
+                            color: .orange
+                        )
+                    }
                     StatLine(
                         title: "Copy size",
                         value: model.syncPendingTotalSize.formattedFileSize,
@@ -243,7 +308,13 @@ struct FolderSyncWorkflowView: View {
 
     @ViewBuilder
     private var folderSyncActionPanel: some View {
-        if model.isFolderSyncBusy {
+        if model.isSyncRecovering {
+            Label("Rolling Back...", systemImage: "arrow.uturn.backward.circle.fill")
+                .frame(maxWidth: .infinity)
+                .controlSize(.large)
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("Folder Sync rollback in progress")
+        } else if model.isFolderSyncBusy {
             Button {
                 model.cancelFolderSync()
             } label: {
@@ -266,12 +337,12 @@ struct FolderSyncWorkflowView: View {
                 Button {
                     model.syncFoldersNow()
                 } label: {
-                    Label("Sync", systemImage: "arrow.triangle.2.circlepath")
+                    Label("Apply Reviewed Plan", systemImage: "checkmark.shield")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
-                .disabled(!model.canRunFolderSync)
+                .disabled(!model.canApplyReviewedFolderSyncPlan)
             }
         }
     }
@@ -282,18 +353,22 @@ struct FolderSyncWorkflowView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Folder Sync")
                         .font(.title3.weight(.semibold))
-                    Text(folderSyncSubtitle)
+                    Text(resultsSection == .history ? folderSyncHistorySubtitle : folderSyncSubtitle)
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
 
                 Spacer()
 
-                if model.syncAutoSyncEnabled {
+                if model.syncAutomaticPlanAwaitingReview {
+                    FormatPill(text: "REVIEW REQUIRED")
+                } else if let plan = model.syncPlan, !plan.isComplete {
+                    FormatPill(text: "INCOMPLETE")
+                } else if model.syncAutoSyncEnabled {
                     FormatPill(text: "AUTO")
                 }
                 if model.syncPendingOperationCount > 0 {
-                    FormatPill(text: "\(model.syncPendingOperationCount) CHANGES")
+                    FormatPill(text: "\(model.syncPendingOperationCount) ITEMS")
                 }
             }
             .padding(.horizontal, 22)
@@ -301,14 +376,45 @@ struct FolderSyncWorkflowView: View {
 
             Divider()
 
-            folderSyncResultsContent
+            Picker("Folder Sync detail", selection: $resultsSection) {
+                ForEach(FolderSyncResultsSection.allCases) { section in
+                    Text(section.title).tag(section)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(maxWidth: 320)
+            .padding(.horizontal, 22)
+            .padding(.vertical, 10)
+            .accessibilityLabel("Folder Sync detail")
+            .accessibilityHint("Switches between the reviewed plan and durable history and recovery")
+
+            Divider()
+
+            selectedFolderSyncResultsContent
         }
         .background(Color(nsColor: .textBackgroundColor))
     }
 
     @ViewBuilder
+    private var selectedFolderSyncResultsContent: some View {
+        switch resultsSection {
+        case .plan:
+            folderSyncResultsContent
+        case .history:
+            FolderSyncHistoryView(model: model)
+        }
+    }
+
+    @ViewBuilder
     private var folderSyncResultsContent: some View {
-        if model.isSyncScanning {
+        if model.isSyncRecovering {
+            CenteredStatusView(
+                symbol: "arrow.uturn.backward.circle",
+                title: "Rolling back folder sync",
+                detail: "Restoring retained items that are still safe to recover."
+            )
+        } else if model.isSyncScanning {
             CenteredStatusView(
                 symbol: "magnifyingglass",
                 title: "Scanning folder pairs",
@@ -347,21 +453,35 @@ struct FolderSyncWorkflowView: View {
                         )
                     }
 
-                    if !model.syncPreviewItems.isEmpty {
+                    if let preview = model.syncBatchPreview,
+                        !preview.groups.isEmpty || !preview.planningFailures.isEmpty
+                    {
                         Divider()
                             .padding(.vertical, 4)
 
-                        ForEach(model.syncPreviewItems) { operation in
-                            FolderSyncOperationRow(operation: operation)
+                        ForEach(preview.groups) { group in
+                            FolderSyncPreviewPairSection(
+                                group: group,
+                                dispositions: model.syncPlan?.operationDispositions(
+                                    overwriteExisting: model.syncOverwriteExisting
+                                ) ?? [:]
+                            )
                         }
 
-                        if model.syncPendingOperationCount > model.syncPreviewItems.count {
+                        ForEach(preview.planningFailures) { failure in
+                            FolderSyncPreviewFailureSection(failure: failure)
+                        }
+
+                        if preview.hiddenOperationCount > 0 {
                             Text(
-                                "\(model.syncPendingOperationCount - model.syncPreviewItems.count) more change\(model.syncPendingOperationCount - model.syncPreviewItems.count == 1 ? "" : "s") hidden from preview."
+                                "\(preview.hiddenOperationCount) more change\(preview.hiddenOperationCount == 1 ? "" : "s") hidden from preview across all pairs."
                             )
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .padding(.vertical, 12)
+                            .accessibilityLabel(
+                                "\(preview.hiddenOperationCount) additional Folder Sync change\(preview.hiddenOperationCount == 1 ? "" : "s") hidden across all pairs"
+                            )
                         }
                     }
                 }
@@ -372,6 +492,9 @@ struct FolderSyncWorkflowView: View {
 
 
     private var folderSyncSubtitle: String {
+        if model.isSyncRecovering {
+            return "Restoring retained items from a previous Folder Sync run."
+        }
         if model.isSyncScanning {
             return "Scanning enabled folder pairs."
         }
@@ -384,11 +507,26 @@ struct FolderSyncWorkflowView: View {
         if model.syncEnabledPairCount == 0 {
             return "All sync pairs are paused."
         }
+        if let plan = model.syncPlan, !plan.isComplete {
+            let count = plan.planningFailures.count
+            return
+                "Incomplete preview: \(count) pair\(count == 1 ? "" : "s") could not be scanned. No changes can be applied."
+        }
         if model.syncPendingOperationCount > 0 {
             return
-                "\(model.syncPendingOperationCount) pending change\(model.syncPendingOperationCount == 1 ? "" : "s") across \(model.syncEnabledPairCount) enabled pair\(model.syncEnabledPairCount == 1 ? "" : "s")."
+                "\(model.syncPendingOperationCount) reviewed plan item\(model.syncPendingOperationCount == 1 ? "" : "s") across \(model.syncEnabledPairCount) enabled pair\(model.syncEnabledPairCount == 1 ? "" : "s")."
         }
         return model.syncWatcherStatusTitle
+    }
+
+    private var folderSyncHistorySubtitle: String {
+        if model.syncHistory.isEmpty {
+            return model.syncRecoveryRecords.isEmpty
+                ? "No completed folder sync runs yet."
+                : "History is empty; active recovery remains available."
+        }
+        return
+            "\(model.syncHistory.count) recent run\(model.syncHistory.count == 1 ? "" : "s") and \(model.syncRecoveryRecords.count) active recovery record\(model.syncRecoveryRecords.count == 1 ? "" : "s")."
     }
 
     private var folderSyncProgressDetail: String {
@@ -536,44 +674,53 @@ private struct SyncFolderPairRow: View {
 }
 
 private struct FolderSyncOperationRow: View {
-    let operation: FolderSyncOperation
+    let batchOperation: FolderSyncBatchOperation
+    let disposition: FolderSyncBatchOperationDisposition
+
+    private var operation: FolderSyncOperation { batchOperation.operation }
 
     private var color: Color {
+        if disposition == .conflict { return .orange }
+        if disposition == .skipExisting { return .secondary }
         switch operation.kind {
         case .copyNew, .copyUpdated, .createDirectory:
-            .teal
+            return .teal
         case .deleteFile, .deleteDirectory:
-            .red
+            return .red
         }
     }
 
     private var symbolName: String {
+        if disposition == .conflict { return "exclamationmark.triangle" }
+        if disposition == .skipExisting { return "forward.end" }
         switch operation.kind {
         case .createDirectory:
-            "folder.badge.plus"
+            return "folder.badge.plus"
         case .copyNew:
-            "doc.badge.plus"
+            return "doc.badge.plus"
         case .copyUpdated:
-            "arrow.clockwise"
+            return "arrow.clockwise"
         case .deleteFile:
-            "trash"
+            return "trash"
         case .deleteDirectory:
-            "folder.badge.minus"
+            return "folder.badge.minus"
         }
     }
 
     private var title: String {
+        if disposition == .conflict { return "Conflict" }
+        if disposition == .skipExisting { return "Skip existing" }
         switch operation.kind {
         case .createDirectory:
-            "Create folder"
+            return "Create folder"
         case .copyNew:
-            "Copy new"
+            return "Copy new"
         case .copyUpdated:
-            "Update"
+            return "Update"
         case .deleteFile:
-            "Delete file"
+            return "Delete file"
         case .deleteDirectory:
-            "Delete folder"
+            return "Delete folder"
         }
     }
 
@@ -619,6 +766,18 @@ private struct FolderSyncOperationRow: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
+
+                if disposition == .conflict {
+                    Text("A file/folder type mismatch blocks this item until it is resolved.")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if disposition == .skipExisting {
+                    Text("Overwrite is off, so the existing destination item will be kept.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
         .padding(12)
@@ -630,5 +789,105 @@ private struct FolderSyncOperationRow: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .stroke(color.opacity(0.35))
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(
+            "\(title), \(operation.relativePath), destination \(operation.destinationURL.path(percentEncoded: false))"
+        )
+    }
+}
+
+private struct FolderSyncPreviewPairSection: View {
+    let group: FolderSyncPairPreview
+    let dispositions: [FolderSyncBatchOperationKey: FolderSyncBatchOperationDisposition]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 8) {
+                    Label(group.pairTitle, systemImage: "folder.badge.gearshape")
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(.teal)
+
+                    Spacer()
+
+                    Text(
+                        group.hiddenOperationCount > 0
+                            ? "\(group.visibleOperationCount) of \(group.totalOperationCount) shown"
+                            : "\(group.totalOperationCount) change\(group.totalOperationCount == 1 ? "" : "s")"
+                    )
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                }
+
+                Text("Origin: \(group.originRoot.path(percentEncoded: false))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text("Destination: \(group.destinationRoot.path(percentEncoded: false))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .padding(.horizontal, 4)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(
+                "Pair \(group.pairTitle). Origin \(group.originRoot.path(percentEncoded: false)). Destination \(group.destinationRoot.path(percentEncoded: false)). \(group.visibleOperationCount) of \(group.totalOperationCount) changes shown, \(group.hiddenOperationCount) hidden."
+            )
+
+            ForEach(group.operations) { operation in
+                FolderSyncOperationRow(
+                    batchOperation: operation,
+                    disposition: dispositions[operation.key] ?? .apply
+                )
+            }
+
+            if group.hiddenOperationCount > 0 {
+                Text(
+                    "\(group.hiddenOperationCount) more change\(group.hiddenOperationCount == 1 ? "" : "s") hidden for this pair."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 4)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+private struct FolderSyncPreviewFailureSection: View {
+    let failure: FolderSyncPairPlanningFailure
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("Scan failed: \(failure.pairTitle)", systemImage: "exclamationmark.triangle.fill")
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.red)
+
+            Text("Origin: \(failure.originRoot.path(percentEncoded: false))")
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Text("Destination: \(failure.destinationRoot.path(percentEncoded: false))")
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Text(failure.errorDescription)
+                .foregroundStyle(.red)
+        }
+        .font(.caption)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(
+            Color.red.opacity(0.08),
+            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color.red.opacity(0.35))
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(
+            "Folder Sync scan failed for pair \(failure.pairTitle). Origin \(failure.originRoot.path(percentEncoded: false)). Destination \(failure.destinationRoot.path(percentEncoded: false)). Error: \(failure.errorDescription). This incomplete plan cannot be applied."
+        )
     }
 }

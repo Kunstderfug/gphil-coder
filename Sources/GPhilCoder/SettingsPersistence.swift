@@ -57,6 +57,7 @@ struct SettingsPersistence {
         static let syncDestinationLayout = "syncDestinationLayout"
         static let syncFileFilter = "syncFileFilter"
         static let syncCustomFileExtensions = "syncCustomFileExtensions"
+        static let syncSafetyAcknowledgementVersion = "syncSafetyAcknowledgementVersion"
         static let completionNotificationsEnabled = "completionNotificationsEnabled"
     }
 

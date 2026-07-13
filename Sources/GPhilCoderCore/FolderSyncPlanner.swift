@@ -14,6 +14,28 @@ public enum FolderSyncOperationResult: Equatable, Sendable {
     case failed(String)
 }
 
+public struct FolderSyncFileEvidence: Hashable, Codable, Sendable {
+    public let isDirectory: Bool
+    public let fileSizeBytes: Int64
+    public let modificationDate: Date?
+    public let descendantCount: Int
+    public let contentSignature: UInt64
+
+    public init(
+        isDirectory: Bool,
+        fileSizeBytes: Int64,
+        modificationDate: Date?,
+        descendantCount: Int = 0,
+        contentSignature: UInt64
+    ) {
+        self.isDirectory = isDirectory
+        self.fileSizeBytes = fileSizeBytes
+        self.modificationDate = modificationDate
+        self.descendantCount = descendantCount
+        self.contentSignature = contentSignature
+    }
+}
+
 public struct FolderSyncOperation: Identifiable, Hashable, Sendable {
     public let id: String
     public let kind: FolderSyncOperationKind
@@ -21,19 +43,25 @@ public struct FolderSyncOperation: Identifiable, Hashable, Sendable {
     public let destinationURL: URL
     public let relativePath: String
     public let fileSizeBytes: Int64
+    public let sourceEvidence: FolderSyncFileEvidence?
+    public let destinationEvidence: FolderSyncFileEvidence?
 
     public init(
         kind: FolderSyncOperationKind,
         sourceURL: URL?,
         destinationURL: URL,
         relativePath: String,
-        fileSizeBytes: Int64 = 0
+        fileSizeBytes: Int64 = 0,
+        sourceEvidence: FolderSyncFileEvidence? = nil,
+        destinationEvidence: FolderSyncFileEvidence? = nil
     ) {
         self.kind = kind
         self.sourceURL = sourceURL
         self.destinationURL = destinationURL
         self.relativePath = relativePath
         self.fileSizeBytes = fileSizeBytes
+        self.sourceEvidence = sourceEvidence
+        self.destinationEvidence = destinationEvidence
         self.id = "\(kind.rawValue):\(relativePath)"
     }
 }
@@ -49,6 +77,7 @@ public struct FolderSyncPlan: Sendable {
     public let deletedFileCount: Int
     public let deletedDirectoryCount: Int
     public let totalCopyBytes: Int64
+    public let totalDeleteBytes: Int64
     public let scannedAt: Date
 
     public var hasWork: Bool {
@@ -64,7 +93,7 @@ public enum FolderSyncPlanner {
     public static func buildPlan(
         originRoot: URL,
         destinationRoot: URL,
-        syncDeletes: Bool = true,
+        syncDeletes: Bool = false,
         includedFileExtensions: Set<String>? = nil,
         operationLimit: Int? = nil
     ) throws -> FolderSyncPlan {
@@ -85,6 +114,7 @@ public enum FolderSyncPlanner {
         var deletedFileCount = 0
         var deletedDirectoryCount = 0
         var totalCopyBytes: Int64 = 0
+        var totalDeleteBytes: Int64 = 0
 
         func append(_ operation: FolderSyncOperation) {
             operationCount += 1
@@ -100,8 +130,10 @@ public enum FolderSyncPlanner {
                 totalCopyBytes += operation.fileSizeBytes
             case .deleteFile:
                 deletedFileCount += 1
+                totalDeleteBytes += operation.fileSizeBytes
             case .deleteDirectory:
                 deletedDirectoryCount += 1
+                totalDeleteBytes += operation.fileSizeBytes
             }
 
             if operationLimit.map({ operations.count < $0 }) ?? true {
@@ -112,12 +144,15 @@ public enum FolderSyncPlanner {
         let originDirectoryPaths = originInventory.directories.keys.sorted(by: localizedPathSort)
         for relativePath in originDirectoryPaths
         where destinationInventory.directories[relativePath] == nil {
+            let destinationConflict = destinationInventory.files[relativePath]
             append(
                 FolderSyncOperation(
                     kind: .createDirectory,
                     sourceURL: originInventory.directories[relativePath]?.url,
                     destinationURL: destinationRoot.appendingPathComponent(relativePath, isDirectory: true),
-                    relativePath: relativePath
+                    relativePath: relativePath,
+                    sourceEvidence: originInventory.directories[relativePath]?.evidence,
+                    destinationEvidence: destinationConflict?.evidence
                 )
             )
         }
@@ -128,13 +163,16 @@ public enum FolderSyncPlanner {
             let destinationURL = destinationRoot.appendingPathComponent(relativePath, isDirectory: false)
 
             guard let destinationFile = destinationInventory.files[relativePath] else {
+                let destinationConflict = destinationInventory.directories[relativePath]
                 append(
                     FolderSyncOperation(
                         kind: .copyNew,
                         sourceURL: sourceFile.url,
                         destinationURL: destinationURL,
                         relativePath: relativePath,
-                        fileSizeBytes: sourceFile.fileSizeBytes
+                        fileSizeBytes: sourceFile.fileSizeBytes,
+                        sourceEvidence: sourceFile.evidence,
+                        destinationEvidence: destinationConflict?.evidence
                     )
                 )
                 continue
@@ -147,15 +185,25 @@ public enum FolderSyncPlanner {
                         sourceURL: sourceFile.url,
                         destinationURL: destinationURL,
                         relativePath: relativePath,
-                        fileSizeBytes: sourceFile.fileSizeBytes
+                        fileSizeBytes: sourceFile.fileSizeBytes,
+                        sourceEvidence: sourceFile.evidence,
+                        destinationEvidence: destinationFile.evidence
                     )
                 )
             }
         }
 
         if syncDeletes {
+            let fileOverDirectoryConflictPrefixes = destinationInventory.directories.keys
+                .filter { originInventory.files[$0] != nil }
             let destinationDirectoryPaths = destinationInventory.directories.keys
-                .filter { originInventory.directories[$0] == nil }
+                .filter { path in
+                    originInventory.directories[path] == nil
+                        && originInventory.files[path] == nil
+                        && !fileOverDirectoryConflictPrefixes.contains(where: { conflictPath in
+                            path == conflictPath || isPath(path, below: conflictPath)
+                        })
+                }
                 .sorted { left, right in
                     let leftDepth = left.split(separator: "/").count
                     let rightDepth = right.split(separator: "/").count
@@ -172,7 +220,13 @@ public enum FolderSyncPlanner {
             }
 
             let destinationFilePaths = destinationInventory.files.keys
-                .filter { originInventory.files[$0] == nil }
+                .filter { path in
+                    originInventory.files[path] == nil
+                        && originInventory.directories[path] == nil
+                        && !fileOverDirectoryConflictPrefixes.contains(where: { conflictPath in
+                            path == conflictPath || isPath(path, below: conflictPath)
+                        })
+                }
                 .filter { path in
                     !deletedDirectoryPrefixes.contains(where: { isPath(path, below: $0) })
                 }
@@ -185,7 +239,8 @@ public enum FolderSyncPlanner {
                         sourceURL: nil,
                         destinationURL: destinationFile.url,
                         relativePath: relativePath,
-                        fileSizeBytes: destinationFile.fileSizeBytes
+                        fileSizeBytes: destinationFile.fileSizeBytes,
+                        destinationEvidence: destinationFile.evidence
                     )
                 )
             }
@@ -197,7 +252,9 @@ public enum FolderSyncPlanner {
                         kind: .deleteDirectory,
                         sourceURL: nil,
                         destinationURL: destinationDirectory.url,
-                        relativePath: relativePath
+                        relativePath: relativePath,
+                        fileSizeBytes: destinationDirectory.fileSizeBytes,
+                        destinationEvidence: destinationDirectory.evidence
                     )
                 )
             }
@@ -216,63 +273,16 @@ public enum FolderSyncPlanner {
             deletedFileCount: deletedFileCount,
             deletedDirectoryCount: deletedDirectoryCount,
             totalCopyBytes: totalCopyBytes,
+            totalDeleteBytes: totalDeleteBytes,
             scannedAt: Date()
         )
-    }
-
-    public static func applyOperation(
-        _ operation: FolderSyncOperation,
-        overwriteExisting: Bool = true
-    ) -> FolderSyncOperationResult {
-        let fileManager = FileManager.default
-
-        do {
-            switch operation.kind {
-            case .createDirectory:
-                try fileManager.createDirectory(
-                    at: operation.destinationURL,
-                    withIntermediateDirectories: true
-                )
-            case .copyNew, .copyUpdated:
-                guard let sourceURL = operation.sourceURL else {
-                    return .failed(operation.relativePath)
-                }
-                try fileManager.createDirectory(
-                    at: operation.destinationURL.deletingLastPathComponent(),
-                    withIntermediateDirectories: true
-                )
-                var isDirectory: ObjCBool = false
-                let destinationExists = fileManager.fileExists(
-                    atPath: operation.destinationURL.path,
-                    isDirectory: &isDirectory
-                )
-                guard !destinationExists || !isDirectory.boolValue else {
-                    return .failed(operation.relativePath)
-                }
-                if destinationExists, !overwriteExisting {
-                    return .skippedExisting
-                }
-                if destinationExists {
-                    try replaceFile(at: operation.destinationURL, with: sourceURL)
-                } else {
-                    try fileManager.copyItem(at: sourceURL, to: operation.destinationURL)
-                }
-            case .deleteFile, .deleteDirectory:
-                guard fileManager.fileExists(atPath: operation.destinationURL.path) else {
-                    return .applied
-                }
-                try fileManager.removeItem(at: operation.destinationURL)
-            }
-            return .applied
-        } catch {
-            return .failed(operation.relativePath)
-        }
     }
 
     private struct InventoryItem: Sendable {
         let url: URL
         let fileSizeBytes: Int64
         let modifiedDate: Date?
+        let evidence: FolderSyncFileEvidence
     }
 
     private struct Inventory: Sendable {
@@ -285,6 +295,12 @@ public enum FolderSyncPlanner {
         includedFileExtensions: Set<String>? = nil
     ) throws -> Inventory {
         let fileManager = FileManager.default
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: root.path, isDirectory: &isDirectory),
+            isDirectory.boolValue
+        else {
+            throw CocoaError(.fileReadNoSuchFile)
+        }
         let keys: [URLResourceKey] = [
             .isDirectoryKey,
             .isRegularFileKey,
@@ -293,12 +309,17 @@ public enum FolderSyncPlanner {
         ]
         var inventory = Inventory()
         var discoveredDirectories: [String: InventoryItem] = [:]
+        var enumerationError: Error?
 
         guard
             let enumerator = fileManager.enumerator(
                 at: root,
                 includingPropertiesForKeys: keys,
-                options: [.skipsPackageDescendants]
+                options: [.skipsPackageDescendants],
+                errorHandler: { _, error in
+                    enumerationError = error
+                    return false
+                }
             )
         else {
             throw CocoaError(.fileReadNoSuchFile)
@@ -310,21 +331,54 @@ public enum FolderSyncPlanner {
             let values = try? url.resourceValues(forKeys: Set(keys))
 
             if values?.isDirectory == true {
+                let modifiedDate = values?.contentModificationDate
                 discoveredDirectories[relativePath] = InventoryItem(
                     url: url,
                     fileSizeBytes: 0,
-                    modifiedDate: values?.contentModificationDate
+                    modifiedDate: modifiedDate,
+                    evidence: FolderSyncFileEvidence(
+                        isDirectory: true,
+                        fileSizeBytes: 0,
+                        modificationDate: modifiedDate,
+                        contentSignature: stableSignature([
+                            "directory",
+                            relativePath,
+                            evidenceDateValue(modifiedDate)
+                        ])
+                    )
                 )
             } else if values?.isRegularFile == true,
                 fileExtensionIsIncluded(url.pathExtension, in: includedFileExtensions)
             {
+                let fileSizeBytes = values?.fileSize.map(Int64.init) ?? 0
+                let modifiedDate = values?.contentModificationDate
                 inventory.files[relativePath] = InventoryItem(
                     url: url,
-                    fileSizeBytes: values?.fileSize.map(Int64.init) ?? 0,
-                    modifiedDate: values?.contentModificationDate
+                    fileSizeBytes: fileSizeBytes,
+                    modifiedDate: modifiedDate,
+                    evidence: FolderSyncFileEvidence(
+                        isDirectory: false,
+                        fileSizeBytes: fileSizeBytes,
+                        modificationDate: modifiedDate,
+                        contentSignature: stableSignature([
+                            "file",
+                            relativePath,
+                            String(fileSizeBytes),
+                            evidenceDateValue(modifiedDate)
+                        ])
+                    )
                 )
             }
         }
+
+        if let enumerationError {
+            throw enumerationError
+        }
+
+        discoveredDirectories = directoriesWithRecursiveEvidence(
+            discoveredDirectories,
+            files: inventory.files
+        )
 
         if includedFileExtensions == nil {
             inventory.directories = discoveredDirectories
@@ -336,6 +390,68 @@ public enum FolderSyncPlanner {
         }
 
         return inventory
+    }
+
+    private static func directoriesWithRecursiveEvidence(
+        _ directories: [String: InventoryItem],
+        files: [String: InventoryItem]
+    ) -> [String: InventoryItem] {
+        Dictionary(uniqueKeysWithValues: directories.map { path, directory in
+            let descendantDirectories = directories
+                .filter { isPath($0.key, below: path) }
+                .sorted { localizedPathSort($0.key, $1.key) }
+            let descendantFiles = files
+                .filter { isPath($0.key, below: path) }
+                .sorted { localizedPathSort($0.key, $1.key) }
+            let recursiveSize = descendantFiles.reduce(Int64(0)) { $0 + $1.value.fileSizeBytes }
+            var signatureParts = [
+                "directory",
+                path,
+                evidenceDateValue(directory.modifiedDate)
+            ]
+            signatureParts.append(contentsOf: descendantDirectories.flatMap { child in
+                ["directory", child.key, evidenceDateValue(child.value.modifiedDate)]
+            })
+            signatureParts.append(contentsOf: descendantFiles.flatMap { child in
+                [
+                    "file",
+                    child.key,
+                    String(child.value.fileSizeBytes),
+                    evidenceDateValue(child.value.modifiedDate)
+                ]
+            })
+            let descendantCount = descendantDirectories.count + descendantFiles.count
+            let evidence = FolderSyncFileEvidence(
+                isDirectory: true,
+                fileSizeBytes: recursiveSize,
+                modificationDate: directory.modifiedDate,
+                descendantCount: descendantCount,
+                contentSignature: stableSignature(signatureParts)
+            )
+            return (
+                path,
+                InventoryItem(
+                    url: directory.url,
+                    fileSizeBytes: recursiveSize,
+                    modifiedDate: directory.modifiedDate,
+                    evidence: evidence
+                )
+            )
+        })
+    }
+
+    private static func evidenceDateValue(_ date: Date?) -> String {
+        guard let date else { return "missing" }
+        return String(date.timeIntervalSinceReferenceDate.bitPattern)
+    }
+
+    private static func stableSignature(_ parts: [String]) -> UInt64 {
+        var value: UInt64 = 14_695_981_039_346_656_037
+        for byte in parts.joined(separator: "\u{1f}").utf8 {
+            value ^= UInt64(byte)
+            value &*= 1_099_511_628_211
+        }
+        return value
     }
 
     private static func directoriesContainingIncludedFiles(
@@ -366,28 +482,6 @@ public enum FolderSyncPlanner {
             return false
         }
         return sourceDate.timeIntervalSince(destinationDate) > 0.5
-    }
-
-    private static func replaceFile(at destinationURL: URL, with sourceURL: URL) throws {
-        let fileManager = FileManager.default
-        let temporaryURL = destinationURL.deletingLastPathComponent().appendingPathComponent(
-            ".gphilcoder-sync-\(UUID().uuidString).tmp",
-            isDirectory: false
-        )
-        do {
-            try fileManager.copyItem(at: sourceURL, to: temporaryURL)
-            _ = try fileManager.replaceItemAt(
-                destinationURL,
-                withItemAt: temporaryURL,
-                backupItemName: nil,
-                options: []
-            )
-        } catch {
-            if fileManager.fileExists(atPath: temporaryURL.path) {
-                try? fileManager.removeItem(at: temporaryURL)
-            }
-            throw error
-        }
     }
 
     private static func relativePath(for url: URL, root: URL) -> String? {

@@ -6,12 +6,12 @@ import UniformTypeIdentifiers
 
 @MainActor
 final class EncoderViewModel: ObservableObject {
-    private typealias DefaultsKey = SettingsPersistence.Key
+    typealias DefaultsKey = SettingsPersistence.Key
 
     private static let mediaRenameHistoryLimit = 20
     private static let mediaPreviewLimit = 300
     private static let mediaFileNameFilterDebounceNanoseconds: UInt64 = 400_000_000
-    private static let syncPreviewLimit = 300
+    static let syncPreviewLimit = 300
 
     private enum QueueFile {
         static let fileExtension = "gphilcoderqueue"
@@ -34,7 +34,7 @@ final class EncoderViewModel: ObservableObject {
         }
     }
 
-    private enum SyncFolderPairListFile {
+    enum SyncFolderPairListFile {
         static let fileExtension = "gphilcodersync"
 
         static var contentType: UTType {
@@ -56,7 +56,7 @@ final class EncoderViewModel: ObservableObject {
     @Published private(set) var systemFFmpegURL: URL?
     @Published private(set) var ffmpegCapabilities = FFmpegCapabilities()
     @Published private(set) var systemFFmpegCapabilities = FFmpegCapabilities()
-    @Published private(set) var statusMessage = "Add audio or video files to begin."
+    @Published var statusMessage = "Add audio or video files to begin."
     @Published private(set) var notificationPermission: NotificationPermissionState = .unknown
     @Published private(set) var trashedSourceRecords: [TrashedSourceRecord] = [] {
         didSet { persistTrashedSourceRecords() }
@@ -224,7 +224,7 @@ final class EncoderViewModel: ObservableObject {
     }
     @Published var syncDraftOriginRoot: URL?
     @Published var syncDraftDestinationRoot: URL?
-    @Published private(set) var editingSyncPairID: UUID?
+    @Published var editingSyncPairID: UUID?
     @Published var completionNotificationsEnabled = true {
         didSet {
             settingsPersistence.set(
@@ -234,9 +234,12 @@ final class EncoderViewModel: ObservableObject {
         }
     }
     @Published var syncOverwriteExisting = true {
-        didSet { settingsPersistence.set(syncOverwriteExisting, forKey: DefaultsKey.syncOverwriteExisting) }
+        didSet {
+            settingsPersistence.set(syncOverwriteExisting, forKey: DefaultsKey.syncOverwriteExisting)
+            resetFolderSyncPlan()
+        }
     }
-    @Published var syncDeleteDestinationItems = true {
+    @Published var syncDeleteDestinationItems = false {
         didSet {
             settingsPersistence.set(
                 syncDeleteDestinationItems,
@@ -277,23 +280,31 @@ final class EncoderViewModel: ObservableObject {
             configureFolderSyncWatcher()
         }
     }
-    @Published private(set) var syncFolderPairs: [SyncFolderPair] = [] {
+    @Published var syncSafetyMigrationNeedsAcknowledgement = false
+    @Published var syncFolderPairs: [SyncFolderPair] = [] {
         didSet {
             guard !isUpdatingSyncPairStatus else { return }
             persistSyncFolderPairs()
             configureFolderSyncWatcher()
         }
     }
-    @Published private(set) var syncPlan: FolderSyncPlan?
-    @Published private(set) var syncScannedOperationCount = 0
-    @Published private(set) var syncScannedCopyCount = 0
-    @Published private(set) var syncScannedDeleteCount = 0
-    @Published private(set) var syncScannedTotalSize: Int64 = 0
-    @Published private(set) var syncProgress: FolderSyncProgress?
-    @Published private(set) var isSyncScanning = false
-    @Published private(set) var isSyncing = false
-    @Published private(set) var isFolderSyncWatching = false
-    @Published private(set) var currentSyncPairID: UUID?
+    @Published var syncPlan: FolderSyncBatchPlan?
+    @Published var syncScannedOperationCount = 0
+    @Published var syncScannedCopyCount = 0
+    @Published var syncScannedDeleteCount = 0
+    @Published var syncScannedTotalSize: Int64 = 0
+    @Published var syncProgress: FolderSyncProgress?
+    @Published var isSyncScanning = false
+    @Published var isSyncing = false
+    @Published var isFolderSyncWatching = false
+    @Published var syncAutomaticPlanAwaitingReview = false
+    @Published var isSyncRecovering = false
+    @Published var syncHistory: [FolderSyncHistoryRun] = []
+    @Published var syncRecoveryRecords: [FolderSyncRecoveryRecord] = []
+    @Published var currentSyncPairID: UUID?
+    var folderSyncDestructiveConfirmationHandler = FolderSyncAppKitPromptBoundary.confirmDestructivePlan
+    var folderSyncDeletionEnableConfirmationHandler = FolderSyncAppKitPromptBoundary.confirmDeletionEnable
+    var folderSyncPairReplacementConfirmationHandler = FolderSyncAppKitPromptBoundary.confirmPairReplacement
     private var mediaRenameUndoStack: [MediaRenameHistoryTransaction] {
         get { mediaFileCoordinator.mediaRenameUndoStack }
         set { mediaFileCoordinator.mediaRenameUndoStack = newValue }
@@ -616,12 +627,17 @@ final class EncoderViewModel: ObservableObject {
         }
     }
 
-    private var isUpdatingSyncPairStatus = false
-    private var isLoadingPersistedSettings = false
-    private let settingsPersistence = SettingsPersistence()
-    private let securityScopes = SecurityScopeManager()
-    private let bookmarks = BookmarkStore()
+    var isUpdatingSyncPairStatus = false
+    var isLoadingPersistedSettings = false
+    let settingsPersistence = SettingsPersistence()
+    let securityScopes = SecurityScopeManager()
+    let bookmarks = BookmarkStore()
+    let folderSyncServices: FolderSyncServices?
+    private let folderSyncServicesError: String?
     private var cancellables: Set<AnyCancellable> = []
+
+    lazy var folderSyncRunExecutor: FolderSyncRunExecutor? =
+        folderSyncServices.map(FolderSyncRunExecutor.init)
 
     private lazy var encodingCoordinator = EncodingCoordinator(
         getJobs: { [weak self] in
@@ -644,66 +660,7 @@ final class EncoderViewModel: ObservableObject {
         }
     )
 
-    private lazy var folderSyncCoordinator = FolderSyncCoordinator(
-        getIsBusy: { [weak self] in
-            self?.isFolderSyncBusy ?? false
-        },
-        setPlan: { [weak self] plan in
-            self?.syncPlan = plan
-        },
-        setScannedCounts: { [weak self] operations, copies, deletes, size in
-            self?.syncScannedOperationCount = operations
-            self?.syncScannedCopyCount = copies
-            self?.syncScannedDeleteCount = deletes
-            self?.syncScannedTotalSize = size
-        },
-        setProgress: { [weak self] progress in
-            self?.syncProgress = progress
-        },
-        setCurrentPair: { [weak self] pairID in
-            self?.currentSyncPairID = pairID
-        },
-        setScanning: { [weak self] isScanning in
-            self?.isSyncScanning = isScanning
-        },
-        setSyncing: { [weak self] isSyncing in
-            self?.isSyncing = isSyncing
-        },
-        setWatching: { [weak self] isWatching in
-            self?.isFolderSyncWatching = isWatching
-        },
-        setStatusMessage: { [weak self] message in
-            self?.statusMessage = message
-        },
-        markPair: { [weak self] id, state, message, lastSyncedAt in
-            self?.markSyncPair(id, state: state, message: message, lastSyncedAt: lastSyncedAt)
-        },
-        collisionMessage: { [weak self] pairs in
-            self?.syncDestinationCollisionMessage(for: pairs)
-        },
-        prepareFileAccess: { [weak self] pairs, triggeredAutomatically in
-            self?.prepareFolderSyncFileAccess(
-                for: pairs,
-                triggeredAutomatically: triggeredAutomatically
-            )
-        },
-        validateFolders: { [weak self] origin, destination, showsAlert in
-            self?.validateSyncFolders(
-                originRoot: origin,
-                destinationRoot: destination,
-                showsAlert: showsAlert
-            ) ?? false
-        },
-        releaseScopes: { [weak self] in
-            self?.securityScopes.stopSync()
-        },
-        notifyCompletion: { [weak self] title, body in
-            self?.notifyCompletionIfNeeded(title: title, body: body)
-        },
-        makeConfiguration: { [weak self] in
-            self?.folderSyncRunConfiguration ?? .empty
-        }
-    )
+    lazy var folderSyncCoordinator = makeFolderSyncCoordinator()
 
     private lazy var mediaFileCoordinator = MediaFileCoordinator(
         setStatusMessage: { [weak self] message in
@@ -1113,10 +1070,6 @@ final class EncoderViewModel: ObservableObject {
         isMediaCopyScanning || isMediaCopying || isMediaDeleting || isMediaRenaming
     }
 
-    var isFolderSyncBusy: Bool {
-        isSyncScanning || isSyncing
-    }
-
     var isMenuBarActivityActive: Bool {
         isEncoding || isMediaCopyBusy || isFolderSyncBusy || isRestorePlanning || isRestoringFromPlan
             || isFolderSyncWatching
@@ -1208,112 +1161,6 @@ final class EncoderViewModel: ObservableObject {
 
     var canClearMediaCopySources: Bool {
         !mediaCopySourceRoots.isEmpty && !isMediaCopyBusy
-    }
-
-    var canAddSyncFolderPair: Bool {
-        syncDraftOriginRoot != nil && syncDraftDestinationRoot != nil && !isFolderSyncBusy
-    }
-
-    var canSaveSyncFolderPairs: Bool {
-        !syncFolderPairs.isEmpty && !isFolderSyncBusy
-    }
-
-    var canLoadSyncFolderPairs: Bool {
-        !isFolderSyncBusy
-    }
-
-    var isEditingSyncFolderPair: Bool {
-        editingSyncPairID != nil
-    }
-
-    var syncFolderPairSubmitTitle: String {
-        isEditingSyncFolderPair ? "Save pair" : "Add pair"
-    }
-
-    var canRunFolderSync: Bool {
-        syncFolderPairs.contains { $0.isEnabled } && syncHasSelectedFileTypes && !isFolderSyncBusy
-    }
-
-    var syncPairCount: Int {
-        syncFolderPairs.count
-    }
-
-    var syncEnabledPairCount: Int {
-        syncFolderPairs.filter(\.isEnabled).count
-    }
-
-    var syncPendingOperationCount: Int {
-        syncScannedOperationCount
-    }
-
-    var syncPendingCopyCount: Int {
-        syncScannedCopyCount
-    }
-
-    var syncPendingDeleteCount: Int {
-        syncScannedDeleteCount
-    }
-
-    var syncPendingTotalSize: Int64 {
-        syncScannedTotalSize
-    }
-
-    var syncPreviewItems: [FolderSyncOperation] {
-        syncPlan?.operations ?? []
-    }
-
-    var syncDestinationLayoutOptions: [SyncDestinationLayout] {
-        SyncDestinationLayout.allCases
-    }
-
-    var syncFileFilterOptions: [SyncFileFilter] {
-        SyncFileFilter.allCases
-    }
-
-    var syncDestinationLayoutDetail: String {
-        syncDestinationLayout.detail
-    }
-
-    var syncFileFilterDetail: String {
-        syncFileFilter.detail
-    }
-
-    var syncFileFilterSummary: String {
-        switch syncFileFilter {
-        case .all:
-            return "All files and folders"
-        case .audio:
-            return MediaFileFilter.audio.readableExtensionList()
-        case .video:
-            return MediaFileFilter.video.readableExtensionList()
-        case .custom:
-            let extensions = syncSelectedFileExtensions ?? []
-            guard !extensions.isEmpty else { return "No extensions selected" }
-            return extensions.sorted().map { ".\($0)" }.joined(separator: ", ")
-        }
-    }
-
-    var syncHasSelectedFileTypes: Bool {
-        syncFileFilter != .custom || !(syncSelectedFileExtensions ?? []).isEmpty
-    }
-
-    var syncDraftOriginTitle: String {
-        syncDraftOriginRoot?.path(percentEncoded: false) ?? "No origin folder selected"
-    }
-
-    var syncDraftDestinationTitle: String {
-        syncDraftDestinationRoot?.path(percentEncoded: false) ?? "No destination folder selected"
-    }
-
-    var syncWatcherStatusTitle: String {
-        guard syncAutoSyncEnabled else { return "Auto-sync paused" }
-        guard syncEnabledPairCount > 0 else { return "No watched pairs" }
-        return "Watching \(syncEnabledPairCount) pair\(syncEnabledPairCount == 1 ? "" : "s")"
-    }
-
-    func effectiveSyncDestinationPath(for pair: SyncFolderPair) -> String {
-        effectiveSyncDestinationRoot(for: pair)
-            .path(percentEncoded: false)
     }
 
     var canRefreshMediaDeletePreview: Bool {
@@ -1627,34 +1474,6 @@ final class EncoderViewModel: ObservableObject {
         mediaFileCoordinator.mediaPreviewConfiguration
     }
 
-    private var syncSelectedFileExtensions: Set<String>? {
-        switch syncFileFilter {
-        case .all:
-            return nil
-        case .audio:
-            return MediaFileFilter.audio.fileExtensions
-        case .video:
-            return MediaFileFilter.video.fileExtensions
-        case .custom:
-            return Self.normalizedExtensionSet(from: syncCustomFileExtensions)
-        }
-    }
-
-    private var folderSyncRunConfiguration: FolderSyncRunConfiguration {
-        FolderSyncRunConfiguration(
-            pairs: syncFolderPairs,
-            destinationLayout: syncDestinationLayout,
-            deleteDestinationItems: syncDeleteDestinationItems,
-            overwriteExisting: syncOverwriteExisting,
-            includedFileExtensions: syncSelectedFileExtensions,
-            autoSyncEnabled: !isLoadingPersistedSettings && syncAutoSyncEnabled,
-            watchOrigins: syncFolderPairs
-                .filter(\.isEnabled)
-                .compactMap { directoryURLIfExists(atPath: $0.originPath) },
-            previewLimit: Self.syncPreviewLimit
-        )
-    }
-
     private var currentMediaDeletePlanMatchesFilters: Bool {
         guard let mediaDeletePlan else { return false }
         return mediaDeletePlan.sourceRoots.map { $0.standardizedFileURL.path }
@@ -1756,7 +1575,27 @@ final class EncoderViewModel: ObservableObject {
             " Emergency trash journal contains \(pendingTrashSourceRecords.count) source path\(pendingTrashSourceRecords.count == 1 ? "" : "s")."
     }
 
-    init() {
+    init(
+        folderSyncStorageRoot: URL? = nil,
+        folderSyncTrashBoundary: FolderSyncTrashBoundary? = nil
+    ) {
+        do {
+            let storageRoot: URL
+            if let folderSyncStorageRoot {
+                storageRoot = folderSyncStorageRoot
+            } else {
+                storageRoot = try FolderSyncServices.liveStorageRoot()
+            }
+            folderSyncServices = try FolderSyncServices(
+                storageRoot: storageRoot,
+                trashBoundary: folderSyncTrashBoundary
+            )
+            folderSyncServicesError = nil
+        } catch {
+            folderSyncServices = nil
+            folderSyncServicesError = error.localizedDescription
+        }
+
         mediaFileCoordinator.objectWillChange
             .sink { [weak self] _ in
                 self?.objectWillChange.send()
@@ -1767,6 +1606,22 @@ final class EncoderViewModel: ObservableObject {
         refreshNotificationPermission()
         refreshActiveFileManagementPreviewIfNeeded()
         configureFolderSyncWatcher()
+
+        if let folderSyncServices {
+            syncHistory = folderSyncServices.historyStore.runs
+            Task { [weak self, folderSyncServices] in
+                let records = await folderSyncServices.mutationService.recoveryRecords()
+                guard let self else { return }
+                self.syncRecoveryRecords = records
+            }
+            if let loadFailure = folderSyncServices.historyStore.lastLoadFailure {
+                statusMessage =
+                    "Folder Sync history needs repair before Sync can run: \(loadFailure.problem)"
+            }
+        } else if let folderSyncServicesError {
+            statusMessage =
+                "Folder Sync recovery is unavailable, so Sync is disabled: \(folderSyncServicesError)"
+        }
     }
 
     func refreshNotificationPermission() {
@@ -1824,7 +1679,7 @@ final class EncoderViewModel: ObservableObject {
         refreshNotificationPermission()
     }
 
-    private func notifyCompletionIfNeeded(title: String, body: String) {
+    func notifyCompletionIfNeeded(title: String, body: String) {
         guard completionNotificationsEnabled else { return }
         AppNotifier.notifyIfAppInactive(title: title, body: body)
     }
@@ -2519,245 +2374,6 @@ final class EncoderViewModel: ObservableObject {
         mediaCopyProgress = nil
         isMediaRenamePreviewStale = false
         statusMessage = "Cleared file-management source folders."
-    }
-
-    func chooseSyncOriginRoot() {
-        guard !isFolderSyncBusy else { return }
-        if let url = chooseDirectory(
-            title: "Choose Sync Origin Folder",
-            prompt: "Use Origin",
-            initialURL: syncDraftOriginRoot ?? lastInputDirectoryURL()
-        ) {
-            syncDraftOriginRoot = url
-            rememberInputDirectory(url)
-            statusMessage = "Sync origin set to \(url.path(percentEncoded: false))."
-        }
-    }
-
-    func chooseSyncDestinationRoot() {
-        guard !isFolderSyncBusy else { return }
-        if let url = chooseDirectory(
-            title: "Choose Sync Destination Folder",
-            prompt: "Use Destination",
-            initialURL: syncDraftDestinationRoot ?? syncDraftOriginRoot ?? lastInputDirectoryURL()
-        ) {
-            syncDraftDestinationRoot = url
-            statusMessage = "Sync destination set to \(url.path(percentEncoded: false))."
-        }
-    }
-
-    func addSyncFolderPair() {
-        guard let originRoot = syncDraftOriginRoot,
-            let destinationRoot = syncDraftDestinationRoot
-        else {
-            statusMessage = "Choose origin and destination folders before adding a sync pair."
-            return
-        }
-
-        let originPath = originRoot.standardizedFileURL.path(percentEncoded: false)
-        let destinationPath = destinationRoot.standardizedFileURL.path(percentEncoded: false)
-        let candidatePair = SyncFolderPair(
-            originPath: originPath,
-            destinationPath: destinationPath,
-            state: syncAutoSyncEnabled ? .watching : .idle,
-            originBookmarkData: bookmarks.bookmarkData(for: originRoot),
-            destinationBookmarkData: bookmarks.bookmarkData(for: destinationRoot)
-        )
-
-        if let editingSyncPairID {
-            guard let index = syncFolderPairs.firstIndex(where: { $0.id == editingSyncPairID }) else {
-                cancelEditingSyncFolderPair()
-                statusMessage = "The sync pair being edited no longer exists."
-                return
-            }
-            if syncFolderPairs.contains(where: {
-                $0.id != editingSyncPairID && $0.originPath == originPath && $0.destinationPath == destinationPath
-            }) {
-                statusMessage = "That sync pair is already in the list."
-                return
-            }
-
-            var editedPair = syncFolderPairs[index]
-            editedPair.originPath = originPath
-            editedPair.destinationPath = destinationPath
-            editedPair.state = editedPair.isEnabled
-                ? (syncAutoSyncEnabled ? .watching : .idle)
-                : .disabled
-            editedPair.lastMessage = "Ready to sync."
-            editedPair.originBookmarkData = bookmarks.bookmarkData(for: originRoot)
-            editedPair.destinationBookmarkData = bookmarks.bookmarkData(for: destinationRoot)
-
-            var editedPairs = syncFolderPairs
-            editedPairs[index] = editedPair
-            guard validateSyncFolders(
-                originRoot: editedPair.originURL,
-                destinationRoot: effectiveSyncDestinationRoot(for: editedPair, in: editedPairs)
-            ) else {
-                return
-            }
-            guard syncDestinationCollisionMessage(for: editedPairs) == nil else {
-                statusMessage =
-                    "Another enabled sync pair already targets the same destination folder. Rename one origin folder or choose a different destination."
-                return
-            }
-
-            syncFolderPairs = editedPairs
-            self.editingSyncPairID = nil
-            syncDraftOriginRoot = nil
-            syncDraftDestinationRoot = nil
-            resetFolderSyncPlan()
-            statusMessage = "Updated sync pair. Press Sync to run the next mirror pass."
-            return
-        }
-
-        let nextPairs = syncFolderPairs + [candidatePair]
-        guard validateSyncFolders(
-            originRoot: candidatePair.originURL,
-            destinationRoot: effectiveSyncDestinationRoot(for: candidatePair, in: nextPairs)
-        ) else {
-            return
-        }
-
-        if syncFolderPairs.contains(where: {
-            $0.originPath == originPath && $0.destinationPath == destinationPath
-        }) {
-            statusMessage = "That sync pair is already in the list."
-            return
-        }
-
-        guard syncDestinationCollisionMessage(for: nextPairs) == nil else {
-            statusMessage =
-                "Another enabled sync pair already targets the same destination folder. Rename one origin folder or choose a different destination."
-            return
-        }
-
-        syncFolderPairs.append(candidatePair)
-        syncDraftOriginRoot = nil
-        syncDraftDestinationRoot = nil
-        syncPlan = nil
-        syncProgress = nil
-        statusMessage = "Added sync pair. Press Sync to run the first mirror pass."
-    }
-
-    func editSyncFolderPair(_ pair: SyncFolderPair) {
-        guard !isFolderSyncBusy else { return }
-        editingSyncPairID = pair.id
-        syncDraftOriginRoot = pair.originURL
-        syncDraftDestinationRoot = pair.destinationURL
-        statusMessage = "Editing sync pair. Change the folders, then save."
-    }
-
-    func cancelEditingSyncFolderPair() {
-        guard !isFolderSyncBusy else { return }
-        editingSyncPairID = nil
-        syncDraftOriginRoot = nil
-        syncDraftDestinationRoot = nil
-        statusMessage = "Sync pair edit cancelled."
-    }
-
-    func removeSyncFolderPair(_ pair: SyncFolderPair) {
-        guard !isFolderSyncBusy else { return }
-        syncFolderPairs.removeAll { $0.id == pair.id }
-        if currentSyncPairID == pair.id {
-            currentSyncPairID = nil
-        }
-        if editingSyncPairID == pair.id {
-            editingSyncPairID = nil
-            syncDraftOriginRoot = nil
-            syncDraftDestinationRoot = nil
-        }
-        statusMessage =
-            syncFolderPairs.isEmpty ? "Removed the last sync pair." : "Removed sync pair."
-    }
-
-    func setSyncFolderPair(_ pair: SyncFolderPair, enabled: Bool) {
-        guard !isFolderSyncBusy,
-            let index = syncFolderPairs.firstIndex(where: { $0.id == pair.id })
-        else {
-            return
-        }
-
-        syncFolderPairs[index].isEnabled = enabled
-        syncFolderPairs[index].state = enabled
-            ? (syncAutoSyncEnabled ? .watching : .idle)
-            : .disabled
-        syncFolderPairs[index].lastMessage = enabled
-            ? "Ready to sync."
-            : "Paused. Automatic sync is disabled for this pair."
-        statusMessage = enabled ? "Sync pair enabled." : "Sync pair paused."
-    }
-
-    func saveSyncFolderPairs() {
-        guard canSaveSyncFolderPairs else {
-            statusMessage = "Add at least one sync pair before saving a pair list."
-            return
-        }
-
-        let panel = NSSavePanel()
-        panel.title = "Save Sync Pair List"
-        panel.prompt = "Save Pair List"
-        panel.allowedContentTypes = [SyncFolderPairListFile.contentType]
-        panel.canCreateDirectories = true
-        panel.directoryURL = syncDraftDestinationRoot ?? syncFolderPairs.first?.destinationURL ?? lastInputDirectoryURL()
-        panel.nameFieldStringValue = defaultSyncFolderPairListFileName()
-
-        guard panel.runModal() == .OK, let selectedURL = panel.url else { return }
-
-        let url = normalizedSyncFolderPairListFileURL(selectedURL)
-
-        do {
-            let data = try SyncFolderPairPersistence.encode(syncFolderPairs)
-            try data.write(to: url, options: .atomic)
-            statusMessage =
-                "Saved \(syncFolderPairs.count) sync pair\(syncFolderPairs.count == 1 ? "" : "s") to \(url.lastPathComponent)."
-        } catch {
-            statusMessage = "Could not save sync pair list: \(error.localizedDescription)"
-        }
-    }
-
-    func loadSyncFolderPairsFromFile() {
-        guard canLoadSyncFolderPairs else { return }
-
-        let panel = NSOpenPanel()
-        panel.title = "Load Sync Pair List"
-        panel.prompt = "Load Pair List"
-        panel.allowsMultipleSelection = false
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.canCreateDirectories = false
-        panel.allowedContentTypes = [SyncFolderPairListFile.contentType, .json]
-        panel.directoryURL = syncDraftDestinationRoot ?? syncFolderPairs.first?.destinationURL ?? lastInputDirectoryURL()
-
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-
-        do {
-            let data = try Data(contentsOf: url)
-            let loadedPairs = try normalizedLoadedSyncFolderPairs(from: data)
-            guard validateLoadedSyncFolderPairs(loadedPairs) else { return }
-            guard confirmReplacingSyncFolderPairs(withCount: loadedPairs.count) else { return }
-
-            syncFolderPairs = loadedPairs
-            editingSyncPairID = nil
-            syncDraftOriginRoot = nil
-            syncDraftDestinationRoot = nil
-            resetFolderSyncPlan()
-            statusMessage =
-                "Loaded \(syncFolderPairs.count) sync pair\(syncFolderPairs.count == 1 ? "" : "s") from \(url.lastPathComponent)."
-        } catch {
-            statusMessage = "Could not load sync pair list: \(error.localizedDescription)"
-        }
-    }
-
-    func scanFolderSyncPlan() {
-        folderSyncCoordinator.scan(configuration: folderSyncRunConfiguration)
-    }
-
-    func syncFoldersNow() {
-        folderSyncCoordinator.syncNow(configuration: folderSyncRunConfiguration)
-    }
-
-    func cancelFolderSync() {
-        folderSyncCoordinator.cancel()
     }
 
     func scanMediaCopyFiles() {
@@ -3493,167 +3109,6 @@ final class EncoderViewModel: ObservableObject {
         return alert.runModal() == .alertFirstButtonReturn
     }
 
-    private func prepareFolderSyncFileAccess(
-        for pairs: [SyncFolderPair],
-        triggeredAutomatically: Bool
-    ) -> [SyncFolderPair]? {
-        securityScopes.stopSync()
-
-        var preparedPairs = pairs
-        startFolderSyncSecurityScopes(for: preparedPairs)
-
-        let pairsMissingBookmarks = preparedPairs.filter {
-            $0.originBookmarkData == nil || $0.destinationBookmarkData == nil
-        }
-        guard !pairsMissingBookmarks.isEmpty else { return preparedPairs }
-
-        guard !triggeredAutomatically else {
-            securityScopes.stopSync()
-            statusMessage = "Auto-sync skipped because loaded sync pairs need folder access authorization."
-            return nil
-        }
-
-        guard let grantedRoots = requestFolderSyncAccess(for: pairsMissingBookmarks) else {
-            securityScopes.stopSync()
-            statusMessage = "Folder sync cancelled because folder access was not authorized."
-            return nil
-        }
-
-        securityScopes.startSync(grantedRoots)
-        guard selectedSyncAccessRoots(grantedRoots, cover: pairsMissingBookmarks) else {
-            securityScopes.stopSync()
-            statusMessage = "Folder sync cancelled because the selected folder does not contain every loaded origin and destination."
-            return nil
-        }
-
-        let grantedBookmarks = grantedRoots.compactMap { root -> (url: URL, data: Data)? in
-            guard let data = bookmarks.bookmarkData(for: root) else { return nil }
-            return (root, data)
-        }
-
-        for index in preparedPairs.indices {
-            if preparedPairs[index].originBookmarkData == nil {
-                preparedPairs[index].originBookmarkData = bookmarks.bookmarkData(
-                    for: preparedPairs[index].originURL,
-                    in: grantedBookmarks
-                )
-            }
-            if preparedPairs[index].destinationBookmarkData == nil {
-                preparedPairs[index].destinationBookmarkData = bookmarks.bookmarkData(
-                    for: preparedPairs[index].destinationURL,
-                    in: grantedBookmarks
-                )
-            }
-        }
-
-        let stillMissingBookmarks = preparedPairs.contains {
-            $0.originBookmarkData == nil || $0.destinationBookmarkData == nil
-        }
-        guard !stillMissingBookmarks else {
-            securityScopes.stopSync()
-            statusMessage = "Folder sync cancelled because GPhilCoder could not save folder authorization."
-            return nil
-        }
-
-        updateStoredSyncPairs(with: preparedPairs)
-        startFolderSyncSecurityScopes(for: preparedPairs)
-        return preparedPairs
-    }
-
-    private func requestFolderSyncAccess(for pairs: [SyncFolderPair]) -> [URL]? {
-        let panel = NSOpenPanel()
-        panel.title = "Authorize Sync Folder Access"
-        panel.prompt = "Authorize"
-        panel.message =
-            "GPhilCoder needs permission to read and write the folders loaded from this sync pair list. Choose a parent folder that contains all listed origins and destinations, or choose the individual folders."
-        panel.allowsMultipleSelection = true
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.canCreateDirectories = false
-        panel.directoryURL = commonFolderSyncAccessRoot(for: pairs) ?? pairs.first?.originURL
-
-        guard panel.runModal() == .OK else { return nil }
-        return panel.urls
-    }
-
-    private func commonFolderSyncAccessRoot(for pairs: [SyncFolderPair]) -> URL? {
-        let paths = pairs.flatMap { pair in
-            [SecurityScopeManager.normalizedFilePath(pair.originURL),
-             SecurityScopeManager.normalizedFilePath(pair.destinationURL)]
-        }
-        guard let firstPath = paths.first else { return nil }
-
-        var commonComponents = URL(fileURLWithPath: firstPath, isDirectory: true).pathComponents
-        for path in paths.dropFirst() {
-            let components = URL(fileURLWithPath: path, isDirectory: true).pathComponents
-            commonComponents = Array(zip(commonComponents, components).prefix { $0 == $1 }.map(\.0))
-            guard !commonComponents.isEmpty else { return nil }
-        }
-
-        let commonPath = NSString.path(withComponents: commonComponents)
-        return URL(fileURLWithPath: commonPath, isDirectory: true)
-    }
-
-    private func selectedSyncAccessRoots(_ roots: [URL], cover pairs: [SyncFolderPair]) -> Bool {
-        for pair in pairs {
-            guard roots.contains(where: { SecurityScopeManager.containsFileURL(pair.originURL, in: $0) }),
-                roots.contains(where: { SecurityScopeManager.containsFileURL(pair.destinationURL, in: $0) })
-            else {
-                return false
-            }
-        }
-        return true
-    }
-
-    /// Resolves each pair's origin/destination bookmarks into security-scoped
-    /// URLs and starts accessing them. When macOS reports a bookmark as stale
-    /// (folder renamed/moved), the bookmark is re-created from the resolved URL
-    /// and the pair is updated so the next launch resolves cleanly.
-    private func startFolderSyncSecurityScopes(for pairs: [SyncFolderPair]) {
-        var refreshedPairs = pairs
-        var anyPairRefreshed = false
-
-        let urls = pairs.flatMap { pair -> [URL] in
-            guard let index = refreshedPairs.firstIndex(where: { $0.id == pair.id }) else {
-                return [pair.originURL, pair.destinationURL]
-            }
-            let originURL = bookmarks.resolveSecurityScopedBookmark(
-                pair.originBookmarkData,
-                fallbackURL: pair.originURL
-            ) { resolved in
-                if let refreshed = self.bookmarks.bookmarkData(for: resolved) {
-                    refreshedPairs[index].originBookmarkData = refreshed
-                    anyPairRefreshed = true
-                }
-            }
-            let destinationURL = bookmarks.resolveSecurityScopedBookmark(
-                pair.destinationBookmarkData,
-                fallbackURL: pair.destinationURL
-            ) { resolved in
-                if let refreshed = self.bookmarks.bookmarkData(for: resolved) {
-                    refreshedPairs[index].destinationBookmarkData = refreshed
-                    anyPairRefreshed = true
-                }
-            }
-            return [originURL, destinationURL]
-        }
-
-        securityScopes.startSync(urls)
-        if anyPairRefreshed {
-            updateStoredSyncPairs(with: refreshedPairs)
-        }
-    }
-
-    private func updateStoredSyncPairs(with preparedPairs: [SyncFolderPair]) {
-        guard !preparedPairs.isEmpty else { return }
-        var updatedPairs = syncFolderPairs
-        for preparedPair in preparedPairs {
-            guard let index = updatedPairs.firstIndex(where: { $0.id == preparedPair.id }) else { continue }
-            updatedPairs[index] = preparedPair
-        }
-        syncFolderPairs = updatedPairs
-    }
-
     private func prepareEncodingFileAccess(for plannedJobs: [EncodeJob]) -> Bool {
         securityScopes.stopEncoding()
 
@@ -3724,22 +3179,12 @@ final class EncoderViewModel: ObservableObject {
         return "GPhilCoder File Copy \(formatter.string(from: Date())).\(MediaCopyJobFile.fileExtension)"
     }
 
-    private func defaultSyncFolderPairListFileName() -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd HH.mm"
-        return "GPhilCoder Sync Pairs \(formatter.string(from: Date())).\(SyncFolderPairListFile.fileExtension)"
-    }
-
     private func normalizedQueueFileURL(_ url: URL) -> URL {
         url.pathExtension.isEmpty ? url.appendingPathExtension(QueueFile.fileExtension) : url
     }
 
     private func normalizedMediaCopyJobFileURL(_ url: URL) -> URL {
         url.pathExtension.isEmpty ? url.appendingPathExtension(MediaCopyJobFile.fileExtension) : url
-    }
-
-    private func normalizedSyncFolderPairListFileURL(_ url: URL) -> URL {
-        url.pathExtension.isEmpty ? url.appendingPathExtension(SyncFolderPairListFile.fileExtension) : url
     }
 
     private func existingOutputURLs(for baseOutputURL: URL) -> [URL] {
@@ -4198,7 +3643,7 @@ final class EncoderViewModel: ObservableObject {
             && !isDirectory.boolValue
     }
 
-    private func directoryURLIfExists(atPath path: String) -> URL? {
+    func directoryURLIfExists(atPath path: String) -> URL? {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
             isDirectory.boolValue
@@ -4323,12 +3768,25 @@ final class EncoderViewModel: ObservableObject {
         if let value = settingsPersistence.bool(forKey: DefaultsKey.syncOverwriteExisting) {
             syncOverwriteExisting = value
         }
-        if let value = settingsPersistence.bool(forKey: DefaultsKey.syncDeleteDestinationItems) {
-            syncDeleteDestinationItems = value
-        }
-        if let value = settingsPersistence.bool(forKey: DefaultsKey.syncAutoSyncEnabled) {
-            syncAutoSyncEnabled = value
-        }
+        let persistedSyncPairs = settingsPersistence.data(forKey: DefaultsKey.syncFolderPairs)
+        let hasPersistedSyncPairs = persistedSyncPairs.flatMap {
+            try? SyncFolderPairPersistence.decode($0)
+        }.map { !$0.isEmpty } ?? false
+        let syncSafetySettings = FolderSyncSafetyPolicy.resolve(
+            persistedDeleteDestinationItems: settingsPersistence.bool(
+                forKey: DefaultsKey.syncDeleteDestinationItems
+            ),
+            persistedAutoSyncEnabled: settingsPersistence.bool(
+                forKey: DefaultsKey.syncAutoSyncEnabled
+            ),
+            hasPersistedPairs: hasPersistedSyncPairs,
+            acknowledgedVersion: settingsPersistence.int(
+                forKey: DefaultsKey.syncSafetyAcknowledgementVersion
+            )
+        )
+        syncDeleteDestinationItems = syncSafetySettings.deleteDestinationItems
+        syncAutoSyncEnabled = syncSafetySettings.autoSyncEnabled
+        syncSafetyMigrationNeedsAcknowledgement = syncSafetySettings.needsAcknowledgement
         if let rawValue = settingsPersistence.string(forKey: DefaultsKey.syncDestinationLayout),
             let value = SyncDestinationLayout(rawValue: rawValue)
         {
@@ -4485,16 +3943,16 @@ final class EncoderViewModel: ObservableObject {
         }
     }
 
-    private func lastInputDirectoryURL() -> URL? {
+    func lastInputDirectoryURL() -> URL? {
         settingsPersistence.directoryURL(forKey: DefaultsKey.lastInputDirectoryPath)
     }
 
-    private func rememberInputDirectory(fromFiles urls: [URL]) {
+    func rememberInputDirectory(fromFiles urls: [URL]) {
         guard let url = urls.first else { return }
         rememberInputDirectory(url.deletingLastPathComponent())
     }
 
-    private func rememberInputDirectory(_ url: URL?) {
+    func rememberInputDirectory(_ url: URL?) {
         guard let url else { return }
         settingsPersistence.persistDirectory(url, forKey: DefaultsKey.lastInputDirectoryPath)
     }
@@ -4541,7 +3999,7 @@ final class EncoderViewModel: ObservableObject {
         settingsPersistence.set(extensions.sorted(), forKey: key)
     }
 
-    private func chooseDirectory(title: String, prompt: String, initialURL: URL?) -> URL? {
+    func chooseDirectory(title: String, prompt: String, initialURL: URL?) -> URL? {
         let panel = NSOpenPanel()
         panel.title = title
         panel.prompt = prompt
@@ -4597,234 +4055,7 @@ final class EncoderViewModel: ObservableObject {
         return true
     }
 
-    private func validateSyncFolders(
-        originRoot: URL,
-        destinationRoot: URL,
-        showsAlert: Bool = true,
-        createsDestinationDirectory: Bool = true
-    ) -> Bool {
-        let originComponents = originRoot.standardizedFileURL.resolvingSymlinksInPath().pathComponents
-        let destinationComponents =
-            destinationRoot.standardizedFileURL.resolvingSymlinksInPath().pathComponents
-
-        guard directoryURLIfExists(atPath: originRoot.path) != nil else {
-            if showsAlert {
-                showMediaCopyFolderAlert(
-                    message: "Origin folder is missing",
-                    detail: "Choose an existing origin folder before syncing."
-                )
-            }
-            return false
-        }
-
-        if createsDestinationDirectory {
-            do {
-                try FileManager.default.createDirectory(
-                    at: destinationRoot,
-                    withIntermediateDirectories: true
-                )
-            } catch {
-                if showsAlert {
-                    showMediaCopyFolderAlert(
-                        message: "Destination folder is unavailable",
-                        detail: "GPhilCoder could not create or open the destination folder: \(error.localizedDescription)"
-                    )
-                }
-                return false
-            }
-        }
-
-        if originComponents == destinationComponents {
-            if showsAlert {
-                showMediaCopyFolderAlert(
-                    message: "Choose different folders",
-                    detail:
-                        "The sync origin and destination folders are the same. Choose a separate destination folder."
-                )
-            }
-            return false
-        }
-
-        if destinationComponents.count > originComponents.count
-            && Array(destinationComponents.prefix(originComponents.count)) == originComponents
-        {
-            if showsAlert {
-                showMediaCopyFolderAlert(
-                    message: "Destination is inside the origin",
-                    detail:
-                        "Choose a destination outside the origin tree so sync output is not scanned as new origin content."
-                )
-            }
-            return false
-        }
-
-        if originComponents.count > destinationComponents.count
-            && Array(originComponents.prefix(destinationComponents.count)) == destinationComponents
-        {
-            if showsAlert {
-                showMediaCopyFolderAlert(
-                    message: "Origin is inside the destination",
-                    detail:
-                        "Choose folders that do not contain each other so deletion mirroring cannot remove the origin tree."
-                )
-            }
-            return false
-        }
-
-        return true
-    }
-
-    private func validateLoadedSyncFolderPairs(_ pairs: [SyncFolderPair]) -> Bool {
-        var seenPairs = Set<String>()
-        for pair in pairs {
-            let key = "\(pair.originPath)\n\(pair.destinationPath)"
-            guard seenPairs.insert(key).inserted else {
-                statusMessage =
-                    "Could not load sync pair list: it contains duplicate origin and destination folders."
-                return false
-            }
-
-            guard validateSyncFolders(
-                originRoot: pair.originURL,
-                destinationRoot: effectiveSyncDestinationRoot(for: pair, in: pairs),
-                showsAlert: false,
-                createsDestinationDirectory: false
-            ) else {
-                statusMessage =
-                    "Could not load sync pair list: one or more origin folders are missing or folder paths are nested unsafely."
-                return false
-            }
-        }
-
-        if let collisionMessage = syncDestinationCollisionMessage(for: pairs) {
-            statusMessage = "Could not load sync pair list: \(collisionMessage)"
-            return false
-        }
-
-        return true
-    }
-
-    private func confirmReplacingSyncFolderPairs(withCount newPairCount: Int) -> Bool {
-        guard !syncFolderPairs.isEmpty else { return true }
-
-        let alert = NSAlert()
-        alert.messageText = "Replace current sync pairs?"
-        alert.informativeText =
-            "Loading this file will replace the current \(syncFolderPairs.count) sync pair\(syncFolderPairs.count == 1 ? "" : "s") with \(newPairCount) pair\(newPairCount == 1 ? "" : "s")."
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Replace")
-        alert.addButton(withTitle: "Cancel")
-        return alert.runModal() == .alertFirstButtonReturn
-    }
-
-    private func effectiveSyncDestinationRoot(
-        for pair: SyncFolderPair,
-        in pairs: [SyncFolderPair]? = nil
-    ) -> URL {
-        let resolutionPairs = pairs ?? syncDestinationResolutionPairs(for: pair)
-        return pair.effectiveDestinationURL(
-            layout: syncDestinationLayout,
-            allPairs: resolutionPairs
-        )
-    }
-
-    private func syncDestinationResolutionPairs(for pair: SyncFolderPair) -> [SyncFolderPair] {
-        let enabledPairs = syncFolderPairs.filter(\.isEnabled)
-        if pair.isEnabled {
-            return enabledPairs
-        }
-        return enabledPairs + [pair]
-    }
-
-    private func syncDestinationCollisionMessage(for pairs: [SyncFolderPair]) -> String? {
-        var seenPaths: [String: SyncFolderPair] = [:]
-        for pair in pairs where pair.isEnabled {
-            let target = effectiveSyncDestinationRoot(for: pair, in: pairs)
-                .standardizedFileURL
-                .resolvingSymlinksInPath()
-                .path
-            if let existing = seenPaths[target], existing.id != pair.id {
-                return
-                    "Sync pairs \"\(existing.originURL.lastPathComponent)\" and \"\(pair.originURL.lastPathComponent)\" target the same destination folder. Use different destination folders or rename one origin folder."
-            }
-            seenPaths[target] = pair
-        }
-        return nil
-    }
-
-    private func resetFolderSyncPlan() {
-        guard !isLoadingPersistedSettings, !isFolderSyncBusy else { return }
-        syncPlan = nil
-        syncScannedOperationCount = 0
-        syncScannedCopyCount = 0
-        syncScannedDeleteCount = 0
-        syncScannedTotalSize = 0
-        syncProgress = nil
-    }
-
-    private func markSyncPair(
-        _ id: UUID,
-        state: SyncPairState,
-        message: String,
-        lastSyncedAt: Date? = nil
-    ) {
-        guard let index = syncFolderPairs.firstIndex(where: { $0.id == id }) else { return }
-        isUpdatingSyncPairStatus = true
-        defer {
-            isUpdatingSyncPairStatus = false
-            if lastSyncedAt != nil {
-                persistSyncFolderPairs()
-            }
-        }
-        syncFolderPairs[index].state = syncFolderPairs[index].isEnabled ? state : .disabled
-        syncFolderPairs[index].lastMessage = message
-        if let lastSyncedAt {
-            syncFolderPairs[index].lastSyncedAt = lastSyncedAt
-        }
-    }
-
-    private func configureFolderSyncWatcher() {
-        folderSyncCoordinator.configureWatcher(configuration: folderSyncRunConfiguration)
-    }
-
-    private func persistSyncFolderPairs() {
-        guard !isLoadingPersistedSettings else { return }
-        do {
-            let data = try SyncFolderPairPersistence.encode(syncFolderPairs)
-            settingsPersistence.set(data, forKey: DefaultsKey.syncFolderPairs)
-        } catch {
-            statusMessage = "Could not save sync pairs: \(error.localizedDescription)"
-        }
-    }
-
-    private func loadSyncFolderPairs() {
-        guard let data = settingsPersistence.data(forKey: DefaultsKey.syncFolderPairs) else {
-            return
-        }
-
-        do {
-            syncFolderPairs = try normalizedLoadedSyncFolderPairs(from: data)
-        } catch {
-            statusMessage = "Could not read saved sync pairs: \(error.localizedDescription)"
-        }
-    }
-
-    private func normalizedLoadedSyncFolderPairs(from data: Data) throws -> [SyncFolderPair] {
-        let pairs: [SyncFolderPair]
-        pairs = try SyncFolderPairPersistence.decode(data)
-
-        return pairs.map { pair in
-            var pair = pair
-            if !pair.isEnabled {
-                pair.state = .disabled
-            } else {
-                pair.state = syncAutoSyncEnabled ? .watching : .idle
-            }
-            return pair
-        }
-    }
-
-    private func showMediaCopyFolderAlert(message: String, detail: String) {
+    func showMediaCopyFolderAlert(message: String, detail: String) {
         let alert = NSAlert()
         alert.messageText = message
         alert.informativeText = detail
@@ -5473,7 +4704,7 @@ final class EncoderViewModel: ObservableObject {
         }
     }
 
-    private static func normalizedExtensionSet(from text: String) -> Set<String> {
+    static func normalizedExtensionSet(from text: String) -> Set<String> {
         let separators = CharacterSet(charactersIn: ",; \n\t")
         return Set(
             text.components(separatedBy: separators)

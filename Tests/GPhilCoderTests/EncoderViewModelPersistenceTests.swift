@@ -125,6 +125,65 @@ final class EncoderViewModelPersistenceTests: XCTestCase {
         XCTAssertEqual(restored.syncFolderPairs[0].state, .idle)
     }
 
+    func testFreshFolderSyncSettingsDisableDestinationDeletion() {
+        let model = EncoderViewModel()
+
+        XCTAssertFalse(model.syncDeleteDestinationItems)
+    }
+
+    func testLegacyAutomaticDeletionRequiresSafetyAcknowledgementBeforeWatching() throws {
+        let workspace = try makeTemporaryDirectory()
+        let origin = try makeDirectory("Origin", in: workspace)
+        let destination = try makeDirectory("Destination", in: workspace)
+        let legacyPair = SyncFolderPair(
+            originPath: origin.path,
+            destinationPath: destination.path
+        )
+        UserDefaults.standard.set(
+            try SyncFolderPairPersistence.encode([legacyPair]),
+            forKey: "syncFolderPairs"
+        )
+
+        let model = EncoderViewModel()
+
+        XCTAssertTrue(model.syncDeleteDestinationItems)
+        XCTAssertTrue(model.syncAutoSyncEnabled)
+        XCTAssertTrue(model.syncSafetyMigrationNeedsAcknowledgement)
+        XCTAssertFalse(model.isFolderSyncWatching)
+    }
+
+    func testAcknowledgingLegacySafetyCanDisableDeletionAndPersistsTheDecision() throws {
+        let workspace = try makeTemporaryDirectory()
+        let origin = try makeDirectory("Origin", in: workspace)
+        let destination = try makeDirectory("Destination", in: workspace)
+        UserDefaults.standard.set(
+            try SyncFolderPairPersistence.encode([
+                SyncFolderPair(originPath: origin.path, destinationPath: destination.path)
+            ]),
+            forKey: "syncFolderPairs"
+        )
+
+        var model: EncoderViewModel? = EncoderViewModel()
+        XCTAssertTrue(model?.syncSafetyMigrationNeedsAcknowledgement == true)
+        model?.acknowledgeSyncSafetyMigration(keepDeletionEnabled: false)
+        XCTAssertFalse(model?.syncSafetyMigrationNeedsAcknowledgement == true)
+        XCTAssertFalse(model?.syncDeleteDestinationItems == true)
+        model = nil
+
+        let restored = EncoderViewModel()
+        XCTAssertFalse(restored.syncSafetyMigrationNeedsAcknowledgement)
+        XCTAssertFalse(restored.syncDeleteDestinationItems)
+    }
+
+    func testDecliningDeletionAcknowledgementLeavesDeletionDisabled() {
+        let model = EncoderViewModel()
+        model.folderSyncDeletionEnableConfirmationHandler = { false }
+
+        model.requestSyncDestinationDeletion(true)
+
+        XCTAssertFalse(model.syncDeleteDestinationItems)
+    }
+
     func testMediaCopyAndRenameSettingsReloadFromDefaults() throws {
         let workspace = try makeTemporaryDirectory()
         let firstSource = try makeDirectory("Source A", in: workspace)
@@ -341,6 +400,7 @@ final class EncoderViewModelPersistenceTests: XCTestCase {
         "syncDestinationLayout",
         "syncFileFilter",
         "syncCustomFileExtensions",
+        "syncSafetyAcknowledgementVersion",
         "completionNotificationsEnabled"
     ]
 }
