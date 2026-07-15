@@ -11,3 +11,5 @@ DerivedData/
 *.swp
 *.mobileprovision
 *.provisionprofile
+.codex/
+releases/
