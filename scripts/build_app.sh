@@ -121,6 +121,7 @@ sign_app_store_bundle() {
       exit 1
     fi
     cp "$PROVISIONING_PROFILE" "$CONTENTS_DIR/embedded.provisionprofile"
+    chmod 644 "$CONTENTS_DIR/embedded.provisionprofile"
     mkdir -p "$ROOT_DIR/.build/signing"
     app_entitlements_for_signing="$ROOT_DIR/.build/signing/$APP_NAME.entitlements"
     /usr/bin/python3 - "$APP_ENTITLEMENTS" "$PROVISIONING_PROFILE" "$app_entitlements_for_signing" <<'PY'

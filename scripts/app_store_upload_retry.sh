@@ -23,9 +23,9 @@ run_app_store_upload_with_retries() {
     echo "==> Upload attempt $attempt"
     if "$@"; then
       return 0
+    else
+      exit_code=$?
     fi
-
-    exit_code=$?
 
     local now
     local elapsed
@@ -50,4 +50,3 @@ run_app_store_upload_with_retries() {
     attempt=$((attempt + 1))
   done
 }
-
