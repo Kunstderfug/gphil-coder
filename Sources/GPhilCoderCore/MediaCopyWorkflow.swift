@@ -40,7 +40,7 @@ public enum MediaCopyJobDocumentError: Error, Equatable, LocalizedError, Sendabl
     public var errorDescription: String? {
         switch self {
         case .unsupportedVersion(let found, let supported):
-            "This file copy job uses version \(found), but this GPhilCoder build supports up to version \(supported). Update GPhilCoder or open a compatible job file."
+            "This file copy job uses version \(found), but this GPhil MediaFlow build supports up to version \(supported). Update GPhil MediaFlow or open a compatible job file."
         case .emptySourceSet:
             "A saved file copy workflow has no source folders. The job file was left unchanged."
         }

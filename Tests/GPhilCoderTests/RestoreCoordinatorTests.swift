@@ -85,7 +85,7 @@ final class RestoreCoordinatorTests: XCTestCase {
     func testCopyUnresolvedItemsCopiesIntoDestinationWithCollisionSuffix() async throws {
         let workspace = try makeTemporaryDirectory()
         let deleted = try makeDirectory("Deleted", in: workspace)
-        let destination = try makeDirectory("Restore/GPhilCoder Unresolved Files", in: workspace)
+        let destination = try makeDirectory("Restore/GPhil MediaFlow Unresolved Files", in: workspace)
         let source = try writeFile("Song.flac", in: deleted, contents: "source")
         try writeFile("Song.flac", in: destination, contents: "existing")
         let item = RestoreUnresolvedFile(
@@ -110,7 +110,7 @@ final class RestoreCoordinatorTests: XCTestCase {
         )
         XCTAssertEqual(
             state.statusMessage,
-            "Copied 1 unresolved file to GPhilCoder Unresolved Files."
+            "Copied 1 unresolved file to GPhil MediaFlow Unresolved Files."
         )
     }
 

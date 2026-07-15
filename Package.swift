@@ -3,13 +3,13 @@
 import PackageDescription
 
 let package = Package(
-    name: "GPhilCoder",
+    name: "GPhil MediaFlow",
     platforms: [
         .macOS(.v14)
     ],
     products: [
         .library(name: "GPhilCoderCore", targets: ["GPhilCoderCore"]),
-        .executable(name: "GPhilCoder", targets: ["GPhilCoder"])
+        .executable(name: "GPhil MediaFlow", targets: ["GPhilCoder"])
     ],
     targets: [
         .target(

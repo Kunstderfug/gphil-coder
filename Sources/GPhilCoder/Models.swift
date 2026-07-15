@@ -72,7 +72,7 @@ enum FFmpegSourcePreference: String, CaseIterable, Identifiable {
     var detail: String {
         switch self {
         case .bundled:
-            "Use the FFmpeg shipped inside GPhilCoder."
+            "Use the FFmpeg shipped inside GPhil MediaFlow."
         case .system:
             "Use FFmpeg discovered on this Mac."
         }

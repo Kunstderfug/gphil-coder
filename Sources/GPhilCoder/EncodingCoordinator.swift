@@ -195,7 +195,7 @@ final class EncodingCoordinator {
         error: Error
     ) -> String {
         [
-            "GPhilCoder encoding failed",
+            "GPhil MediaFlow encoding failed",
             "Input: \(job.item.url.path(percentEncoded: false))",
             "Output: \(job.outputURL.path(percentEncoded: false))",
             "FFmpeg: \(settings.ffmpegURL.path(percentEncoded: false))",

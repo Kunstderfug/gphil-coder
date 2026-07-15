@@ -65,7 +65,7 @@ discover_app_store_api_key "$ROOT_DIR"
 
 plist_value() {
   local key="$1"
-  local plist="$ROOT_DIR/dist/GPhilCoder.app/Contents/Info.plist"
+  local plist="$ROOT_DIR/dist/GPhil MediaFlow.app/Contents/Info.plist"
 
   [[ -f "$plist" ]] || return 0
   plutil -extract "$key" raw -o - "$plist" 2>/dev/null || true

@@ -1,6 +1,6 @@
 # File Copy Job Format
 
-GPhilCoder File Copy jobs are UTF-8 JSON documents saved with the `.job`
+GPhil MediaFlow File Copy jobs are UTF-8 JSON documents saved with the `.job`
 extension. The document is versioned so incompatible files can be rejected
 without replacing the queue currently open in the app.
 

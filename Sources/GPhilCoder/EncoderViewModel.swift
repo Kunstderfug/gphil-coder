@@ -1132,7 +1132,7 @@ final class EncoderViewModel: ObservableObject {
             return "Sync watching \(pairCount) \(pairLabel)"
         }
 
-        return "GPhil Coder active"
+        return "GPhil MediaFlow active"
     }
 
     var isQuitBlockedByActiveProcess: Bool {
@@ -1141,26 +1141,26 @@ final class EncoderViewModel: ObservableObject {
 
     var activeProcessQuitBlockedMessage: String {
         if isEncoding {
-            return "Encoding is still running. Cancel encoding or wait for it to finish before closing GPhil Coder."
+            return "Encoding is still running. Cancel encoding or wait for it to finish before closing GPhil MediaFlow."
         }
 
         if isMediaCopyBusy {
-            return "A file management operation is still running. Cancel it or wait for it to finish before closing GPhil Coder."
+            return "A file management operation is still running. Cancel it or wait for it to finish before closing GPhil MediaFlow."
         }
 
         if isFolderSyncBusy {
-            return "A folder sync is still running. Cancel it or wait for it to finish before closing GPhil Coder."
+            return "A folder sync is still running. Cancel it or wait for it to finish before closing GPhil MediaFlow."
         }
 
         if isRestorePlanning {
-            return "A restore search is still running. Stop it or wait for it to finish before closing GPhil Coder."
+            return "A restore search is still running. Stop it or wait for it to finish before closing GPhil MediaFlow."
         }
 
         if isRestoringFromPlan {
-            return "Files are still being restored. Wait for the restore operation to finish before closing GPhil Coder."
+            return "Files are still being restored. Wait for the restore operation to finish before closing GPhil MediaFlow."
         }
 
-        return "An active process is still running. Wait for it to finish before closing GPhil Coder."
+        return "An active process is still running. Wait for it to finish before closing GPhil MediaFlow."
     }
 
     func reportQuitBlockedByActiveProcess() {
@@ -1663,11 +1663,11 @@ final class EncoderViewModel: ObservableObject {
             switch state {
             case .enabled:
                 self?.statusMessage =
-                    "Notifications enabled. Completion alerts appear when GPhilCoder is in the background."
+                    "Notifications enabled. Completion alerts appear when GPhil MediaFlow is in the background."
             case .denied:
                 AppNotifier.openNotificationSettings()
                 self?.statusMessage =
-                    "Notifications are denied. Opened macOS Notification settings so you can enable GPhilCoder there."
+                    "Notifications are denied. Opened macOS Notification settings so you can enable GPhil MediaFlow there."
             case .notDetermined, .unknown:
                 self?.statusMessage =
                     "Notification permission was not granted. Check macOS notification settings."
@@ -1688,14 +1688,14 @@ final class EncoderViewModel: ObservableObject {
 
     func clearDeliveredNotifications() {
         AppNotifier.clearGPhilCoderNotifications { [weak self] in
-            self?.statusMessage = "Cleared GPhilCoder notifications."
+            self?.statusMessage = "Cleared GPhil MediaFlow notifications."
         }
     }
 
     func openNotificationSettings() {
         AppNotifier.openNotificationSettings()
         statusMessage =
-            "Opened macOS Notification settings. If GPhilCoder is not selected automatically, choose it there and enable notifications."
+            "Opened macOS Notification settings. If GPhil MediaFlow is not selected automatically, choose it there and enable notifications."
         refreshNotificationPermission()
     }
 
@@ -2241,7 +2241,7 @@ final class EncoderViewModel: ObservableObject {
         let alert = NSAlert()
         alert.messageText = "Restore trashed files?"
         alert.informativeText =
-            "GPhilCoder will move \(count) recorded Trash item\(count == 1 ? "" : "s") back to their original folder when the Trash item still exists and the original path is free."
+            "GPhil MediaFlow will move \(count) recorded Trash item\(count == 1 ? "" : "s") back to their original folder when the Trash item still exists and the original path is free."
         alert.alertStyle = .informational
         alert.addButton(withTitle: "Restore")
         alert.addButton(withTitle: "Cancel")
@@ -2313,7 +2313,7 @@ final class EncoderViewModel: ObservableObject {
         let alert = NSAlert()
         alert.messageText = "Clear restore records?"
         alert.informativeText =
-            "This only removes GPhilCoder's saved restore list for \(count) trashed file\(count == 1 ? "" : "s"). It does not delete or restore any files."
+            "This only removes GPhil MediaFlow's saved restore list for \(count) trashed file\(count == 1 ? "" : "s"). It does not delete or restore any files."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Clear Records")
         alert.addButton(withTitle: "Cancel")
@@ -2448,7 +2448,7 @@ final class EncoderViewModel: ObservableObject {
         let alert = NSAlert()
         alert.messageText = "Restore matched files?"
         alert.informativeText =
-            "GPhilCoder will copy \(count) matched file\(count == 1 ? "" : "s") to the restore root using \(restoreCopySource.title.lowercased()). Existing restore paths are \(restoreOverwriteExisting ? "overwritten" : "skipped")."
+            "GPhil MediaFlow will copy \(count) matched file\(count == 1 ? "" : "s") to the restore root using \(restoreCopySource.title.lowercased()). Existing restore paths are \(restoreOverwriteExisting ? "overwritten" : "skipped")."
         alert.alertStyle = restoreOverwriteExisting ? .warning : .informational
         alert.addButton(withTitle: "Restore")
         alert.addButton(withTitle: "Cancel")
@@ -2508,14 +2508,14 @@ final class EncoderViewModel: ObservableObject {
         }
 
         let destinationFolder = restoreRoot.appendingPathComponent(
-            "GPhilCoder Unresolved Files",
+            "GPhil MediaFlow Unresolved Files",
             isDirectory: true
         )
 
         let alert = NSAlert()
         alert.messageText = "Copy unresolved files to the restore root?"
         alert.informativeText =
-            "GPhilCoder will copy \(items.count) unresolved file\(items.count == 1 ? "" : "s") into \(destinationFolder.path(percentEncoded: false)). Original subfolders are still unknown, so this creates a holding folder and does not overwrite existing files."
+            "GPhil MediaFlow will copy \(items.count) unresolved file\(items.count == 1 ? "" : "s") into \(destinationFolder.path(percentEncoded: false)). Original subfolders are still unknown, so this creates a holding folder and does not overwrite existing files."
         alert.alertStyle = .informational
         alert.addButton(withTitle: "Copy")
         alert.addButton(withTitle: "Cancel")
@@ -2632,7 +2632,7 @@ final class EncoderViewModel: ObservableObject {
         let alert = NSAlert()
         alert.messageText = "Rename filtered files?"
         var detail =
-            "GPhilCoder will rename \(itemCount) file\(itemCount == 1 ? "" : "s") in place. Extensions are preserved."
+            "GPhil MediaFlow will rename \(itemCount) file\(itemCount == 1 ? "" : "s") in place. Extensions are preserved."
         if unchangedCount > 0 {
             detail += " \(unchangedCount) unchanged file\(unchangedCount == 1 ? "" : "s") will be skipped."
         }
@@ -2653,10 +2653,10 @@ final class EncoderViewModel: ObservableObject {
         switch direction {
         case .undo:
             alert.informativeText =
-                "GPhilCoder will move \(count) renamed file\(count == 1 ? "" : "s") back to their previous name. Files are skipped if the renamed source is missing or the previous name is already taken."
+                "GPhil MediaFlow will move \(count) renamed file\(count == 1 ? "" : "s") back to their previous name. Files are skipped if the renamed source is missing or the previous name is already taken."
         case .redo:
             alert.informativeText =
-                "GPhilCoder will reapply \(count) previously undone rename\(count == 1 ? "" : "s"). Files are skipped if the original source is missing or the renamed target is already taken."
+                "GPhil MediaFlow will reapply \(count) previously undone rename\(count == 1 ? "" : "s"). Files are skipped if the original source is missing or the renamed target is already taken."
         }
         alert.alertStyle = .informational
         alert.addButton(withTitle: direction == .undo ? "Undo" : "Redo")
@@ -2683,7 +2683,7 @@ final class EncoderViewModel: ObservableObject {
             ? " Other file extensions stay untouched."
             : ""
         alert.informativeText =
-            "GPhilCoder will move \(itemCount) file\(itemCount == 1 ? "" : "s") matching \(scopeDescription) to the macOS Trash from \(sourceRootCount) selected source folder\(sourceRootCount == 1 ? "" : "s").\(untouchedDescription) Restore records will be saved so these files can be moved back when the Trash items are still available. Total size: \(totalSize.formattedFileSize)."
+            "GPhil MediaFlow will move \(itemCount) file\(itemCount == 1 ? "" : "s") matching \(scopeDescription) to the macOS Trash from \(sourceRootCount) selected source folder\(sourceRootCount == 1 ? "" : "s").\(untouchedDescription) Restore records will be saved so these files can be moved back when the Trash items are still available. Total size: \(totalSize.formattedFileSize)."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Move to Trash")
         alert.addButton(withTitle: "Cancel")
@@ -2956,7 +2956,7 @@ final class EncoderViewModel: ObservableObject {
 
         guard let grantedRoots = requestWriteAccess(for: deniedDirectories) else {
             securityScopes.stopEncoding()
-            statusMessage = "Encoding cancelled because GPhilCoder does not have permission to write to the output folder."
+            statusMessage = "Encoding cancelled because GPhil MediaFlow does not have permission to write to the output folder."
             return false
         }
 
@@ -2965,7 +2965,7 @@ final class EncoderViewModel: ObservableObject {
         guard stillDenied.isEmpty else {
             securityScopes.stopEncoding()
             let names = stillDenied.prefix(3).map { $0.path(percentEncoded: false) }.joined(separator: "\n")
-            statusMessage = "GPhilCoder still cannot write to:\n\(names)"
+            statusMessage = "GPhil MediaFlow still cannot write to:\n\(names)"
             return false
         }
 
@@ -2989,7 +2989,7 @@ final class EncoderViewModel: ObservableObject {
         panel.title = "Authorize Output Folder Access"
         panel.prompt = "Authorize"
         panel.message =
-            "GPhilCoder needs permission to write encoded files to the selected output folder. Choose the source/output folder, or a parent folder that contains all planned outputs."
+            "GPhil MediaFlow needs permission to write encoded files to the selected output folder. Choose the source/output folder, or a parent folder that contains all planned outputs."
         panel.allowsMultipleSelection = true
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
@@ -3003,7 +3003,7 @@ final class EncoderViewModel: ObservableObject {
     private func defaultQueueFileName() -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH.mm"
-        return "GPhilCoder Queue \(formatter.string(from: Date())).\(QueueFile.fileExtension)"
+        return "GPhil MediaFlow Queue \(formatter.string(from: Date())).\(QueueFile.fileExtension)"
     }
 
     private func normalizedQueueFileURL(_ url: URL) -> URL {
@@ -3490,7 +3490,7 @@ final class EncoderViewModel: ObservableObject {
             case .failure(.versionMismatch):
                 // Leave the blob intact for a newer build to read.
                 statusMessage =
-                    "Could not read saved trash records — they were saved by a newer version of GPhilCoder and were kept. Restore-from-Trash may be unavailable until you upgrade."
+                    "Could not read saved trash records — they were saved by a newer version of GPhil MediaFlow and were kept. Restore-from-Trash may be unavailable until you upgrade."
             case .failure(.corrupt):
                 settingsPersistence.preserveCorruptBlob(data, name: "trashed-source-records")
                 statusMessage =
@@ -3510,7 +3510,7 @@ final class EncoderViewModel: ObservableObject {
                 break
             case .failure(.versionMismatch):
                 statusMessage =
-                    "Could not read rename history — it was saved by a newer version of GPhilCoder and was kept."
+                    "Could not read rename history — it was saved by a newer version of GPhil MediaFlow and was kept."
             case .failure(.corrupt):
                 settingsPersistence.preserveCorruptBlob(data, name: "media-rename-history")
                 statusMessage =
@@ -4085,7 +4085,7 @@ final class EncoderViewModel: ObservableObject {
             break
         case .failure(.versionMismatch):
             statusMessage =
-                "Could not read rename settings — they were saved by a newer version of GPhilCoder and were kept."
+                "Could not read rename settings — they were saved by a newer version of GPhil MediaFlow and were kept."
         case .failure(.corrupt):
             settingsPersistence.preserveCorruptBlob(data, name: "media-rename-settings")
             statusMessage =
@@ -4122,7 +4122,7 @@ final class EncoderViewModel: ObservableObject {
             pendingTrashSourceRecords = records
         case .failure(.versionMismatch):
             statusMessage =
-                "Could not read the trash emergency journal — it was saved by a newer version of GPhilCoder and was kept."
+                "Could not read the trash emergency journal — it was saved by a newer version of GPhil MediaFlow and was kept."
         case .failure(.corrupt):
             settingsPersistence.preserveCorruptBlob(data, name: "trash-emergency-journal")
             statusMessage =

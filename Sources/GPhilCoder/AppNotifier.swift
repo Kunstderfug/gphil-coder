@@ -83,13 +83,13 @@ enum AppNotifier {
                 || settings.authorizationStatus == .provisional
             else {
                 Task { @MainActor in
-                    completion("Notifications are not enabled for GPhilCoder.")
+                    completion("Notifications are not enabled for GPhil MediaFlow.")
                 }
                 return
             }
 
             let content = UNMutableNotificationContent()
-            content.title = "GPhilCoder notifications are working"
+            content.title = "GPhil MediaFlow notifications are working"
             content.body = "Completion alerts will appear when the app is in the background."
             content.sound = .default
 
@@ -214,11 +214,11 @@ enum NotificationPermissionState: Equatable {
         case .unknown:
             "Notification permission has not been checked yet."
         case .notDetermined:
-            "Enable notifications to get completion alerts when GPhilCoder is in the background."
+            "Enable notifications to get completion alerts when GPhil MediaFlow is in the background."
         case .enabled:
-            "Completion alerts will appear when GPhilCoder is in the background."
+            "Completion alerts will appear when GPhil MediaFlow is in the background."
         case .denied:
-            "Enable notifications for GPhilCoder in macOS System Settings."
+            "Enable notifications for GPhil MediaFlow in macOS System Settings."
         }
     }
 

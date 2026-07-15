@@ -247,7 +247,7 @@ final class RestoreCoordinator {
 
     private static func unresolvedCopyStatusMessage(_ result: RestoreUnresolvedCopyResult) -> String {
         var details = [
-            "Copied \(result.copied) unresolved file\(result.copied == 1 ? "" : "s") to GPhilCoder Unresolved Files."
+            "Copied \(result.copied) unresolved file\(result.copied == 1 ? "" : "s") to GPhil MediaFlow Unresolved Files."
         ]
         if result.failed > 0 {
             details.append(

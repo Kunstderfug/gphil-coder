@@ -220,7 +220,7 @@ private final class AppLifecycleDelegate: NSObject, NSApplicationDelegate, NSWin
 
         let statusItem = activityStatusItem ?? makeActivityStatusItem()
         activityStatusItem = statusItem
-        statusItem.button?.toolTip = "GPhil Coder: \(encoder.menuBarActivityTitle)."
+        statusItem.button?.toolTip = "GPhil MediaFlow: \(encoder.menuBarActivityTitle)."
         activityStatusSummaryItem?.title = encoder.menuBarActivityTitle
     }
 
@@ -241,7 +241,7 @@ private final class AppLifecycleDelegate: NSObject, NSApplicationDelegate, NSWin
 
     private func showQuitBlockedAlert(message: String) {
         let alert = NSAlert()
-        alert.messageText = "GPhil Coder is busy"
+        alert.messageText = "GPhil MediaFlow is busy"
         alert.informativeText = message
         alert.alertStyle = .warning
         alert.addButton(withTitle: "OK")
@@ -257,14 +257,14 @@ private final class AppLifecycleDelegate: NSObject, NSApplicationDelegate, NSWin
         }
 
         let menu = NSMenu()
-        let summaryItem = NSMenuItem(title: "GPhil Coder active", action: nil, keyEquivalent: "")
+        let summaryItem = NSMenuItem(title: "GPhil MediaFlow active", action: nil, keyEquivalent: "")
         summaryItem.isEnabled = false
         activityStatusSummaryItem = summaryItem
         menu.addItem(summaryItem)
         menu.addItem(.separator())
 
         let showItem = NSMenuItem(
-            title: "Show GPhil Coder",
+            title: "Show GPhil MediaFlow",
             action: #selector(showGPhilCoderFromStatusItem(_:)),
             keyEquivalent: ""
         )
@@ -272,7 +272,7 @@ private final class AppLifecycleDelegate: NSObject, NSApplicationDelegate, NSWin
         menu.addItem(showItem)
 
         let quitItem = NSMenuItem(
-            title: "Quit GPhil Coder",
+            title: "Quit GPhil MediaFlow",
             action: #selector(quitGPhilCoderFromStatusItem(_:)),
             keyEquivalent: "q"
         )
@@ -288,7 +288,7 @@ private final class AppLifecycleDelegate: NSObject, NSApplicationDelegate, NSWin
             bundledAppIcon()
             ?? sourceAppIcon()
             ?? NSApp.applicationIconImage
-        image?.accessibilityDescription = "GPhil Coder activity"
+        image?.accessibilityDescription = "GPhil MediaFlow activity"
         image?.isTemplate = false
         image?.size = NSSize(width: 18, height: 18)
         return image

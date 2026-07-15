@@ -104,7 +104,7 @@ struct AppTopBar: View {
                 HeaderAppIcon()
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("GPhil Coder")
+                    Text("GPhil MediaFlow")
                         .font(.system(size: 24, weight: .bold, design: .rounded))
                     Text("Batch audio/video encoding and filtered media workflows")
                         .font(.callout)

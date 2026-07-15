@@ -171,7 +171,7 @@ extension EncoderViewModel {
         }
         guard !stillMissingBookmarks else {
             securityScopes.stopSync()
-            statusMessage = "Folder sync cancelled because GPhilCoder could not save folder authorization."
+            statusMessage = "Folder sync cancelled because GPhil MediaFlow could not save folder authorization."
             return nil
         }
 
@@ -185,7 +185,7 @@ extension EncoderViewModel {
         panel.title = "Authorize Sync Folder Access"
         panel.prompt = "Authorize"
         panel.message =
-            "GPhilCoder needs permission to read and write the folders loaded from this sync pair list. Choose a parent folder that contains all listed origins and destinations, or choose the individual folders."
+            "GPhil MediaFlow needs permission to read and write the folders loaded from this sync pair list. Choose a parent folder that contains all listed origins and destinations, or choose the individual folders."
         panel.allowsMultipleSelection = true
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
@@ -302,7 +302,7 @@ extension EncoderViewModel {
                 if showsAlert {
                     showMediaCopyFolderAlert(
                         message: "Destination folder is unavailable",
-                        detail: "GPhilCoder could not create or open the destination folder: \(error.localizedDescription)"
+                        detail: "GPhil MediaFlow could not create or open the destination folder: \(error.localizedDescription)"
                     )
                 }
                 return false
@@ -490,7 +490,7 @@ extension EncoderViewModel {
     func defaultSyncFolderPairListFileName() -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH.mm"
-        return "GPhilCoder Sync Pairs \(formatter.string(from: Date())).\(SyncFolderPairListFile.fileExtension)"
+        return "GPhil MediaFlow Sync Pairs \(formatter.string(from: Date())).\(SyncFolderPairListFile.fileExtension)"
     }
 
     func normalizedSyncFolderPairListFileURL(_ url: URL) -> URL {

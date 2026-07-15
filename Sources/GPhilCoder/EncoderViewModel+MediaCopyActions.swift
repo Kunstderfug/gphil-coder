@@ -211,7 +211,7 @@ extension EncoderViewModel {
     private func defaultMediaCopyJobFileName() -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH.mm"
-        return "GPhilCoder File Copy \(formatter.string(from: Date())).\(MediaCopyJobFile.fileExtension)"
+        return "GPhil MediaFlow File Copy \(formatter.string(from: Date())).\(MediaCopyJobFile.fileExtension)"
     }
 
     private func normalizedMediaCopyJobFileURL(_ url: URL) -> URL {

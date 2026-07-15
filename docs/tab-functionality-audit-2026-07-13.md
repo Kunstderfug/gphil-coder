@@ -1,4 +1,4 @@
-# GPhilCoder Tab Functionality Audit
+# GPhil MediaFlow Tab Functionality Audit
 
 **Audit date:** 2026-07-13
 **Audited revision:** `main` at `793f6b0` (`Refactor ContentView into workflow views`)
@@ -40,7 +40,7 @@ Local screenshots from this audit are stored outside the repository at:
 
 ## Executive assessment
 
-GPhilCoder is already much deeper than a simple transcoder. Audio is the most complete workflow; Video is capable locally but has a distribution mismatch; Copy and Sync have correctness issues that should be resolved before adding features; Rename and Delete need selective review/recovery controls; Restore has a sophisticated planner but an underdeveloped apply phase.
+GPhil MediaFlow is already much deeper than a simple transcoder. Audio is the most complete workflow; Video is capable locally but has a distribution mismatch; Copy and Sync have correctness issues that should be resolved before adding features; Rename and Delete need selective review/recovery controls; Restore has a sophisticated planner but an underdeveloped apply phase.
 
 The default screens are generally clear. Each tab has a useful empty state, the primary action is visible, and color consistently identifies the current workflow. The highest-risk problems are below the presentation layer:
 

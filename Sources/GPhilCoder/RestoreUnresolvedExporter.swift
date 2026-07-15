@@ -19,7 +19,7 @@ enum RestoreUnresolvedExporter {
     static func defaultFileName(date: Date = Date()) -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH.mm"
-        return "GPhilCoder Unresolved \(formatter.string(from: date)).json"
+        return "GPhil MediaFlow Unresolved \(formatter.string(from: date)).json"
     }
 
     @discardableResult

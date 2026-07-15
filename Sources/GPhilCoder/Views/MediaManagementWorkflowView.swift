@@ -718,7 +718,7 @@ struct MediaManagementWorkflowView: View {
                             .frame(maxWidth: .infinity)
                     }
                     .disabled(!model.canRestoreTrashedSources)
-                    .help("Restore files moved to Trash by GPhilCoder")
+                    .help("Restore files moved to Trash by GPhil MediaFlow")
 
                     Button(role: .destructive) {
                         model.clearTrashedSourceRecords()

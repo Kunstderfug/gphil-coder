@@ -142,7 +142,7 @@ struct EncodingWorkflowView: View {
                     .frame(maxWidth: .infinity)
                 }
                 .disabled(!model.canRestoreTrashedSources)
-                .help("Restore source files moved to Trash by GPhilCoder")
+                .help("Restore source files moved to Trash by GPhil MediaFlow")
 
                 Button(role: .destructive) {
                     model.clearTrashedSourceRecords()

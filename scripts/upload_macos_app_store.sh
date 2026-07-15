@@ -17,7 +17,7 @@ Builds, signs, packages, uploads, checks status, and updates TestFlight notes
 for the macOS App Store build.
 
 Options:
-  --upload-only                 Upload existing dist/GPhilCoder-AppStore.pkg.
+  --upload-only                 Upload existing dist/GPhil MediaFlow-AppStore.pkg.
   --skip-testflight-notes       Do not update TestFlight release notes.
   --skip-build-status           Do not check altool build status after upload.
   --dry-run                     Resolve credentials/profile/build number, then exit before build/upload.
@@ -45,7 +45,7 @@ MARKETING_VERSION="${MARKETING_VERSION:-1.0}"
 BUILD_NUMBER="${BUILD_NUMBER:-}"
 PROVISIONING_PROFILE="${PROVISIONING_PROFILE:-}"
 RELEASE_NOTES_FILE="${RELEASE_NOTES_FILE:-}"
-PKG_FILE="${PKG_FILE:-$ROOT_DIR/dist/GPhilCoder-AppStore.pkg}"
+PKG_FILE="${PKG_FILE:-$ROOT_DIR/dist/GPhil MediaFlow-AppStore.pkg}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -110,7 +110,7 @@ fi
 
 plist_value() {
   local key="$1"
-  local plist="$ROOT_DIR/dist/GPhilCoder.app/Contents/Info.plist"
+  local plist="$ROOT_DIR/dist/GPhil MediaFlow.app/Contents/Info.plist"
 
   [[ -f "$plist" ]] || return 0
   plutil -extract "$key" raw -o - "$plist" 2>/dev/null || true

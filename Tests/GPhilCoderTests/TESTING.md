@@ -1,4 +1,4 @@
-# GPhilCoder tests
+# GPhil MediaFlow tests
 
 ## Running
 
@@ -65,9 +65,9 @@ disposable folders only. Record the app version, macOS version, volume format,
 and pass/fail result. Before starting, verify the bundle and create a fixture:
 
 ```sh
-codesign --verify --deep --strict --verbose=2 dist/GPhilCoder.app
-codesign -d --entitlements :- dist/GPhilCoder.app 2>/dev/null
-export SYNC_SMOKE="$(mktemp -d "$HOME/Desktop/GPhilCoder-Safe-Sync.XXXXXX")"
+codesign --verify --deep --strict --verbose=2 "dist/GPhil MediaFlow.app"
+codesign -d --entitlements :- "dist/GPhil MediaFlow.app" 2>/dev/null
+export SYNC_SMOKE="$(mktemp -d "$HOME/Desktop/GPhil MediaFlow-Safe-Sync.XXXXXX")"
 mkdir -p "$SYNC_SMOKE/origin" "$SYNC_SMOKE/destination"
 printf 'origin v2\n' > "$SYNC_SMOKE/origin/overwrite.txt"
 printf 'new item\n' > "$SYNC_SMOKE/origin/new.txt"

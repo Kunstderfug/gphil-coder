@@ -468,7 +468,7 @@ struct JobRow: View {
         }
 
         return [
-            "GPhilCoder job \(job.state.label)",
+            "GPhil MediaFlow job \(job.state.label)",
             "Input: \(job.item.url.path(percentEncoded: false))",
             "Output: \(job.outputURL.path(percentEncoded: false))",
             "",

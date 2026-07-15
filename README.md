@@ -1,4 +1,4 @@
-# GPhilCoder
+# GPhil MediaFlow
 
 Native macOS batch audio/video encoder built with SwiftUI and FFmpeg.
 
@@ -20,7 +20,7 @@ Native macOS batch audio/video encoder built with SwiftUI and FFmpeg.
 - Protect same-format encodes by writing `-encoded` output names and blocking exact source overwrites.
 - Warn when transcoding lossy sources to lossless FLAC or WavPack output.
 - Remove queued items, move individual source files to Trash, or move all queued source files to Trash.
-- Restore source files moved to Trash by GPhilCoder when the recorded Trash item still exists.
+- Restore source files moved to Trash by GPhil MediaFlow when the recorded Trash item still exists.
 - Export beside each source file or into a selected export folder.
 - Preserve nested folder structure when exporting to a custom folder.
 - Process files in parallel while optionally passing a thread count to FFmpeg.
@@ -53,14 +53,14 @@ brew install ffmpeg
 ```
 
 Audio encoding can use the bundled FFmpeg or system FFmpeg. Video encoding uses
-system FFmpeg for now so GPhilCoder can use the Mac's Apple Silicon
+system FFmpeg for now so GPhil MediaFlow can use the Mac's Apple Silicon
 VideoToolbox HEVC encoder and request VideoToolbox decode for supported sources
 without increasing the bundled audio-focused FFmpeg size.
 
 ## Run From Source
 
 ```sh
-swift run GPhilCoder
+swift run "GPhil MediaFlow"
 ```
 
 ## Build a Launchable App
@@ -110,7 +110,7 @@ until that size tradeoff is accepted, video stays on system FFmpeg.
 The app bundle is written to:
 
 ```text
-dist/GPhilCoder.app
+dist/GPhil MediaFlow.app
 ```
 
 ## Build for the Mac App Store
@@ -157,7 +157,7 @@ You can pass a specific file:
 The signed upload package is written to:
 
 ```text
-dist/GPhilCoder-AppStore.pkg
+dist/GPhil MediaFlow-AppStore.pkg
 ```
 
 If you need to inspect the signed app before packaging, add `SKIP_PACKAGE=1`.
@@ -190,7 +190,7 @@ Ogg/Vorbis bitrate values are total stream bitrates, not per-channel bitrates. Q
 
 FLAC is limited to 8 channels. WavPack can store much larger channel counts,
 but common DAWs and players are most reliable with the standard named speaker
-channels; GPhilCoder blocks WavPack exports above 18 channels to avoid creating
+channels; GPhil MediaFlow blocks WavPack exports above 18 channels to avoid creating
 files that fail to import or play in apps such as REAPER or foobar2000. Enable
 oversized multichannel splitting to write channel-order chunks such as
 `source_ch1-10.wv` and `source_ch11-21.wv` for WavPack, or up to 8-channel
@@ -210,9 +210,9 @@ system install.
 
 ## Trash Safety
 
-Before GPhilCoder moves source files to the macOS Trash, it writes an emergency
+Before GPhil MediaFlow moves source files to the macOS Trash, it writes an emergency
 journal with the original source paths to
-`~/Library/Application Support/GPhilCoder/trash-emergency-journal.json`. Each
+`~/Library/Application Support/GPhilCoder/trash-emergency-journal.json`. GPhil MediaFlow retains this legacy storage path so existing settings, bookmarks, and recovery data remain available. Each
 successful Trash move is then upgraded into the regular in-app restore ledger.
 
 ## Plan File Restore From Backup
@@ -228,7 +228,7 @@ pickers. The planner checks the restore root first, so files that are already
 back in place are marked as restored and excluded from the backup search.
 During a long search, use **Stop search** to keep the partial counters and the
 currently unresolved list. The unresolved list can be exported as JSON directly
-from the restore window, or copied into `GPhilCoder Unresolved Files` inside the
+from the restore window, or copied into `GPhil MediaFlow Unresolved Files` inside the
 restore root as a holding folder when the original subfolder is still unknown.
 Use **Match by: Filename only** when restored files have the same names but
 different byte sizes, such as after metadata changes. Restore scans normalize
