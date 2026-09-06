@@ -597,6 +597,29 @@ final class FolderSyncCoordinatorTests: XCTestCase {
         XCTAssertTrue(model.syncHistory.first?.settings.automaticSyncEnabled == true)
     }
 
+    func testEnablingAutomaticSyncCatchesUpChangesThatAlreadyExist() async throws {
+        let workspace = try makeTemporaryDirectory()
+        let origin = try makeDirectory("Origin", in: workspace)
+        let destination = try makeDirectory("Destination", in: workspace)
+        try writeFile("score.pdf", in: destination, contents: "old")
+        try writeFile("score.pdf", in: origin, contents: "new score exported while app was closed")
+
+        let model = try makeFolderSyncModel()
+        model.syncDeleteDestinationItems = false
+        addPair(origin: origin, destination: destination, to: model)
+
+        model.syncAutoSyncEnabled = true
+
+        let caughtUp = await waitUntil(timeout: 5) {
+            (try? String(
+                contentsOf: destination.appendingPathComponent("score.pdf"),
+                encoding: .utf8
+            )) == "new score exported while app was closed"
+        }
+        XCTAssertTrue(caughtUp)
+        XCTAssertEqual(model.syncHistory.first?.trigger, .automatic)
+    }
+
     func testCancellationStopsSchedulingAndRetryIncludesOnlyUnfinishedChanges() async throws {
         let workspace = try makeTemporaryDirectory()
         let storageRoot = try makeDirectory("SyncState", in: workspace)

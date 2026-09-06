@@ -392,6 +392,7 @@ final class FolderSyncCoordinator {
 
         folderSyncWatcher = watcher
         setWatching(true)
+        scheduleAutomaticFolderSync()
     }
 
     func originDidChange() {
