@@ -62,7 +62,9 @@ final class MediaFileCoordinator: ObservableObject {
     @Published var isMediaDeleting = false
     @Published var isMediaRenaming = false
     @Published var mediaRenameProgressVerb = "renamed"
-    @Published var mediaCopyQueue: [MediaCopyWorkflow] = []
+    @Published var mediaCopyQueue: [MediaCopyWorkflow] = [] {
+        didSet { persistMediaCopyQueue() }
+    }
     @Published var currentMediaCopyWorkflowID: UUID?
     @Published var mediaRenameUndoStack: [MediaRenameHistoryTransaction] = [] {
         didSet { persistRenameHistory() }
@@ -98,6 +100,9 @@ final class MediaFileCoordinator: ObservableObject {
     let resetJobsForMediaMutation: @MainActor () -> Void
     let persistRenameHistory: @MainActor () -> Void
     let notifyCompletion: @MainActor (_ title: String, _ body: String) -> Void
+    let mediaCopyQueueStore: MediaCopyQueueStore?
+
+    private var isRestoringMediaCopyQueue = false
 
     var mediaCopyTask: Task<Void, Never>?
     var mediaFileNameFilterRefreshTask: Task<Void, Never>?
@@ -131,7 +136,8 @@ final class MediaFileCoordinator: ObservableObject {
         removeInputsAndResetJobs: @escaping @MainActor (_ movedPaths: Set<String>) -> Void,
         resetJobsForMediaMutation: @escaping @MainActor () -> Void,
         persistRenameHistory: @escaping @MainActor () -> Void,
-        notifyCompletion: @escaping @MainActor (_ title: String, _ body: String) -> Void
+        notifyCompletion: @escaping @MainActor (_ title: String, _ body: String) -> Void,
+        mediaCopyQueueStore: MediaCopyQueueStore? = nil
     ) {
         self.setStatusMessage = setStatusMessage
         self.validateFolders = validateFolders
@@ -147,6 +153,55 @@ final class MediaFileCoordinator: ObservableObject {
         self.resetJobsForMediaMutation = resetJobsForMediaMutation
         self.persistRenameHistory = persistRenameHistory
         self.notifyCompletion = notifyCompletion
+        self.mediaCopyQueueStore = mediaCopyQueueStore
+        restoreMediaCopyQueue()
+    }
+
+    // MARK: Queue persistence
+
+    /// Restores the persisted queue at creation, before any UI binds the
+    /// queue. Decoding completes before the in-memory queue is replaced, and
+    /// restoration is configuration only: nothing is run, scanned, or marked
+    /// active. Workflows whose folders vanished re-enter the existing NEEDS
+    /// REPAIR flow through `repairIssues`.
+    private func restoreMediaCopyQueue() {
+        guard let mediaCopyQueueStore else { return }
+        switch mediaCopyQueueStore.load() {
+        case .noDocument:
+            break
+        case .restored(let workflows):
+            isRestoringMediaCopyQueue = true
+            mediaCopyQueue = workflows
+            isRestoringMediaCopyQueue = false
+            let repairCount = workflows.filter { !$0.repairIssues.isEmpty }.count
+            var details = [
+                "Restored \(workflows.count) queued file copy workflow\(workflows.count == 1 ? "" : "s") from the previous session."
+            ]
+            if repairCount > 0 {
+                details.append(
+                    "\(repairCount) workflow\(repairCount == 1 ? " needs" : "s need") folder repair before running."
+                )
+            }
+            setStatusMessage(details.joined(separator: " "))
+        case .quarantined(let problem):
+            setStatusMessage(
+                "The persisted file copy queue could not be read and was set aside for repair, so the queue starts empty: \(problem)"
+            )
+        }
+    }
+
+    /// The one persistence hook for the queue: every mutation of
+    /// `mediaCopyQueue` (add, remove, clear, repair relink, replace via job
+    /// load) funnels through the `didSet` above and lands here.
+    private func persistMediaCopyQueue() {
+        guard let mediaCopyQueueStore, !isRestoringMediaCopyQueue else { return }
+        do {
+            try mediaCopyQueueStore.save(mediaCopyQueue)
+        } catch {
+            setStatusMessage(
+                "Could not save the file copy queue: \(error.localizedDescription)"
+            )
+        }
     }
 
     func scanCopyFiles() {

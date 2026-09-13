@@ -639,6 +639,7 @@ final class EncoderViewModel: ObservableObject {
     let settingsPersistence = SettingsPersistence()
     let securityScopes = SecurityScopeManager()
     let bookmarks = BookmarkStore()
+    private let mediaCopyQueueStore: MediaCopyQueueStore?
     let folderSyncServices: FolderSyncServices?
     private let folderSyncServicesError: String?
     private var cancellables: Set<AnyCancellable> = []
@@ -726,7 +727,8 @@ final class EncoderViewModel: ObservableObject {
         },
         notifyCompletion: { [weak self] title, body in
             self?.notifyCompletionIfNeeded(title: title, body: body)
-        }
+        },
+        mediaCopyQueueStore: mediaCopyQueueStore
     )
 
     private lazy var restoreCoordinator = RestoreCoordinator(
@@ -1597,7 +1599,8 @@ final class EncoderViewModel: ObservableObject {
 
     init(
         folderSyncStorageRoot: URL? = nil,
-        folderSyncTrashBoundary: FolderSyncTrashBoundary? = nil
+        folderSyncTrashBoundary: FolderSyncTrashBoundary? = nil,
+        mediaCopyQueueStorageRoot: URL? = nil
     ) {
         do {
             let storageRoot: URL
@@ -1614,6 +1617,22 @@ final class EncoderViewModel: ObservableObject {
         } catch {
             folderSyncServices = nil
             folderSyncServicesError = error.localizedDescription
+        }
+
+        do {
+            if let mediaCopyQueueStorageRoot {
+                mediaCopyQueueStore = MediaCopyQueueStore(
+                    directoryURL: mediaCopyQueueStorageRoot
+                )
+            } else {
+                mediaCopyQueueStore = MediaCopyQueueStore(
+                    directoryURL: try MediaCopyQueueStore.liveDirectoryURL()
+                )
+            }
+        } catch {
+            mediaCopyQueueStore = nil
+            statusMessage =
+                "File copy queue persistence is unavailable: \(error.localizedDescription)"
         }
 
         mediaFileCoordinator.objectWillChange

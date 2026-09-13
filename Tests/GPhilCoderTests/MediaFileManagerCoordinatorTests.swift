@@ -713,6 +713,11 @@ final class MediaFileManagerCoordinatorTests: XCTestCase {
         for key in keys {
             UserDefaults.standard.removeObject(forKey: key)
         }
+        // Queue mutations now persist to the live default location; purge the
+        // persisted queue so tests composing fresh models stay isolated.
+        if let queueRoot = try? MediaCopyQueueStore.liveDirectoryURL() {
+            try? FileManager.default.removeItem(at: queueRoot)
+        }
     }
 
     private func makeTemporaryDirectory() throws -> URL {
