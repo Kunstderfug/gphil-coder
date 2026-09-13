@@ -1,7 +1,7 @@
 # Persist the file-copy workflow queue across relaunch
 
 Type: implementation
-Status: open
+Status: resolved
 Triage: ready-for-agent
 Parent: PRD umbrella (Kunstderfug/gphil-coder#1)
 Depends on: None
@@ -87,3 +87,75 @@ persistence side effect only.
 ## Blocked by
 
 - None — can start immediately.
+
+## Answer
+
+Implemented at `873fd516fdeeecfeb1251800bba69ffe7d7a7d18` on
+`ticket/001-persist-copy-workflow-queue-across-relaunch` (base `b2ed849`).
+
+### Implementation summary
+
+- `Sources/GPhilCoder/MediaCopyQueueStore.swift` (new): the one persistence
+  owner. Reads/writes exactly one versioned `MediaCopyJobDocument` (v2, v1
+  migrates, future versions rejected by the existing gate) with atomic
+  writes and injectable `directoryURL`/`FileManager`. Corrupt or
+  future-version documents are quarantined best-effort as a timestamped
+  `.corrupt` sidecar (mirroring `SettingsPersistence.preserveCorruptBlob`)
+  and never silently erased. Live location:
+  `Application Support/GPhilCoder/MediaCopyQueue/MediaCopyQueue.json`.
+- `Sources/GPhilCoder/MediaFileCoordinator.swift`: one persistence hook —
+  `mediaCopyQueue` `didSet` (mirroring the rename-history `didSet`
+  precedent) — plus restore-at-creation via the store's `LoadOutcome`
+  (no document / restored / quarantined), guarded by
+  `isRestoringMediaCopyQueue` so restore never re-saves. Restore is
+  configuration only: nothing runs, no busy flag, no
+  `currentMediaCopyWorkflowID`.
+- `Sources/GPhilCoder/EncoderViewModel.swift`: composition only — creates the
+  store at the injectable storage root (default live location) and threads it
+  into the coordinator; init parks queue-restore/quarantine status during
+  composition and surfaces it after `refreshFFmpeg()` so a corrupt queue's
+  repairable message is never clobbered.
+- `Sources/GPhilCoder/MediaCopyAppKitBoundary.swift` +
+  `EncoderViewModel+MediaCopyActions.swift`: one injectable
+  `repairDirectoryProvider` (default = unchanged production
+  `chooseRepairDirectory` panel) so headless tests drive the real
+  `repairMediaCopyWorkflow` entry point.
+
+### Ownership
+
+| Behavior/state | Authoritative owner (module) | Platform input/output | Presentation-only state |
+| --- | --- | --- | --- |
+| Persisted queue document | `MediaCopyQueueStore` | Application Support file I/O, quarantine sidecar | None |
+| In-memory queue, repair issues, busy guard | `MediaFileCoordinator` | Filesystem folder checks | Queue rows, NEEDS REPAIR badges |
+| Relaunch restore before UI binds | App composition (`EncoderViewModel` init) | Launch-time file read | Status message on restore/quarantine |
+
+### Public-seam evidence (exact commands, at HEAD `873fd51`)
+
+- Final gate: `swift test --filter MediaCopyQueuePersistenceTests` —
+  10 tests, 0 failures. Composition-root cases: identical-queue restore
+  (`testQueueMutationsPersistAndFreshModelRestoresIdenticalQueue`), remove
+  and clear without resurrection, NEEDS REPAIR restore + real
+  `repairMediaCopyWorkflow` relink persisted through a third fresh model,
+  corrupt-document quarantine with exact repair-message prefix, future-version
+  rejection, decode-before-replace, no-auto-run restore, load-job replacement
+  through `loadMediaCopyJobData` + fresh composition, store v2 round trip.
+- Coordinator isolation: `swift test --filter MediaFileManagerCoordinatorTests`
+  — 19 tests, 0 failures; every composed model uses a per-test temporary
+  queue root; no test resolves or deletes the live queue directory.
+- Full suite: `swift test` — 255 tests, 0 failures; `git diff --check` clean.
+- Red baseline: the frozen final-gate test bytes fail to compile at base
+  `b2ed849` (`cannot find 'MediaCopyQueueStore' in scope`).
+- Cold review: round 0 `changes_requested` (4 findings: live-queue purge in
+  tests, repair status clobbered by init FFmpeg text, bypassed repair entry
+  point, missing load-job seam) → one corrective commit closed all four →
+  round 1 correction-only follow-up `approved` at `873fd51`
+  (public_seam_proven, forbidden_work_proven).
+- Residual: manual signed-build smoke (queue a workflow on an SMB/NAS mount,
+  relaunch, relink) still pending release qualification.
+
+### Run artifacts
+
+Design authority bundles and run ledger:
+`/Volumes/DEV/.gphil-runs/gphil-coder-ticket-001/` (v1 `d920e21c…cb6f0`,
+v2 `7f43df02…629d`); review packets and results under
+`/Volumes/DEV/.cold-review/gphil-coder-ticket-001-persist-copy-queue/`.
