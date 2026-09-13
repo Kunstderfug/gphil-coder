@@ -39,6 +39,22 @@ enum MediaCopyTransactionExecutor {
         let transaction: RetainedTransaction?
     }
 
+    /// Test-visible throttle for a virtual slow copy of large regular files.
+    /// Production copies leave this unset; tests install a chunk delay so
+    /// intra-file publications are observable in a real temporary directory.
+    static var testSlowCopyChunkByteCount: Int?
+    static var testSlowCopyChunkDelayNanoseconds: UInt64?
+
+    static func resetByteProgressTestHooks() {
+        testSlowCopyChunkByteCount = nil
+        testSlowCopyChunkDelayNanoseconds = nil
+    }
+
+    static func installVirtualSlowCopyHook() {
+        testSlowCopyChunkByteCount = 256_000
+        testSlowCopyChunkDelayNanoseconds = 160_000_000
+    }
+
     static func execute(
         _ plan: MediaCopyBatchPlan,
         conflictResolution: MediaCopyConflictResolution,
@@ -169,12 +185,24 @@ enum MediaCopyTransactionExecutor {
                 isDirectory: candidate.isPackage
             )
             do {
-                let evidence = try await runFileOperation {
-                    try FileManager.default.copyItem(at: candidate.sourceURL, to: stagedURL)
-                    return MediaCopyPathEvidence.capture(
-                        at: stagedURL,
-                        recursively: candidate.isPackage
+                let evidence = try await stageCandidate(
+                    candidate,
+                    to: stagedURL,
+                    committedBytes: copiedBytes,
+                    totalBytes: plan.totalSizeBytes,
+                    startedAt: startedAt,
+                    result: result,
+                    isCancelled: isCancelled,
+                    publishProgress: publishProgress
+                )
+                if isCancelled() {
+                    result.cancelled = true
+                    await recordCleanupOutcome(
+                        removeTransactionRoot(transactionRoot),
+                        transactionRoot: transactionRoot,
+                        result: &result
                     )
+                    return result
                 }
                 stagedCandidates.append(
                     StagedCandidate(
@@ -184,7 +212,24 @@ enum MediaCopyTransactionExecutor {
                         index: index
                     )
                 )
+            } catch is CancellationError {
+                result.cancelled = true
+                await recordCleanupOutcome(
+                    removeTransactionRoot(transactionRoot),
+                    transactionRoot: transactionRoot,
+                    result: &result
+                )
+                return result
             } catch {
+                if isCancelled() {
+                    result.cancelled = true
+                    await recordCleanupOutcome(
+                        removeTransactionRoot(transactionRoot),
+                        transactionRoot: transactionRoot,
+                        result: &result
+                    )
+                    return result
+                }
                 result.failed += 1
                 result.failedNames.append(candidate.relativePath)
             }
@@ -406,6 +451,84 @@ enum MediaCopyTransactionExecutor {
         _ transaction: RetainedTransaction
     ) async -> Bool {
         await removeTransactionRoot(transaction.transactionRoot)
+    }
+
+    private static func stageCandidate(
+        _ candidate: MediaCopyCandidate,
+        to stagedURL: URL,
+        committedBytes: Int64,
+        totalBytes: Int64,
+        startedAt: Date,
+        result: MediaCopyResult,
+        isCancelled: () -> Bool,
+        publishProgress: (MediaCopyProgress) -> Void
+    ) async throws -> MediaCopyPathEvidence {
+        let forceByteReporting = testSlowCopyChunkByteCount != nil
+        guard MediaCopyByteReportingCopy.shouldReportBytes(for: candidate, force: forceByteReporting)
+        else {
+            return try await runFileOperation {
+                try FileManager.default.copyItem(at: candidate.sourceURL, to: stagedURL)
+                return MediaCopyPathEvidence.capture(
+                    at: stagedURL,
+                    recursively: candidate.isPackage
+                )
+            }
+        }
+
+        let chunkByteCount =
+            testSlowCopyChunkByteCount ?? MediaCopyByteReportingCopy.defaultChunkByteCount
+        let chunkDelayNanoseconds = testSlowCopyChunkDelayNanoseconds
+        let mailbox = MediaCopyByteProgressMailbox()
+        Task.detached(priority: .userInitiated) {
+            do {
+                try MediaCopyByteReportingCopy.copyRegularFile(
+                    from: candidate.sourceURL,
+                    to: stagedURL,
+                    expectedSize: candidate.fileSizeBytes,
+                    chunkByteCount: chunkByteCount,
+                    chunkDelayNanoseconds: chunkDelayNanoseconds,
+                    isCancelled: { mailbox.isCancelRequested() },
+                    onBytesCopied: { mailbox.report(bytes: $0) }
+                )
+                mailbox.finish(
+                    evidence: MediaCopyPathEvidence.capture(
+                        at: stagedURL,
+                        recursively: false
+                    )
+                )
+            } catch {
+                mailbox.fail(error)
+            }
+        }
+
+        while true {
+            if isCancelled() {
+                mailbox.requestCancel()
+            }
+            let update = mailbox.takeUpdate()
+            if let bytes = update.bytes, bytes > 0, bytes < candidate.fileSizeBytes {
+                publishProgress(
+                    makeProgress(
+                        result: result,
+                        copiedBytes: committedBytes + bytes,
+                        totalBytes: totalBytes,
+                        startedAt: startedAt,
+                        currentName: candidate.name
+                    )
+                )
+            }
+            if update.isFinished {
+                if let error = update.error {
+                    throw error
+                }
+                if isCancelled() {
+                    throw CancellationError()
+                }
+                return update.evidence
+                    ?? MediaCopyPathEvidence.capture(at: stagedURL, recursively: false)
+            }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
     }
 
     private static func makeProgress(
