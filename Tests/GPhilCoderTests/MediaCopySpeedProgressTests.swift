@@ -333,11 +333,14 @@ final class MediaCopySpeedProgressTests: XCTestCase {
 
     func testCopyNowRaisesStallDuringExecutorSilenceAndClearsWhenBytesResume() async throws {
         let fileSize: Int64 = 2_000_000
-        let (model, _, _) = try await makeScannedCopyNowModel(
+        let (model, scannedPlan, queueBefore) = try await makeScannedCopyNowModel(
             firstName: "large-one.wav",
             secondName: "large-two.wav",
             fileSize: fileSize
         )
+        let scannedIDs = scannedPlan.candidates.map(\.id)
+        let queueIDs = queueBefore.map(\.id)
+        let scannedBytes = scannedPlan.totalSizeBytes
         MediaCopyTransactionExecutor.testSlowCopyChunkByteCount = 700_000
         MediaCopyTransactionExecutor.testSlowCopyChunkDelayNanoseconds = 3_500_000_000
 
@@ -345,6 +348,9 @@ final class MediaCopySpeedProgressTests: XCTestCase {
         var stalledWhileBytesFlat = false
         var bytesWhenStalled: Int64?
         var clearedAfterIncrease = false
+        var lastReading: MediaCopySpeedReading?
+        var identityDrift: String?
+        var stallTickCount = 0
         model.copyFilteredMediaFiles()
         let copied = await waitUntil(timeout: 40) {
             guard let progress = model.mediaCopyProgress else { return false }
@@ -369,6 +375,30 @@ final class MediaCopySpeedProgressTests: XCTestCase {
             {
                 clearedAfterIncrease = true
             }
+            if let reading = model.mediaCopySpeedReading,
+                lastReading.map({ $0 != reading }) ?? true
+            {
+                let wasStalled = lastReading?.isStalled == true
+                if reading.isStalled {
+                    stallTickCount += 1
+                    if model.mediaCopyQueue.map(\.id) != queueIDs {
+                        identityDrift = "queue IDs changed during a stall tick"
+                    } else if model.mediaCopyPlan?.candidates.map(\.id) != scannedIDs {
+                        identityDrift = "plan candidate IDs changed during a stall tick"
+                    } else if model.mediaCopyPlan?.totalSizeBytes != scannedBytes {
+                        identityDrift = "scan-derived plan identity changed during a stall tick"
+                    }
+                } else if wasStalled, stalledWhileBytesFlat {
+                    if model.mediaCopyQueue.map(\.id) != queueIDs {
+                        identityDrift = "queue IDs changed on resume ingest that cleared stall"
+                    } else if model.mediaCopyPlan?.candidates.map(\.id) != scannedIDs {
+                        identityDrift = "plan candidate IDs changed on resume ingest that cleared stall"
+                    } else if model.mediaCopyPlan?.totalSizeBytes != scannedBytes {
+                        identityDrift = "scan-derived plan identity changed on resume ingest that cleared stall"
+                    }
+                }
+                lastReading = reading
+            }
             return !model.isMediaCopyBusy && model.mediaCopyProgress?.copied == 2
         }
         XCTAssertTrue(copied)
@@ -379,6 +409,15 @@ final class MediaCopySpeedProgressTests: XCTestCase {
         )
         XCTAssertTrue(clearedAfterIncrease)
         XCTAssertFalse(model.mediaCopyIsStalled)
+        XCTAssertGreaterThan(
+            stallTickCount,
+            0,
+            "must observe stall ticks with queue and plan identity checks"
+        )
+        XCTAssertNil(identityDrift, identityDrift ?? "")
+        XCTAssertEqual(model.mediaCopyQueue.map(\.id), queueIDs)
+        XCTAssertEqual(model.mediaCopyPlan?.candidates.map(\.id), scannedIDs)
+        XCTAssertEqual(model.mediaCopyPlan?.totalSizeBytes, scannedBytes)
     }
 
     func testCopyNowDisplayShowsCurrentAverageByteFractionAndCalculatingSpeed() async throws {
