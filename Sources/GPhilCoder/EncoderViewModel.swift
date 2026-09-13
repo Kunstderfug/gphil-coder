@@ -193,7 +193,45 @@ final class EncoderViewModel: ObservableObject {
     }
     var mediaCopyProgress: MediaCopyProgress? {
         get { mediaFileCoordinator.mediaCopyProgress }
-        set { mediaFileCoordinator.mediaCopyProgress = newValue }
+        set { mediaFileCoordinator.setProgress(newValue) }
+    }
+    var mediaCopySpeedReading: MediaCopySpeedReading? {
+        get { mediaFileCoordinator.mediaCopySpeedReading }
+        set { mediaFileCoordinator.mediaCopySpeedReading = newValue }
+    }
+    var mediaCopyIsStalled: Bool {
+        mediaCopySpeedReading?.isStalled ?? false
+    }
+    var mediaCopyByteFractionCompleted: Double {
+        mediaCopySpeedReading?.byteFractionCompleted ?? 0
+    }
+    var mediaCopyCurrentSpeedText: String {
+        if mediaCopyIsStalled {
+            return "Stalled"
+        }
+        return mediaCopySpeedReading?.currentBytesPerSecond?.formattedMegabytesPerSecond
+            ?? "Calculating speed"
+    }
+    var mediaCopyAverageSpeedText: String {
+        mediaCopySpeedReading?.averageBytesPerSecond?.formattedMegabytesPerSecond
+            ?? "Calculating speed"
+    }
+    var mediaCopySpeedSummaryText: String {
+        if mediaCopyIsStalled {
+            return "Stalled · Average \(mediaCopyAverageSpeedText)"
+        }
+        if mediaCopySpeedReading?.currentBytesPerSecond == nil {
+            return mediaCopyCurrentSpeedText
+        }
+        return "Current \(mediaCopyCurrentSpeedText) · Average \(mediaCopyAverageSpeedText)"
+    }
+    var mediaCopyByteFractionText: String {
+        let percent = Int((mediaCopyByteFractionCompleted * 100).rounded())
+        return "\(percent)% of bytes"
+    }
+    var mediaCopyCountCompletionText: String {
+        guard let progress = mediaCopyProgress else { return "" }
+        return "\(progress.completed) of \(progress.total)"
     }
     var isMediaCopyScanning: Bool {
         get { mediaFileCoordinator.isMediaCopyScanning }

@@ -56,6 +56,7 @@ final class MediaFileCoordinator: ObservableObject {
     @Published var mediaRenamePlan: MediaRenamePlan?
     @Published var isMediaRenamePreviewStale = false
     @Published var mediaCopyProgress: MediaCopyProgress?
+    @Published var mediaCopySpeedReading: MediaCopySpeedReading?
     @Published var isMediaCopyScanning = false
     @Published var isMediaCopying = false
     @Published var isMediaCopyFinalizing = false
@@ -103,6 +104,7 @@ final class MediaFileCoordinator: ObservableObject {
     let mediaCopyQueueStore: MediaCopyQueueStore?
 
     private var isRestoringMediaCopyQueue = false
+    var mediaCopySpeedSampler = MediaCopySpeedSampler()
 
     var mediaCopyTask: Task<Void, Never>?
     var mediaFileNameFilterRefreshTask: Task<Void, Never>?
@@ -215,7 +217,7 @@ final class MediaFileCoordinator: ObservableObject {
     func runQueuedWorkflows(_ workflows: [MediaCopyWorkflow]) {
         mediaCopyTask?.cancel()
         mediaCopyPlan = nil
-        mediaCopyProgress = nil
+        setProgress(nil)
         currentMediaCopyWorkflowID = nil
         isMediaCopyScanning = true
         isMediaCopying = false
@@ -238,7 +240,7 @@ final class MediaFileCoordinator: ObservableObject {
         isMediaCopying = false
         isMediaDeleting = false
         isMediaRenaming = false
-        mediaCopyProgress = nil
+        setProgress(nil)
         currentMediaCopyWorkflowID = nil
     }
 
@@ -255,7 +257,7 @@ final class MediaFileCoordinator: ObservableObject {
         mediaDeletePlan = nil
         mediaRenamePlan = nil
         isMediaRenamePreviewStale = false
-        mediaCopyProgress = nil
+        setProgress(nil)
         currentMediaCopyWorkflowID = nil
         isMediaCopyScanning = false
         isMediaCopying = false
@@ -317,7 +319,7 @@ final class MediaFileCoordinator: ObservableObject {
         mediaDeletePlan = nil
         mediaRenamePlan = plan
         isMediaRenamePreviewStale = false
-        mediaCopyProgress = nil
+        setProgress(nil)
         setStatusMessage(Self.mediaRenameScanStatusMessage(for: plan))
     }
 
@@ -390,7 +392,7 @@ final class MediaFileCoordinator: ObservableObject {
 
         mediaCopyTask?.cancel()
         mediaCopyPlan = nil
-        mediaCopyProgress = nil
+        setProgress(nil)
         currentMediaCopyWorkflowID = nil
         isMediaCopyScanning = true
         isMediaCopying = false
@@ -461,7 +463,7 @@ final class MediaFileCoordinator: ObservableObject {
                 mediaRenamePlan = nil
                 isMediaRenamePreviewStale = false
             }
-            mediaCopyProgress = nil
+            setProgress(nil)
             isMediaCopyScanning = false
             mediaCopyTask = nil
             setStatusMessage("Could not scan source folders: \(error.localizedDescription)")
@@ -486,7 +488,7 @@ final class MediaFileCoordinator: ObservableObject {
         mediaDeletePlan = plan
         mediaRenamePlan = nil
         isMediaRenamePreviewStale = false
-        mediaCopyProgress = nil
+        setProgress(nil)
         setStatusMessage(Self.mediaDeleteScanStatusMessage(for: plan))
     }
 
@@ -553,6 +555,7 @@ final class MediaFileCoordinator: ObservableObject {
             }
 
             isMediaCopying = true
+            resetMediaCopySpeedSampler()
             let progressStartedAt = Date()
             setProgress(
                 MediaCopyProgress(
@@ -605,7 +608,7 @@ final class MediaFileCoordinator: ObservableObject {
         } catch {
             guard !Task.isCancelled else { return }
             mediaCopyPlan = nil
-            mediaCopyProgress = nil
+            setProgress(nil)
             isMediaCopyScanning = false
             isMediaCopying = false
             mediaCopyTask = nil
@@ -672,6 +675,7 @@ final class MediaFileCoordinator: ObservableObject {
             }
 
             isMediaCopying = true
+            resetMediaCopySpeedSampler()
             setStatusMessage(
                 "Copying \(nonEmptyWorkflowPlans.count) queued workflow\(nonEmptyWorkflowPlans.count == 1 ? "" : "s")..."
             )
@@ -795,7 +799,7 @@ final class MediaFileCoordinator: ObservableObject {
             setStatusMessage("File copy queue cancelled.")
         } catch {
             guard !Task.isCancelled else { return }
-            mediaCopyProgress = nil
+            setProgress(nil)
             isMediaCopyScanning = false
             isMediaCopying = false
             isMediaCopyFinalizing = false
@@ -814,9 +818,8 @@ final class MediaFileCoordinator: ObservableObject {
             conflictResolution: conflictResolution,
             publishProgress: { [weak self] progress in
                 guard let self else { return }
-                mediaCopyProgress = progress
-                let speedDetail = progress.bytesPerSecond
-                    .map { " at \($0.formattedMegabytesPerSecond)" } ?? ""
+                setProgress(progress)
+                let speedDetail = mediaCopySpeedStatusDetail(for: progress)
                 setStatusMessage(
                     "Copied \(progress.copied), skipped \(progress.skippedExisting), failed \(progress.failed) of \(progress.total)\(speedDetail)."
                 )
@@ -833,9 +836,8 @@ final class MediaFileCoordinator: ObservableObject {
             conflictResolution: conflictResolution,
             publishProgress: { [weak self] progress in
                 guard let self else { return }
-                mediaCopyProgress = progress
-                let speedDetail = progress.bytesPerSecond
-                    .map { " at \($0.formattedMegabytesPerSecond)" } ?? ""
+                setProgress(progress)
+                let speedDetail = mediaCopySpeedStatusDetail(for: progress)
                 setStatusMessage(
                     "Copied \(progress.copied), skipped \(progress.skippedExisting), failed \(progress.failed) of \(progress.total)\(speedDetail)."
                 )
