@@ -105,6 +105,12 @@ final class MediaFileCoordinator: ObservableObject {
 
     private var isRestoringMediaCopyQueue = false
     var mediaCopySpeedSampler = MediaCopySpeedSampler()
+    private var mediaCopySpeedTickTask: Task<Void, Never>?
+    private var lastMediaCopySpeedIngestAt: Date?
+    private var lastMediaCopySpeedTickAt: Date?
+    private static let mediaCopySpeedTickIntervalNanoseconds: UInt64 = 125_000_000
+    private static let mediaCopySpeedTickMinimumInterval: TimeInterval = 0.125
+    private static let mediaCopySpeedTickSilenceThreshold: TimeInterval = 0.2
 
     var mediaCopyTask: Task<Void, Never>?
     var mediaFileNameFilterRefreshTask: Task<Void, Never>?
@@ -204,6 +210,78 @@ final class MediaFileCoordinator: ObservableObject {
                 "Could not save the file copy queue: \(error.localizedDescription)"
             )
         }
+    }
+
+    func setProgress(_ progress: MediaCopyProgress?) {
+        if let progress {
+            mediaCopyProgress = progress
+            mediaCopySpeedReading = mediaCopySpeedSampler.ingest(progress)
+            lastMediaCopySpeedIngestAt = Date()
+        } else {
+            mediaCopyProgress = nil
+            resetMediaCopySpeedSampler()
+            stopMediaCopySpeedTicks()
+        }
+    }
+
+    func resetMediaCopySpeedSampler() {
+        mediaCopySpeedSampler.reset()
+        mediaCopySpeedReading = nil
+        lastMediaCopySpeedIngestAt = nil
+        lastMediaCopySpeedTickAt = nil
+    }
+
+    func mediaCopySpeedStatusDetail(for progress: MediaCopyProgress) -> String {
+        if mediaCopySpeedReading?.isStalled == true {
+            return " (stalled)"
+        }
+        if let current = mediaCopySpeedReading?.currentBytesPerSecond {
+            return " at \(current.formattedMegabytesPerSecond)"
+        }
+        return progress.bytesPerSecond
+            .map { " at \($0.formattedMegabytesPerSecond)" } ?? ""
+    }
+
+    private func startMediaCopySpeedTicks() {
+        stopMediaCopySpeedTicks()
+        mediaCopySpeedTickTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: Self.mediaCopySpeedTickIntervalNanoseconds)
+                guard !Task.isCancelled else { return }
+                self?.applyMediaCopySpeedTick()
+            }
+        }
+    }
+
+    private func stopMediaCopySpeedTicks() {
+        mediaCopySpeedTickTask?.cancel()
+        mediaCopySpeedTickTask = nil
+    }
+
+    private func applyMediaCopySpeedTick() {
+        guard isMediaCopying else {
+            stopMediaCopySpeedTicks()
+            return
+        }
+        let now = Date()
+        if let lastIngest = lastMediaCopySpeedIngestAt,
+            now.timeIntervalSince(lastIngest) < Self.mediaCopySpeedTickSilenceThreshold
+        {
+            return
+        }
+        if let lastTick = lastMediaCopySpeedTickAt,
+            now.timeIntervalSince(lastTick) < Self.mediaCopySpeedTickMinimumInterval
+        {
+            return
+        }
+        guard let reading = mediaCopySpeedSampler.tick() else { return }
+        lastMediaCopySpeedTickAt = now
+        mediaCopySpeedReading = reading
+        guard let progress = mediaCopyProgress else { return }
+        let speedDetail = mediaCopySpeedStatusDetail(for: progress)
+        setStatusMessage(
+            "Copied \(progress.copied), skipped \(progress.skippedExisting), failed \(progress.failed) of \(progress.total)\(speedDetail)."
+        )
     }
 
     func scanCopyFiles() {
@@ -556,6 +634,7 @@ final class MediaFileCoordinator: ObservableObject {
 
             isMediaCopying = true
             resetMediaCopySpeedSampler()
+            startMediaCopySpeedTicks()
             let progressStartedAt = Date()
             setProgress(
                 MediaCopyProgress(
@@ -676,6 +755,7 @@ final class MediaFileCoordinator: ObservableObject {
 
             isMediaCopying = true
             resetMediaCopySpeedSampler()
+            startMediaCopySpeedTicks()
             setStatusMessage(
                 "Copying \(nonEmptyWorkflowPlans.count) queued workflow\(nonEmptyWorkflowPlans.count == 1 ? "" : "s")..."
             )

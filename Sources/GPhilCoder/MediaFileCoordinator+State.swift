@@ -89,32 +89,6 @@ extension MediaFileCoordinator {
         mediaFileInventorySourceRootPaths = []
     }
 
-    func setProgress(_ progress: MediaCopyProgress?) {
-        if let progress {
-            mediaCopyProgress = progress
-            mediaCopySpeedReading = mediaCopySpeedSampler.ingest(progress)
-        } else {
-            mediaCopyProgress = nil
-            resetMediaCopySpeedSampler()
-        }
-    }
-
-    func resetMediaCopySpeedSampler() {
-        mediaCopySpeedSampler.reset()
-        mediaCopySpeedReading = nil
-    }
-
-    func mediaCopySpeedStatusDetail(for progress: MediaCopyProgress) -> String {
-        if mediaCopySpeedReading?.isStalled == true {
-            return " (stalled)"
-        }
-        if let current = mediaCopySpeedReading?.currentBytesPerSecond {
-            return " at \(current.formattedMegabytesPerSecond)"
-        }
-        return progress.bytesPerSecond
-            .map { " at \($0.formattedMegabytesPerSecond)" } ?? ""
-    }
-
     func setInventory(_ inventory: [MediaFileInventoryRecord], _ sourceRootPaths: [String]) {
         mediaFileInventory = inventory
         mediaFileInventorySourceRootPaths = sourceRootPaths

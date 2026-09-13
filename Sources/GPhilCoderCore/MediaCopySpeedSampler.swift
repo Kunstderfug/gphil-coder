@@ -27,6 +27,7 @@ public struct MediaCopySpeedSampler {
     private let stallDuration: TimeInterval
     private let now: () -> Date
     private var samples: [Sample] = []
+    private var lastProgress: MediaCopyProgress?
     private var lastByteIncreaseAt: Date?
     private var isTransferInFlight = false
     private var lastCompleted = 0
@@ -41,6 +42,8 @@ public struct MediaCopySpeedSampler {
         self.stallDuration = stallDuration
         self.now = now
     }
+
+    var retainedSampleCount: Int { samples.count }
 
     public mutating func ingest(_ progress: MediaCopyProgress) -> MediaCopySpeedReading {
         let timestamp = now()
@@ -64,10 +67,45 @@ public struct MediaCopySpeedSampler {
 
         lastCompleted = progress.completed
         lastCurrentName = progress.currentName
+        lastProgress = progress
+        pruneSamples(at: timestamp)
+        return makeReading(for: progress, at: timestamp)
+    }
 
+    /// Re-evaluates the last in-flight snapshot against the injected clock
+    /// without recording a new byte-moved sample.
+    public mutating func tick() -> MediaCopySpeedReading? {
+        guard let progress = lastProgress else { return nil }
+        let timestamp = now()
+        pruneSamples(at: timestamp)
+        return makeReading(for: progress, at: timestamp)
+    }
+
+    public mutating func reset() {
+        samples = []
+        lastProgress = nil
+        lastByteIncreaseAt = nil
+        isTransferInFlight = false
+        lastCompleted = 0
+        lastCurrentName = nil
+    }
+
+    private mutating func pruneSamples(at timestamp: Date) {
+        let cutoff = timestamp.addingTimeInterval(-windowDuration)
+        let inWindow = samples.filter { $0.date > cutoff }
+        if let baseline = samples.last(where: { $0.date <= cutoff }) {
+            samples = [baseline] + inWindow
+        } else {
+            samples = inWindow
+        }
+    }
+
+    private func makeReading(
+        for progress: MediaCopyProgress,
+        at timestamp: Date
+    ) -> MediaCopySpeedReading {
         let stalled = isTransferInFlight
             && lastByteIncreaseAt.map { timestamp.timeIntervalSince($0) >= stallDuration } ?? false
-
         return MediaCopySpeedReading(
             currentBytesPerSecond: windowSpeed(at: timestamp),
             averageBytesPerSecond: averageSpeed(for: progress, at: timestamp),
@@ -76,20 +114,12 @@ public struct MediaCopySpeedSampler {
         )
     }
 
-    public mutating func reset() {
-        samples = []
-        lastByteIncreaseAt = nil
-        isTransferInFlight = false
-        lastCompleted = 0
-        lastCurrentName = nil
-    }
-
     private func windowSpeed(at timestamp: Date) -> Double? {
         let windowSamples = samplesInWindow(at: timestamp)
         guard let newest = windowSamples.last, newest.copiedBytes > 0 else { return nil }
         guard windowSamples.count >= 2 else { return 0 }
         let oldest = windowSamples[0]
-        let elapsed = newest.date.timeIntervalSince(oldest.date)
+        let elapsed = timestamp.timeIntervalSince(oldest.date)
         guard elapsed > 0 else { return nil }
         return Double(newest.copiedBytes - oldest.copiedBytes) / elapsed
     }

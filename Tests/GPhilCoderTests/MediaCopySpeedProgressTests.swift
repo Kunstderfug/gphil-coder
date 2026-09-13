@@ -1,7 +1,7 @@
 import Foundation
-import GPhilCoderCore
 import XCTest
 @testable import GPhilCoder
+@testable import GPhilCoderCore
 
 @MainActor
 final class MediaCopySpeedProgressTests: XCTestCase {
@@ -103,19 +103,46 @@ final class MediaCopySpeedProgressTests: XCTestCase {
 
         ingest(&sampler, copiedBytes: 0, startedAt: startedAt, clock: clock, advance: 0)
         ingest(&sampler, copiedBytes: 50_000_000, startedAt: startedAt, clock: clock, advance: 1)
+        XCTAssertEqual(sampler.retainedSampleCount, 2)
+
+        ingest(&sampler, copiedBytes: 50_500_000, startedAt: startedAt, clock: clock, advance: 1)
+        ingest(&sampler, copiedBytes: 51_000_000, startedAt: startedAt, clock: clock, advance: 1)
+        let countWithInWindowHistory = sampler.retainedSampleCount
+        XCTAssertGreaterThan(countWithInWindowHistory, 2)
+
         let aged = ingest(
             &sampler,
-            copiedBytes: 51_000_000,
+            copiedBytes: 52_000_000,
             startedAt: startedAt,
             clock: clock,
             advance: 11
         )
 
+        XCTAssertLessThan(sampler.retainedSampleCount, countWithInWindowHistory)
+        XCTAssertEqual(sampler.retainedSampleCount, 2)
         XCTAssertEqual(try XCTUnwrap(aged.currentBytesPerSecond), 1_000_000 / 11.0, accuracy: 1)
         XCTAssertLessThan(aged.currentBytesPerSecond ?? .greatestFiniteMagnitude, 2_000_000)
+
+        let afterBurstAgesOut = ingest(
+            &sampler,
+            copiedBytes: 53_000_000,
+            startedAt: startedAt,
+            clock: clock,
+            advance: 1
+        )
+        XCTAssertLessThanOrEqual(sampler.retainedSampleCount, 3)
+        XCTAssertEqual(
+            try XCTUnwrap(afterBurstAgesOut.currentBytesPerSecond),
+            2_000_000 / 12.0,
+            accuracy: 1
+        )
+        XCTAssertLessThan(
+            afterBurstAgesOut.currentBytesPerSecond ?? .greatestFiniteMagnitude,
+            2_000_000
+        )
     }
 
-    func testSamplerRaisesStalledDuringActiveTransferAndClearsWhenBytesResume() {
+    func testSamplerRaisesStalledDuringActiveTransferAndClearsWhenBytesResume() throws {
         let clock = TestClock(Date(timeIntervalSince1970: 1_000_000))
         var sampler = MediaCopySpeedSampler(stallDuration: 3, now: { clock.now })
         let startedAt = clock.now
@@ -137,16 +164,12 @@ final class MediaCopySpeedProgressTests: XCTestCase {
             currentName: "large-one.wav"
         )
         XCTAssertFalse(transferring.isStalled)
+        let countAfterIncrease = sampler.retainedSampleCount
 
-        let stalled = ingest(
-            &sampler,
-            copiedBytes: 500_000,
-            startedAt: startedAt,
-            clock: clock,
-            advance: 3,
-            currentName: "large-one.wav"
-        )
+        clock.advance(3)
+        let stalled = try XCTUnwrap(sampler.tick())
         XCTAssertTrue(stalled.isStalled)
+        XCTAssertEqual(sampler.retainedSampleCount, countAfterIncrease)
 
         let resumed = ingest(
             &sampler,
@@ -308,6 +331,56 @@ final class MediaCopySpeedProgressTests: XCTestCase {
         XCTAssertFalse(model.mediaCopyIsStalled)
     }
 
+    func testCopyNowRaisesStallDuringExecutorSilenceAndClearsWhenBytesResume() async throws {
+        let fileSize: Int64 = 2_000_000
+        let (model, _, _) = try await makeScannedCopyNowModel(
+            firstName: "large-one.wav",
+            secondName: "large-two.wav",
+            fileSize: fileSize
+        )
+        MediaCopyTransactionExecutor.testSlowCopyChunkByteCount = 700_000
+        MediaCopyTransactionExecutor.testSlowCopyChunkDelayNanoseconds = 3_500_000_000
+
+        var sawInFlightIncrease = false
+        var stalledWhileBytesFlat = false
+        var bytesWhenStalled: Int64?
+        var clearedAfterIncrease = false
+        model.copyFilteredMediaFiles()
+        let copied = await waitUntil(timeout: 40) {
+            guard let progress = model.mediaCopyProgress else { return false }
+            if progress.copiedBytes > 0,
+                progress.copiedBytes < fileSize,
+                progress.currentName == "large-one.wav"
+            {
+                sawInFlightIncrease = true
+            }
+            if sawInFlightIncrease,
+                model.mediaCopySpeedReading?.isStalled == true,
+                progress.copiedBytes > 0,
+                progress.copiedBytes < fileSize,
+                progress.currentName == "large-one.wav"
+            {
+                stalledWhileBytesFlat = true
+                bytesWhenStalled = progress.copiedBytes
+            }
+            if stalledWhileBytesFlat,
+                model.mediaCopySpeedReading?.isStalled == false,
+                progress.copiedBytes > (bytesWhenStalled ?? 0)
+            {
+                clearedAfterIncrease = true
+            }
+            return !model.isMediaCopyBusy && model.mediaCopyProgress?.copied == 2
+        }
+        XCTAssertTrue(copied)
+        XCTAssertTrue(sawInFlightIncrease)
+        XCTAssertTrue(
+            stalledWhileBytesFlat,
+            "stall must raise during executor silence while copiedBytes stay flat"
+        )
+        XCTAssertTrue(clearedAfterIncrease)
+        XCTAssertFalse(model.mediaCopyIsStalled)
+    }
+
     func testCopyNowDisplayShowsCurrentAverageByteFractionAndCalculatingSpeed() async throws {
         let fileSize: Int64 = 2_000_000
         let (model, _, _) = try await makeScannedCopyNowModel(
@@ -397,10 +470,13 @@ final class MediaCopySpeedProgressTests: XCTestCase {
             fileSize: fileSize
         )
         let scannedIDs = scannedPlan.candidates.map(\.id)
+        let queueIDs = queueBefore.map(\.id)
+        let scannedBytes = scannedPlan.totalSizeBytes
         MediaCopyTransactionExecutor.installVirtualSlowCopyHook()
 
         var readings: [(Date, MediaCopySpeedReading)] = []
         var lastReading: MediaCopySpeedReading?
+        var identityDrift: String?
         model.copyFilteredMediaFiles()
         let copied = await waitUntil(timeout: 15) {
             if let reading = model.mediaCopySpeedReading,
@@ -408,13 +484,21 @@ final class MediaCopySpeedProgressTests: XCTestCase {
             {
                 readings.append((Date(), reading))
                 lastReading = reading
+                if model.mediaCopyQueue.map(\.id) != queueIDs {
+                    identityDrift = "queue IDs changed during a speed-derived update"
+                } else if model.mediaCopyPlan?.candidates.map(\.id) != scannedIDs {
+                    identityDrift = "plan candidate IDs changed during a speed-derived update"
+                } else if model.mediaCopyPlan?.totalSizeBytes != scannedBytes {
+                    identityDrift = "scan-derived plan identity changed during a speed-derived update"
+                }
             }
             return !model.isMediaCopyBusy && model.mediaCopyProgress?.copied == 2
         }
         XCTAssertTrue(copied)
-        XCTAssertEqual(model.mediaCopyQueue.map(\.id), queueBefore.map(\.id))
+        XCTAssertNil(identityDrift, identityDrift ?? "")
+        XCTAssertEqual(model.mediaCopyQueue.map(\.id), queueIDs)
         XCTAssertEqual(model.mediaCopyPlan?.candidates.map(\.id), scannedIDs)
-        XCTAssertEqual(model.mediaCopyPlan?.totalSizeBytes, scannedPlan.totalSizeBytes)
+        XCTAssertEqual(model.mediaCopyPlan?.totalSizeBytes, scannedBytes)
         XCTAssertGreaterThanOrEqual(readings.count, 3)
         assertPublicationCadenceIsBounded(readings.map(\.0))
     }
