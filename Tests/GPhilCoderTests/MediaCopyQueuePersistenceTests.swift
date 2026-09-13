@@ -20,6 +20,8 @@ final class MediaCopyQueuePersistenceTests: XCTestCase {
     }
 
     override func tearDownWithError() throws {
+        MediaCopyAppKitBoundary.repairDirectoryProvider =
+            MediaCopyQueuePersistenceTests.defaultRepairDirectoryProvider
         for url in temporaryDirectories {
             try? FileManager.default.removeItem(at: url)
         }
@@ -195,13 +197,22 @@ final class MediaCopyQueuePersistenceTests: XCTestCase {
         )
         XCTAssertEqual(restoredWorkflow.repairIssues.first?.url, vanishingSource)
 
-        // Relink the restored workflow at the queue seam (the Repair panel is
-        // AppKit-only); the persistence hook must record the repaired roots.
+        // Relink through the real Repair entry point: the AppKit open panel is
+        // replaced by an injected provider so the repair runs headlessly with
+        // its folder validation and persistence route intact.
         let replacementSource = try makeDirectory("ReplacementSource", in: workspace)
-        reloaded.mediaCopyQueue = [
-            restoredWorkflow.replacingSourceRoot(vanishingSource, with: replacementSource)
-        ]
-        XCTAssertEqual(reloaded.mediaCopyQueueRepairCount, 0)
+        MediaCopyAppKitBoundary.repairDirectoryProvider = { _ in replacementSource }
+        reloaded.repairMediaCopyWorkflow(restoredWorkflow)
+        XCTAssertEqual(
+            reloaded.mediaCopyQueueRepairCount,
+            0,
+            "A repaired workflow must leave the NEEDS REPAIR state."
+        )
+        XCTAssertEqual(
+            reloaded.mediaCopyQueue.first?.sourceRoots,
+            [replacementSource],
+            "The real repair entry point must relink onto the chosen folder."
+        )
 
         let relinkedModel = makeModel(queueStorageRoot: storageRoot)
         XCTAssertEqual(relinkedModel.mediaCopyQueue.count, 1)
@@ -230,6 +241,14 @@ final class MediaCopyQueuePersistenceTests: XCTestCase {
         XCTAssertFalse(
             model.statusMessage.isEmpty,
             "A corrupt persisted document must report a repairable status message."
+        )
+        // The repairable message must still be the visible status after init
+        // completes: later init work (FFmpeg detection) must not clobber it.
+        XCTAssertTrue(
+            model.statusMessage.hasPrefix(
+                "The persisted file copy queue could not be read and was set aside for repair"
+            ),
+            "Expected the queue-repair message to stay visible after init, got: \(model.statusMessage)"
         )
 
         let quarantineSidecars = try quarantineSidecars(in: storageRoot)
@@ -276,6 +295,14 @@ final class MediaCopyQueuePersistenceTests: XCTestCase {
             model.statusMessage.isEmpty,
             "A future-version persisted document must report a repairable status message."
         )
+        // The repairable message must still be the visible status after init
+        // completes: later init work (FFmpeg detection) must not clobber it.
+        XCTAssertTrue(
+            model.statusMessage.hasPrefix(
+                "The persisted file copy queue could not be read and was set aside for repair"
+            ),
+            "Expected the queue-repair message to stay visible after init, got: \(model.statusMessage)"
+        )
 
         let quarantineSidecars = try quarantineSidecars(in: storageRoot)
         XCTAssertEqual(quarantineSidecars.count, 1)
@@ -318,6 +345,57 @@ final class MediaCopyQueuePersistenceTests: XCTestCase {
             persistedQueueAfter,
             persistedQueueBefore,
             "A failed load-replace must not touch the persisted queue."
+        )
+    }
+
+    // MARK: - Load job replaces the queue and persists
+
+    func testLoadMediaCopyJobDataReplacesQueueAndFreshModelLoadsReplacementQueue() throws {
+        let workspace = try makeTemporaryDirectory()
+        let storageRoot = try makeDirectory("QueueStorage", in: workspace)
+        let originalSource = try makeDirectory("OriginalSource", in: workspace)
+        let loadedSource = try makeDirectory("LoadedSource", in: workspace)
+        try writeFile("Audio/take.wav", in: loadedSource, contents: "take")
+        let destination = try makeDirectory("Destination", in: workspace)
+
+        // Seed a queue the job document must fully replace.
+        let model = makeModel(queueStorageRoot: storageRoot)
+        try enqueueWorkflow(source: originalSource, destination: destination, in: model)
+        XCTAssertEqual(model.mediaCopyQueue.count, 1)
+        let seededWorkflowID = try XCTUnwrap(model.mediaCopyQueue.first?.id)
+
+        let replacementWorkflow = MediaCopyWorkflow(
+            sourceRoots: [loadedSource],
+            destinationRoot: destination,
+            destinationLayout: .mergeContents,
+            filter: .audio,
+            selectedExtensions: ["wav"],
+            fileNameFilter: MediaFileNameFilter(query: "take"),
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+        // Same encoding as the production Save Job path.
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let jobData = try encoder.encode(MediaCopyJobDocument(workflows: [replacementWorkflow]))
+
+        try model.loadMediaCopyJobData(jobData)
+
+        XCTAssertEqual(
+            model.mediaCopyQueue.map(\.id),
+            [replacementWorkflow.id],
+            "A loaded job must replace the whole queue."
+        )
+
+        let reloaded = makeModel(queueStorageRoot: storageRoot)
+        XCTAssertEqual(
+            reloaded.mediaCopyQueue,
+            [replacementWorkflow],
+            "A fresh model must load exactly the replacement queue."
+        )
+        XCTAssertFalse(
+            reloaded.mediaCopyQueue.contains { $0.id == seededWorkflowID },
+            "Workflows removed by the job load must not resurrect after relaunch."
         )
     }
 
@@ -397,6 +475,12 @@ final class MediaCopyQueuePersistenceTests: XCTestCase {
     }
 
     // MARK: - Helpers
+
+    /// The unchanged production repair panel; every repair test restores this
+    /// in teardown so the injection never leaks between suites.
+    private static let defaultRepairDirectoryProvider: (URL) -> URL? = { missingURL in
+        MediaCopyAppKitBoundary.chooseRepairDirectory(for: missingURL)
+    }
 
     /// A queue as the shared document format stores it: ISO-8601 dates carry
     /// second precision, so sub-second `createdAt` components do not survive

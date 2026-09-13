@@ -15,6 +15,14 @@ enum MediaCopyJobFile {
 /// independent from AppKit and can be exercised in focused tests.
 @MainActor
 enum MediaCopyAppKitBoundary {
+    /// Overridable repair-directory provider so headless tests can drive the
+    /// real `repairMediaCopyWorkflow` entry point without a modal open panel.
+    /// Production behavior is unchanged: the default is the live panel below.
+    /// Overriding tests must restore the default in teardown.
+    static var repairDirectoryProvider: (URL) -> URL? = { missingURL in
+        MediaCopyAppKitBoundary.chooseRepairDirectory(for: missingURL)
+    }
+
     static func chooseSaveJobURL(initialDirectory: URL?, defaultName: String) -> URL? {
         let panel = NSSavePanel()
         panel.title = "Save File Copy Job"

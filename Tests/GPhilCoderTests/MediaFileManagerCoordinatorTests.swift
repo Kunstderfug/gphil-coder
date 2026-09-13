@@ -686,7 +686,16 @@ final class MediaFileManagerCoordinatorTests: XCTestCase {
     }
 
     private func makeMediaFileManagerModel() -> EncoderViewModel {
-        let model = EncoderViewModel()
+        // Compose every model against its own temporary queue root so this
+        // suite never reads or deletes the live Application Support queue
+        // directory; the root is tracked for teardown below.
+        let queueStorageRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "GPhilCoderTests-QueueStorage-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        temporaryDirectories.append(queueStorageRoot)
+        let model = EncoderViewModel(mediaCopyQueueStorageRoot: queueStorageRoot)
         model.completionNotificationsEnabled = false
         model.fileManagementMode = .copy
         model.mediaCopyFilter = .audio
@@ -712,11 +721,6 @@ final class MediaFileManagerCoordinatorTests: XCTestCase {
         ]
         for key in keys {
             UserDefaults.standard.removeObject(forKey: key)
-        }
-        // Queue mutations now persist to the live default location; purge the
-        // persisted queue so tests composing fresh models stay isolated.
-        if let queueRoot = try? MediaCopyQueueStore.liveDirectoryURL() {
-            try? FileManager.default.removeItem(at: queueRoot)
         }
     }
 

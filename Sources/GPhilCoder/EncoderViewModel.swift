@@ -640,6 +640,15 @@ final class EncoderViewModel: ObservableObject {
     let securityScopes = SecurityScopeManager()
     let bookmarks = BookmarkStore()
     private let mediaCopyQueueStore: MediaCopyQueueStore?
+    /// Queue-restore status parked while init composes: the lazy
+    /// `mediaFileCoordinator` publishes its restore/quarantine message when
+    /// init first creates it, and init's unconditional `refreshFFmpeg()`
+    /// would clobber it, so the message is surfaced after composition
+    /// completes instead.
+    private var pendingQueueRestoreStatusMessage: String?
+    /// True only while init is composing; inside that window the
+    /// coordinator's restore-at-creation message parks instead of publishing.
+    private var isComposingInitialStatus = false
     let folderSyncServices: FolderSyncServices?
     private let folderSyncServicesError: String?
     private var cancellables: Set<AnyCancellable> = []
@@ -672,7 +681,12 @@ final class EncoderViewModel: ObservableObject {
 
     lazy var mediaFileCoordinator = MediaFileCoordinator(
         setStatusMessage: { [weak self] message in
-            self?.statusMessage = message
+            guard let self else { return }
+            if isComposingInitialStatus {
+                pendingQueueRestoreStatusMessage = message
+            } else {
+                statusMessage = message
+            }
         },
         validateFolders: { [weak self] sourceRoot, destinationRoot in
             self?.validateMediaCopyFolders(
@@ -1635,6 +1649,7 @@ final class EncoderViewModel: ObservableObject {
                 "File copy queue persistence is unavailable: \(error.localizedDescription)"
         }
 
+        isComposingInitialStatus = true
         mediaFileCoordinator.objectWillChange
             .sink { [weak self] _ in
                 self?.objectWillChange.send()
@@ -1660,6 +1675,17 @@ final class EncoderViewModel: ObservableObject {
         } else if let folderSyncServicesError {
             statusMessage =
                 "Folder Sync recovery is unavailable, so Sync is disabled: \(folderSyncServicesError)"
+        }
+
+        isComposingInitialStatus = false
+        // Creating the coordinator above restored the persisted queue and
+        // published its quarantine/repair status; the unconditional
+        // refreshFFmpeg() (and any later init publication) replaced
+        // statusMessage, so surface the parked queue message once composition
+        // completes to keep a corrupt persisted queue visibly repairable.
+        if let pendingQueueRestoreStatusMessage {
+            statusMessage = pendingQueueRestoreStatusMessage
+            self.pendingQueueRestoreStatusMessage = nil
         }
     }
 

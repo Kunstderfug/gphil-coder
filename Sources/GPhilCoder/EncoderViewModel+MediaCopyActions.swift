@@ -66,8 +66,8 @@ extension EncoderViewModel {
         var repaired = workflow
         for issue in workflow.repairIssues {
             let missingURL = issue.url
-            guard let replacement = MediaCopyAppKitBoundary.chooseRepairDirectory(
-                for: missingURL
+            guard let replacement = MediaCopyAppKitBoundary.repairDirectoryProvider(
+                missingURL
             ) else {
                 statusMessage = "File copy workflow repair cancelled."
                 return
