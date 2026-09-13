@@ -152,6 +152,7 @@ enum MediaCopyTransactionExecutor {
         }
 
         var stagedCandidates: [StagedCandidate] = []
+        var stagedBytes: Int64 = 0
         for (index, candidate) in candidates.enumerated() {
             if isCancelled() {
                 result.cancelled = true
@@ -166,7 +167,7 @@ enum MediaCopyTransactionExecutor {
             publishProgress(
                 makeProgress(
                     result: result,
-                    copiedBytes: copiedBytes,
+                    copiedBytes: stagedBytes,
                     totalBytes: plan.totalSizeBytes,
                     startedAt: startedAt,
                     currentName: candidate.name
@@ -188,7 +189,7 @@ enum MediaCopyTransactionExecutor {
                 let evidence = try await stageCandidate(
                     candidate,
                     to: stagedURL,
-                    committedBytes: copiedBytes,
+                    alreadyStagedBytes: stagedBytes,
                     totalBytes: plan.totalSizeBytes,
                     startedAt: startedAt,
                     result: result,
@@ -212,6 +213,7 @@ enum MediaCopyTransactionExecutor {
                         index: index
                     )
                 )
+                stagedBytes += candidate.fileSizeBytes
             } catch is CancellationError {
                 result.cancelled = true
                 await recordCleanupOutcome(
@@ -384,7 +386,7 @@ enum MediaCopyTransactionExecutor {
             publishProgress(
                 makeProgress(
                     result: result,
-                    copiedBytes: copiedBytes,
+                    copiedBytes: max(copiedBytes, stagedBytes),
                     totalBytes: plan.totalSizeBytes,
                     startedAt: startedAt,
                     currentName: candidate.name
@@ -456,7 +458,7 @@ enum MediaCopyTransactionExecutor {
     private static func stageCandidate(
         _ candidate: MediaCopyCandidate,
         to stagedURL: URL,
-        committedBytes: Int64,
+        alreadyStagedBytes: Int64,
         totalBytes: Int64,
         startedAt: Date,
         result: MediaCopyResult,
@@ -510,7 +512,7 @@ enum MediaCopyTransactionExecutor {
                 publishProgress(
                     makeProgress(
                         result: result,
-                        copiedBytes: committedBytes + bytes,
+                        copiedBytes: alreadyStagedBytes + bytes,
                         totalBytes: totalBytes,
                         startedAt: startedAt,
                         currentName: candidate.name

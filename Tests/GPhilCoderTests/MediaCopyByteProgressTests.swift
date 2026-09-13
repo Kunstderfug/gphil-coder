@@ -89,6 +89,56 @@ final class MediaCopyByteProgressTests: XCTestCase {
         assertPublicationCadenceIsBounded(intraFile)
     }
 
+    func testCopiedBytesNeverRegressesAcrossTwoLargeFilePublicationHistory() async throws {
+        let firstName = "large-one.wav"
+        let secondName = "large-two.wav"
+        let fileSize: Int64 = 2_000_000
+        let (plan, _) = try makeTwoLargeFilePlan(
+            firstName: firstName,
+            secondName: secondName,
+            fileSize: fileSize
+        )
+        MediaCopyTransactionExecutor.installVirtualSlowCopyHook()
+
+        let publications = await recordExecutePublications(plan: plan)
+
+        let firstFileIntra = intraFilePublications(
+            in: publications,
+            fileName: firstName,
+            fileSize: fileSize
+        )
+        XCTAssertFalse(
+            firstFileIntra.isEmpty,
+            "file 1 must publish intra-file copiedBytes > 0; got \(publicationSummary(publications))"
+        )
+        let lastFirstFileCopiedBytes = try XCTUnwrap(firstFileIntra.last?.copiedBytes)
+        XCTAssertGreaterThan(lastFirstFileCopiedBytes, 0)
+
+        let firstFileLastIntraIndex = try XCTUnwrap(
+            publications.lastIndex { snapshot in
+                snapshot.currentName == firstName
+                    && snapshot.copiedBytes > 0
+                    && snapshot.copiedBytes < fileSize
+            }
+        )
+        let laterPublications = publications.suffix(from: firstFileLastIntraIndex)
+        XCTAssertTrue(
+            laterPublications.contains { $0.currentName == secondName },
+            "publication history must include file 2 after file 1 intra-file ticks"
+        )
+        XCTAssertTrue(
+            laterPublications.allSatisfy { $0.copiedBytes >= lastFirstFileCopiedBytes },
+            "file 2 publications must not drop below the last file-1 cumulative value \(lastFirstFileCopiedBytes): \(publicationSummary(Array(laterPublications)))"
+        )
+        XCTAssertTrue(
+            zip(publications, publications.dropFirst()).allSatisfy {
+                $0.copiedBytes <= $1.copiedBytes
+            },
+            "copiedBytes must never regress across the full two-file history: \(publicationSummary(publications))"
+        )
+        XCTAssertEqual(publications.last?.copiedBytes, plan.totalSizeBytes)
+    }
+
     func testCompletedRunCopiedBytesEqualsPlannedTotalExactly() async throws {
         let fileSize: Int64 = 2_000_000
         let (plan, destination) = try makeTwoLargeFilePlan(
@@ -112,7 +162,11 @@ final class MediaCopyByteProgressTests: XCTestCase {
         XCTAssertEqual(plan.totalSizeBytes, fileSize * 2)
         XCTAssertTrue(publications.allSatisfy { $0.copiedBytes <= plan.totalSizeBytes })
         XCTAssertFalse(
-            publications.contains { $0.copiedBytes > fileSize && $0.copied < 1 },
+            publications.contains { snapshot in
+                snapshot.currentName == "large-one.wav"
+                    && snapshot.copiedBytes > fileSize
+                    && snapshot.copied < 1
+            },
             "first-file intra-file ticks must not include the second file"
         )
         XCTAssertTrue(
