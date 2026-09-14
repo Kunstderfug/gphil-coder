@@ -565,12 +565,12 @@ struct MediaManagementWorkflowView: View {
 
     private func mediaProgressPanel(_ progress: MediaCopyProgress) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            ProgressView(value: progress.fractionCompleted)
+            ProgressView(value: mediaProgressFraction(for: progress))
             HStack {
-                Text("\(progress.completed) of \(progress.total)")
+                Text(mediaProgressCountText(for: progress))
                     .monospacedDigit()
                 Spacer()
-                Text("\(progress.copied) \(mediaProgressVerb)")
+                Text("\(mediaProgressCopiedCount(for: progress)) \(mediaProgressVerb)")
             }
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -584,6 +584,19 @@ struct MediaManagementWorkflowView: View {
             }
             .font(.caption)
             .foregroundStyle(.secondary)
+
+            if model.fileManagementMode == .copy {
+                HStack {
+                    Text(model.mediaCopyByteFractionText)
+                        .monospacedDigit()
+                    Spacer()
+                    if model.mediaCopyIsStalled {
+                        Text("Stalled")
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
 
             if let currentName = progress.currentName {
                 Text(currentName)
@@ -949,8 +962,7 @@ struct MediaManagementWorkflowView: View {
             return "Preparing copy."
         }
 
-        let speedDetail = progress.bytesPerSecond
-            .map { ", \($0.formattedMegabytesPerSecond)" } ?? ""
+        let speedDetail = mediaCopyDetailSpeedSuffix(for: progress)
         if model.isMediaDeleting {
             return
                 "\(progress.completed) of \(progress.total) processed, \(progress.copied) moved, \(progress.failed) failed\(speedDetail)."
@@ -960,7 +972,7 @@ struct MediaManagementWorkflowView: View {
                 "\(progress.completed) of \(progress.total) processed, \(progress.copied) \(model.mediaRenameProgressVerb), \(progress.failed) failed\(speedDetail)."
         }
         return
-            "\(progress.completed) of \(progress.total) processed, \(progress.copied) copied, \(progress.skippedExisting) skipped, \(progress.failed) failed\(speedDetail)."
+            "\(progress.displayCompleted) of \(progress.total) processed, \(progress.displayCopied) copied, \(progress.skippedExisting) skipped, \(progress.failed) failed\(speedDetail)."
     }
 
     private var mediaProgressVerb: String {
@@ -973,7 +985,45 @@ struct MediaManagementWorkflowView: View {
         return "copied"
     }
 
+    private func mediaProgressFraction(for progress: MediaCopyProgress) -> Double {
+        if model.fileManagementMode == .copy {
+            return model.mediaCopyByteFractionCompleted
+        }
+        return progress.fractionCompleted
+    }
+
+    private func mediaProgressCountText(for progress: MediaCopyProgress) -> String {
+        if model.fileManagementMode == .copy, !model.mediaCopyCountCompletionText.isEmpty {
+            return model.mediaCopyCountCompletionText
+        }
+        return "\(progress.completed) of \(progress.total)"
+    }
+
+    private func mediaProgressCopiedCount(for progress: MediaCopyProgress) -> Int {
+        if model.fileManagementMode == .copy {
+            return progress.displayCopied
+        }
+        return progress.copied
+    }
+
+    private func mediaCopyDetailSpeedSuffix(for progress: MediaCopyProgress) -> String {
+        if model.fileManagementMode == .copy {
+            if model.mediaCopyIsStalled {
+                return ", stalled"
+            }
+            if let current = model.mediaCopySpeedReading?.currentBytesPerSecond {
+                return ", \(current.formattedMegabytesPerSecond)"
+            }
+            return ""
+        }
+        return progress.bytesPerSecond
+            .map { ", \($0.formattedMegabytesPerSecond)" } ?? ""
+    }
+
     private func mediaCopySpeedText(for progress: MediaCopyProgress) -> String {
-        progress.bytesPerSecond?.formattedMegabytesPerSecond ?? "Calculating speed"
+        if model.fileManagementMode == .copy {
+            return model.mediaCopySpeedSummaryText
+        }
+        return progress.bytesPerSecond?.formattedMegabytesPerSecond ?? "Calculating speed"
     }
 }

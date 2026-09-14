@@ -392,6 +392,8 @@ public struct MediaCopyProgress: Sendable {
     public let startedAt: Date
     public let updatedAt: Date
     public let currentName: String?
+    /// Successfully staged files. Install-committed `copied` may still be 0.
+    public let transferred: Int
 
     public init(
         completed: Int,
@@ -403,7 +405,8 @@ public struct MediaCopyProgress: Sendable {
         totalBytes: Int64,
         startedAt: Date,
         updatedAt: Date,
-        currentName: String?
+        currentName: String?,
+        transferred: Int? = nil
     ) {
         self.completed = completed
         self.total = total
@@ -415,6 +418,15 @@ public struct MediaCopyProgress: Sendable {
         self.startedAt = startedAt
         self.updatedAt = updatedAt
         self.currentName = currentName
+        self.transferred = transferred ?? copied
+    }
+
+    /// File Copy "N copied" / footer Copied N. Never below the install count.
+    public var displayCopied: Int { max(transferred, copied) }
+
+    /// File Copy header N of total. Never drops when install begins.
+    public var displayCompleted: Int {
+        max(completed, displayCopied + skippedExisting + failed)
     }
 
     public var fractionCompleted: Double {

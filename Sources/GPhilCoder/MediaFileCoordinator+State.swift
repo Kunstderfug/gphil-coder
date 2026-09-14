@@ -89,10 +89,6 @@ extension MediaFileCoordinator {
         mediaFileInventorySourceRootPaths = []
     }
 
-    func setProgress(_ progress: MediaCopyProgress?) {
-        mediaCopyProgress = progress
-    }
-
     func setInventory(_ inventory: [MediaFileInventoryRecord], _ sourceRootPaths: [String]) {
         mediaFileInventory = inventory
         mediaFileInventorySourceRootPaths = sourceRootPaths

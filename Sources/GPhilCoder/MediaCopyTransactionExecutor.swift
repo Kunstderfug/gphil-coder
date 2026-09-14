@@ -39,6 +39,22 @@ enum MediaCopyTransactionExecutor {
         let transaction: RetainedTransaction?
     }
 
+    /// Test-visible throttle for a virtual slow copy of large regular files.
+    /// Production copies leave this unset; tests install a chunk delay so
+    /// intra-file publications are observable in a real temporary directory.
+    static var testSlowCopyChunkByteCount: Int?
+    static var testSlowCopyChunkDelayNanoseconds: UInt64?
+
+    static func resetByteProgressTestHooks() {
+        testSlowCopyChunkByteCount = nil
+        testSlowCopyChunkDelayNanoseconds = nil
+    }
+
+    static func installVirtualSlowCopyHook() {
+        testSlowCopyChunkByteCount = 256_000
+        testSlowCopyChunkDelayNanoseconds = 160_000_000
+    }
+
     static func execute(
         _ plan: MediaCopyBatchPlan,
         conflictResolution: MediaCopyConflictResolution,
@@ -136,6 +152,8 @@ enum MediaCopyTransactionExecutor {
         }
 
         var stagedCandidates: [StagedCandidate] = []
+        var stagedBytes: Int64 = 0
+        var transferred = 0
         for (index, candidate) in candidates.enumerated() {
             if isCancelled() {
                 result.cancelled = true
@@ -150,10 +168,11 @@ enum MediaCopyTransactionExecutor {
             publishProgress(
                 makeProgress(
                     result: result,
-                    copiedBytes: copiedBytes,
+                    copiedBytes: stagedBytes,
                     totalBytes: plan.totalSizeBytes,
                     startedAt: startedAt,
-                    currentName: candidate.name
+                    currentName: candidate.name,
+                    transferred: transferred
                 )
             )
 
@@ -161,6 +180,16 @@ enum MediaCopyTransactionExecutor {
                 FileManager.default.fileExists(atPath: candidate.destinationURL.path)
             {
                 result.skippedExisting += 1
+                publishProgress(
+                    makeProgress(
+                        result: result,
+                        copiedBytes: stagedBytes,
+                        totalBytes: plan.totalSizeBytes,
+                        startedAt: startedAt,
+                        currentName: candidate.name,
+                        transferred: transferred
+                    )
+                )
                 continue
             }
 
@@ -169,12 +198,25 @@ enum MediaCopyTransactionExecutor {
                 isDirectory: candidate.isPackage
             )
             do {
-                let evidence = try await runFileOperation {
-                    try FileManager.default.copyItem(at: candidate.sourceURL, to: stagedURL)
-                    return MediaCopyPathEvidence.capture(
-                        at: stagedURL,
-                        recursively: candidate.isPackage
+                let evidence = try await stageCandidate(
+                    candidate,
+                    to: stagedURL,
+                    alreadyStagedBytes: stagedBytes,
+                    totalBytes: plan.totalSizeBytes,
+                    startedAt: startedAt,
+                    result: result,
+                    transferred: transferred,
+                    isCancelled: isCancelled,
+                    publishProgress: publishProgress
+                )
+                if isCancelled() {
+                    result.cancelled = true
+                    await recordCleanupOutcome(
+                        removeTransactionRoot(transactionRoot),
+                        transactionRoot: transactionRoot,
+                        result: &result
                     )
+                    return result
                 }
                 stagedCandidates.append(
                     StagedCandidate(
@@ -184,9 +226,48 @@ enum MediaCopyTransactionExecutor {
                         index: index
                     )
                 )
+                stagedBytes += candidate.fileSizeBytes
+                transferred += 1
+                publishProgress(
+                    makeProgress(
+                        result: result,
+                        copiedBytes: stagedBytes,
+                        totalBytes: plan.totalSizeBytes,
+                        startedAt: startedAt,
+                        currentName: candidate.name,
+                        transferred: transferred
+                    )
+                )
+            } catch is CancellationError {
+                result.cancelled = true
+                await recordCleanupOutcome(
+                    removeTransactionRoot(transactionRoot),
+                    transactionRoot: transactionRoot,
+                    result: &result
+                )
+                return result
             } catch {
+                if isCancelled() {
+                    result.cancelled = true
+                    await recordCleanupOutcome(
+                        removeTransactionRoot(transactionRoot),
+                        transactionRoot: transactionRoot,
+                        result: &result
+                    )
+                    return result
+                }
                 result.failed += 1
                 result.failedNames.append(candidate.relativePath)
+                publishProgress(
+                    makeProgress(
+                        result: result,
+                        copiedBytes: stagedBytes,
+                        totalBytes: plan.totalSizeBytes,
+                        startedAt: startedAt,
+                        currentName: candidate.name,
+                        transferred: transferred
+                    )
+                )
             }
         }
 
@@ -204,8 +285,34 @@ enum MediaCopyTransactionExecutor {
                     copiedBytes: 0,
                     totalBytes: plan.totalSizeBytes,
                     startedAt: startedAt,
-                    currentName: nil
+                    currentName: nil,
+                    transferred: transferred
                 )
+            )
+            return result
+        }
+
+        // Publish the last transfer-finished snapshot and keep it current
+        // long enough for File Copy bindings to observe it before install
+        // increments `result.copied`. Without this hold, a local install
+        // burst finishes in the same MainActor turn as the last stage.
+        publishProgress(
+            makeProgress(
+                result: result,
+                copiedBytes: stagedBytes,
+                totalBytes: plan.totalSizeBytes,
+                startedAt: startedAt,
+                currentName: stagedCandidates.last?.candidate.name,
+                transferred: transferred
+            )
+        )
+        try? await Task.sleep(nanoseconds: 40_000_000)
+        if isCancelled() {
+            result.cancelled = true
+            await recordCleanupOutcome(
+                removeTransactionRoot(transactionRoot),
+                transactionRoot: transactionRoot,
+                result: &result
             )
             return result
         }
@@ -339,10 +446,11 @@ enum MediaCopyTransactionExecutor {
             publishProgress(
                 makeProgress(
                     result: result,
-                    copiedBytes: copiedBytes,
+                    copiedBytes: max(copiedBytes, stagedBytes),
                     totalBytes: plan.totalSizeBytes,
                     startedAt: startedAt,
-                    currentName: candidate.name
+                    currentName: candidate.name,
+                    transferred: transferred
                 )
             )
         }
@@ -408,15 +516,96 @@ enum MediaCopyTransactionExecutor {
         await removeTransactionRoot(transaction.transactionRoot)
     }
 
+    private static func stageCandidate(
+        _ candidate: MediaCopyCandidate,
+        to stagedURL: URL,
+        alreadyStagedBytes: Int64,
+        totalBytes: Int64,
+        startedAt: Date,
+        result: MediaCopyResult,
+        transferred: Int,
+        isCancelled: () -> Bool,
+        publishProgress: (MediaCopyProgress) -> Void
+    ) async throws -> MediaCopyPathEvidence {
+        let forceByteReporting = testSlowCopyChunkByteCount != nil
+        guard MediaCopyByteReportingCopy.shouldReportBytes(for: candidate, force: forceByteReporting)
+        else {
+            return try await runFileOperation {
+                try FileManager.default.copyItem(at: candidate.sourceURL, to: stagedURL)
+                return MediaCopyPathEvidence.capture(
+                    at: stagedURL,
+                    recursively: candidate.isPackage
+                )
+            }
+        }
+
+        let chunkByteCount =
+            testSlowCopyChunkByteCount ?? MediaCopyByteReportingCopy.defaultChunkByteCount
+        let chunkDelayNanoseconds = testSlowCopyChunkDelayNanoseconds
+        let mailbox = MediaCopyByteProgressMailbox()
+        Task.detached(priority: .userInitiated) {
+            do {
+                try MediaCopyByteReportingCopy.copyRegularFile(
+                    from: candidate.sourceURL,
+                    to: stagedURL,
+                    expectedSize: candidate.fileSizeBytes,
+                    chunkByteCount: chunkByteCount,
+                    chunkDelayNanoseconds: chunkDelayNanoseconds,
+                    isCancelled: { mailbox.isCancelRequested() },
+                    onBytesCopied: { mailbox.report(bytes: $0) }
+                )
+                mailbox.finish(
+                    evidence: MediaCopyPathEvidence.capture(
+                        at: stagedURL,
+                        recursively: false
+                    )
+                )
+            } catch {
+                mailbox.fail(error)
+            }
+        }
+
+        while true {
+            if isCancelled() {
+                mailbox.requestCancel()
+            }
+            let update = mailbox.takeUpdate()
+            if let bytes = update.bytes, bytes > 0, bytes < candidate.fileSizeBytes {
+                publishProgress(
+                    makeProgress(
+                        result: result,
+                        copiedBytes: alreadyStagedBytes + bytes,
+                        totalBytes: totalBytes,
+                        startedAt: startedAt,
+                        currentName: candidate.name,
+                        transferred: transferred
+                    )
+                )
+            }
+            if update.isFinished {
+                if let error = update.error {
+                    throw error
+                }
+                if isCancelled() {
+                    throw CancellationError()
+                }
+                return update.evidence
+                    ?? MediaCopyPathEvidence.capture(at: stagedURL, recursively: false)
+            }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+    }
+
     private static func makeProgress(
         result: MediaCopyResult,
         copiedBytes: Int64,
         totalBytes: Int64,
         startedAt: Date,
-        currentName: String?
+        currentName: String?,
+        transferred: Int
     ) -> MediaCopyProgress {
         MediaCopyProgress(
-            completed: result.copied + result.skippedExisting + result.failed,
+            completed: transferred + result.skippedExisting + result.failed,
             total: result.total,
             copied: result.copied,
             skippedExisting: result.skippedExisting,
@@ -425,7 +614,8 @@ enum MediaCopyTransactionExecutor {
             totalBytes: totalBytes,
             startedAt: startedAt,
             updatedAt: Date(),
-            currentName: currentName
+            currentName: currentName,
+            transferred: transferred
         )
     }
 
