@@ -753,6 +753,50 @@ struct MediaManagementWorkflowView: View {
                     )
                 }
 
+                Picker(
+                    "Saved workflow",
+                    selection: model.binding(\.selectedMediaCopySavedWorkflowID)
+                ) {
+                    Text("Choose a workflow").tag(Optional<UUID>.none)
+                    ForEach(model.mediaCopySavedWorkflows) { item in
+                        Text(item.name).tag(Optional(item.id))
+                    }
+                }
+                .disabled(model.mediaCopySavedWorkflows.isEmpty || model.isMediaCopyBusy)
+                .help("Saved named copy queues that can be loaded as workflows")
+
+                HStack(spacing: 8) {
+                    Button {
+                        model.saveMediaCopyQueueAsWorkflow()
+                    } label: {
+                        Label("Save as Workflow", systemImage: "tray.and.arrow.down")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .disabled(!model.canSaveMediaCopyQueueAsWorkflow)
+                    .help("Save the current copy queue under a name")
+
+                    Button {
+                        model.loadMediaCopySavedWorkflow()
+                        selectedMediaCopyPreviewMode = .queue
+                    } label: {
+                        Label("Load Workflow", systemImage: "tray.and.arrow.up")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .disabled(!model.canLoadMediaCopySavedWorkflow)
+                    .help("Replace the current copy queue with the selected saved workflow")
+                }
+                .controlSize(.small)
+
+                Button(role: .destructive) {
+                    model.deleteMediaCopySavedWorkflow()
+                } label: {
+                    Label("Delete Workflow", systemImage: "trash")
+                        .frame(maxWidth: .infinity)
+                }
+                .controlSize(.small)
+                .disabled(!model.canDeleteMediaCopySavedWorkflow)
+                .help("Remove the selected saved workflow from the library")
+
                 HStack(spacing: 8) {
                     Button {
                         model.loadMediaCopyJob()

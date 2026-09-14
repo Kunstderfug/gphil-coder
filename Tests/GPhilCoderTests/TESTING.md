@@ -30,6 +30,7 @@ swift test --filter RestorePlannerTests   # one class
 | File-path transactions | `FilePathTransactionsTests` | Collision disambiguation, case-only rename, `-encoded` suffix |
 | Versioned-blob decode | `VersionedBlobTests` | Envelope round-trip, corrupt/versionMismatch/legacy paths |
 | Security scopes | `SecurityScopeManagerTests` | URL dedup, containment (incl. prefix guard), write probe |
+| Named copy-queue library | `MediaCopySavedWorkflowTests` | Save / load / overwrite / delete at the EncoderViewModel composition-root seam |
 
 ## Known gaps (not covered here, and why)
 

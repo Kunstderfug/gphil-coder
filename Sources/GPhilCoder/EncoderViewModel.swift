@@ -342,6 +342,8 @@ final class EncoderViewModel: ObservableObject {
             )
         }
     }
+    @Published private(set) var mediaCopySavedWorkflows: [MediaCopySavedWorkflow] = []
+    @Published var selectedMediaCopySavedWorkflowID: UUID?
 
     var mediaRenameOperation: MediaRenameOperation {
         get { mediaFileCoordinator.mediaRenameOperation }
@@ -640,12 +642,14 @@ final class EncoderViewModel: ObservableObject {
     let securityScopes = SecurityScopeManager()
     let bookmarks = BookmarkStore()
     private let mediaCopyQueueStore: MediaCopyQueueStore?
+    private let savedWorkflowLibrary: MediaCopySavedWorkflowLibrary?
     /// Queue-restore status parked while init composes: the lazy
     /// `mediaFileCoordinator` publishes its restore/quarantine message when
     /// init first creates it, and init's unconditional `refreshFFmpeg()`
     /// would clobber it, so the message is surfaced after composition
     /// completes instead.
     private var pendingQueueRestoreStatusMessage: String?
+    private var pendingLibraryRestoreStatusMessage: String?
     /// True only while init is composing; inside that window the
     /// coordinator's restore-at-creation message parks instead of publishing.
     private var isComposingInitialStatus = false
@@ -1329,6 +1333,18 @@ final class EncoderViewModel: ObservableObject {
         !mediaCopyQueue.isEmpty && !isMediaCopyBusy
     }
 
+    var canSaveMediaCopyQueueAsWorkflow: Bool {
+        !mediaCopyQueue.isEmpty && !isMediaCopyBusy
+    }
+
+    var canLoadMediaCopySavedWorkflow: Bool {
+        selectedMediaCopySavedWorkflowID != nil && !isMediaCopyBusy
+    }
+
+    var canDeleteMediaCopySavedWorkflow: Bool {
+        selectedMediaCopySavedWorkflowID != nil && !isMediaCopyBusy
+    }
+
     var mediaCopyMatchedCount: Int {
         mediaCopyPlan?.candidateCount ?? 0
     }
@@ -1614,7 +1630,8 @@ final class EncoderViewModel: ObservableObject {
     init(
         folderSyncStorageRoot: URL? = nil,
         folderSyncTrashBoundary: FolderSyncTrashBoundary? = nil,
-        mediaCopyQueueStorageRoot: URL? = nil
+        mediaCopyQueueStorageRoot: URL? = nil,
+        mediaCopySavedWorkflowLibraryStorageRoot: URL? = nil
     ) {
         do {
             let storageRoot: URL
@@ -1649,12 +1666,27 @@ final class EncoderViewModel: ObservableObject {
                 "File copy queue persistence is unavailable: \(error.localizedDescription)"
         }
 
+        do {
+            if let mediaCopySavedWorkflowLibraryStorageRoot {
+                savedWorkflowLibrary = MediaCopySavedWorkflowLibrary(
+                    directoryURL: mediaCopySavedWorkflowLibraryStorageRoot
+                )
+            } else {
+                savedWorkflowLibrary = MediaCopySavedWorkflowLibrary(
+                    directoryURL: try MediaCopySavedWorkflowLibrary.liveDirectoryURL()
+                )
+            }
+        } catch {
+            savedWorkflowLibrary = nil
+        }
+
         isComposingInitialStatus = true
         mediaFileCoordinator.objectWillChange
             .sink { [weak self] _ in
                 self?.objectWillChange.send()
             }
             .store(in: &cancellables)
+        restoreMediaCopySavedWorkflowLibrary()
         loadPersistedSettings()
         refreshFFmpeg()
         refreshNotificationPermission()
@@ -1683,10 +1715,47 @@ final class EncoderViewModel: ObservableObject {
         // refreshFFmpeg() (and any later init publication) replaced
         // statusMessage, so surface the parked queue message once composition
         // completes to keep a corrupt persisted queue visibly repairable.
-        if let pendingQueueRestoreStatusMessage {
+        // A quarantined named library takes precedence so a failed library
+        // decode stays visibly repairable without replacing the working queue.
+        if let pendingLibraryRestoreStatusMessage {
+            statusMessage = pendingLibraryRestoreStatusMessage
+            self.pendingLibraryRestoreStatusMessage = nil
+            pendingQueueRestoreStatusMessage = nil
+        } else if let pendingQueueRestoreStatusMessage {
             statusMessage = pendingQueueRestoreStatusMessage
             self.pendingQueueRestoreStatusMessage = nil
         }
+    }
+
+    func restoreMediaCopySavedWorkflowLibrary() {
+        guard let savedWorkflowLibrary else {
+            mediaCopySavedWorkflows = []
+            return
+        }
+
+        switch savedWorkflowLibrary.load() {
+        case .noDocument:
+            mediaCopySavedWorkflows = []
+        case .restored(let items):
+            mediaCopySavedWorkflows = items
+        case .quarantined(let problem):
+            mediaCopySavedWorkflows = []
+            let message =
+                "The saved copy-workflow library could not be read and was set aside for repair, so the library starts empty: \(problem)"
+            if isComposingInitialStatus {
+                pendingLibraryRestoreStatusMessage = message
+            } else {
+                statusMessage = message
+            }
+        }
+    }
+
+    func persistMediaCopySavedWorkflows(_ items: [MediaCopySavedWorkflow]) throws {
+        guard let savedWorkflowLibrary else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        try savedWorkflowLibrary.save(items)
+        mediaCopySavedWorkflows = items
     }
 
     func refreshNotificationPermission() {

@@ -496,7 +496,16 @@ final class MediaCopyQueuePersistenceTests: XCTestCase {
     }
 
     private func makeModel(queueStorageRoot: URL) -> EncoderViewModel {
-        let model = EncoderViewModel(mediaCopyQueueStorageRoot: queueStorageRoot)
+        let libraryStorageRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "GPhilCoderTests-LibraryStorage-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        temporaryDirectories.append(libraryStorageRoot)
+        let model = EncoderViewModel(
+            mediaCopyQueueStorageRoot: queueStorageRoot,
+            mediaCopySavedWorkflowLibraryStorageRoot: libraryStorageRoot
+        )
         model.completionNotificationsEnabled = false
         model.fileManagementMode = .copy
         return model

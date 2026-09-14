@@ -23,6 +23,21 @@ enum MediaCopyAppKitBoundary {
         MediaCopyAppKitBoundary.chooseRepairDirectory(for: missingURL)
     }
 
+    /// Overridable name prompt so headless tests can drive Save as Workflow
+    /// without a modal alert. Production behavior is unchanged: the default
+    /// is the live alert below. Overriding tests must restore the default
+    /// in teardown.
+    static var savedWorkflowNameProvider: () -> String? = {
+        MediaCopyAppKitBoundary.promptSavedWorkflowName()
+    }
+
+    /// Overridable delete confirmation so headless tests can drive Delete
+    /// Workflow without a modal alert. Overriding tests must restore the
+    /// default in teardown.
+    static var deleteSavedWorkflowConfirmProvider: (String) -> Bool = { name in
+        MediaCopyAppKitBoundary.confirmDeleteSavedWorkflow(named: name)
+    }
+
     static func chooseSaveJobURL(initialDirectory: URL?, defaultName: String) -> URL? {
         let panel = NSSavePanel()
         panel.title = "Save File Copy Job"
@@ -57,6 +72,33 @@ enum MediaCopyAppKitBoundary {
         panel.canCreateDirectories = true
         panel.directoryURL = missingURL.deletingLastPathComponent()
         return panel.runModal() == .OK ? panel.url : nil
+    }
+
+    static func promptSavedWorkflowName() -> String? {
+        let alert = NSAlert()
+        alert.messageText = "Save as Workflow"
+        alert.informativeText = "Name this file copy queue so you can load it again later."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+
+        let textField = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
+        textField.stringValue = ""
+        textField.selectText(nil)
+        alert.accessoryView = textField
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        return textField.stringValue
+    }
+
+    static func confirmDeleteSavedWorkflow(named name: String) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "Delete saved workflow?"
+        alert.informativeText = "This will delete \(name) from the saved-workflow library. The current copy queue is unchanged."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     static func resolveConflicts(in plans: [MediaCopyBatchPlan]) -> MediaCopyConflictResolution? {

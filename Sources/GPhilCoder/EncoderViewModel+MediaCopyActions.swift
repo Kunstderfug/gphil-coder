@@ -151,6 +151,79 @@ extension EncoderViewModel {
         replaceMediaCopyQueue(with: document.workflows)
     }
 
+    func saveMediaCopyQueueAsWorkflow() {
+        guard canSaveMediaCopyQueueAsWorkflow else {
+            if mediaCopyQueue.isEmpty {
+                statusMessage = "Add workflows to the file copy queue before saving a named workflow."
+            }
+            return
+        }
+
+        guard let rawName = MediaCopyAppKitBoundary.savedWorkflowNameProvider() else { return }
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else {
+            statusMessage = "Enter a name before saving a workflow."
+            return
+        }
+
+        var items = mediaCopySavedWorkflows
+        let now = Date()
+        let saved: MediaCopySavedWorkflow
+        if let index = items.firstIndex(where: { $0.name == name }) {
+            var item = items[index]
+            item.workflows = mediaCopyQueue
+            item.savedAt = now
+            items[index] = item
+            saved = item
+        } else {
+            saved = MediaCopySavedWorkflow(name: name, savedAt: now, workflows: mediaCopyQueue)
+            items.append(saved)
+        }
+
+        do {
+            try persistMediaCopySavedWorkflows(items)
+            selectedMediaCopySavedWorkflowID = saved.id
+            statusMessage = "Saved file copy workflow \(name)."
+        } catch {
+            statusMessage =
+                "Could not save the named file copy workflow: \(error.localizedDescription)"
+        }
+    }
+
+    func loadMediaCopySavedWorkflow() {
+        guard canLoadMediaCopySavedWorkflow else { return }
+        guard let selectedID = selectedMediaCopySavedWorkflowID,
+            let item = mediaCopySavedWorkflows.first(where: { $0.id == selectedID })
+        else {
+            statusMessage = "Choose a saved workflow before loading."
+            return
+        }
+
+        replaceMediaCopyQueue(with: item.workflows)
+    }
+
+    func deleteMediaCopySavedWorkflow() {
+        guard canDeleteMediaCopySavedWorkflow else { return }
+        guard let selectedID = selectedMediaCopySavedWorkflowID,
+            let item = mediaCopySavedWorkflows.first(where: { $0.id == selectedID })
+        else {
+            statusMessage = "Choose a saved workflow before deleting."
+            return
+        }
+
+        guard MediaCopyAppKitBoundary.deleteSavedWorkflowConfirmProvider(item.name) else { return }
+
+        let items = mediaCopySavedWorkflows.filter { $0.id != selectedID }
+        do {
+            try persistMediaCopySavedWorkflows(items)
+            selectedMediaCopySavedWorkflowID = nil
+            statusMessage = "Deleted saved workflow \(item.name)."
+        } catch {
+            statusMessage =
+                "Could not delete the named file copy workflow: \(error.localizedDescription)"
+        }
+    }
+
     func replaceMediaCopyQueue(with workflows: [MediaCopyWorkflow]) {
         mediaCopyQueue = workflows
         mediaCopyPlan = nil
