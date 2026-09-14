@@ -11,6 +11,9 @@ lives upstream as GitHub issue #1.
 - `003-show-network-aware-copy-speed-and-byte-progress` — sliding-window
   current speed plus average, stalled state, and byte-based progress
   fraction. Depends on 002.
+- `004-save-named-copy-queues-as-workflows` — named in-app library of
+  saved File Copy queues that load back as the working workflow queue.
+  Independent of 002/003. Does not replace ticket 001 last-session persist.
 
 ## Resolved
 
