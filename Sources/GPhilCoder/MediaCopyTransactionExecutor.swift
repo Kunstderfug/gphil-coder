@@ -292,6 +292,31 @@ enum MediaCopyTransactionExecutor {
             return result
         }
 
+        // Publish the last transfer-finished snapshot and keep it current
+        // long enough for File Copy bindings to observe it before install
+        // increments `result.copied`. Without this hold, a local install
+        // burst finishes in the same MainActor turn as the last stage.
+        publishProgress(
+            makeProgress(
+                result: result,
+                copiedBytes: stagedBytes,
+                totalBytes: plan.totalSizeBytes,
+                startedAt: startedAt,
+                currentName: stagedCandidates.last?.candidate.name,
+                transferred: transferred
+            )
+        )
+        try? await Task.sleep(nanoseconds: 40_000_000)
+        if isCancelled() {
+            result.cancelled = true
+            await recordCleanupOutcome(
+                removeTransactionRoot(transactionRoot),
+                transactionRoot: transactionRoot,
+                result: &result
+            )
+            return result
+        }
+
         guard plan.matchesReviewedFilesystemEvidence() else {
             rejectStalePlan(candidates: candidates, result: &result)
             await recordCleanupOutcome(
