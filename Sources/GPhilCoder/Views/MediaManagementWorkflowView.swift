@@ -576,7 +576,7 @@ struct MediaManagementWorkflowView: View {
             .foregroundStyle(.secondary)
 
             HStack {
-                Text("\(progress.copiedBytes.formattedFileSize) \(mediaProgressVerb)")
+                Text(mediaProgressByteText(for: progress))
                     .monospacedDigit()
                 Spacer()
                 Text(mediaCopySpeedText(for: progress))
@@ -584,19 +584,6 @@ struct MediaManagementWorkflowView: View {
             }
             .font(.caption)
             .foregroundStyle(.secondary)
-
-            if model.fileManagementMode == .copy {
-                HStack {
-                    Text(model.mediaCopyByteFractionText)
-                        .monospacedDigit()
-                    Spacer()
-                    if model.mediaCopyIsStalled {
-                        Text("Stalled")
-                    }
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
 
             if let currentName = progress.currentName {
                 Text(currentName)
@@ -1004,6 +991,13 @@ struct MediaManagementWorkflowView: View {
             return progress.displayCopied
         }
         return progress.copied
+    }
+
+    private func mediaProgressByteText(for progress: MediaCopyProgress) -> String {
+        if model.fileManagementMode == .copy {
+            return model.mediaCopyByteFractionText
+        }
+        return "\(progress.copiedBytes.formattedFileSize) \(mediaProgressVerb)"
     }
 
     private func mediaCopyDetailSpeedSuffix(for progress: MediaCopyProgress) -> String {

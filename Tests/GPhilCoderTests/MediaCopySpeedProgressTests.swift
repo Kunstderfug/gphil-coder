@@ -447,10 +447,10 @@ final class MediaCopySpeedProgressTests: XCTestCase {
             }
             if let progress = model.mediaCopyProgress,
                 progress.copiedBytes > 0,
-                progress.copiedBytes < fileSize,
+                progress.copiedBytes < progress.totalBytes,
                 model.mediaCopyByteFractionCompleted > 0,
                 model.mediaCopyByteFractionCompleted < 1,
-                model.mediaCopyByteFractionText.contains("%"),
+                model.mediaCopyByteFractionText.contains(" of "),
                 model.mediaCopyCountCompletionText.contains("of")
             {
                 sawByteFractionAlongsideCount = true
@@ -462,12 +462,39 @@ final class MediaCopySpeedProgressTests: XCTestCase {
         XCTAssertTrue(sawCurrentAndAverage)
         XCTAssertTrue(sawByteFractionAlongsideCount)
         XCTAssertEqual(model.mediaCopyByteFractionCompleted, 1.0)
-        XCTAssertEqual(model.mediaCopyByteFractionText, "100% of bytes")
+        let totalSize = try XCTUnwrap(model.mediaCopyProgress?.totalBytes)
+        XCTAssertEqual(
+            model.mediaCopyByteFractionText,
+            "\(totalSize.formattedFileSize) of \(totalSize.formattedFileSize)"
+        )
         XCTAssertEqual(model.mediaCopyCountCompletionText, "2 of 2")
         XCTAssertTrue(model.mediaCopySpeedSummaryText.contains("MB/s"))
         XCTAssertEqual(
             1_600_000.0.formattedMegabytesPerSecond,
             "1.6 MB/s"
+        )
+    }
+
+    func testByteFractionTextShowsCopiedAndTotalSizes() {
+        let model = makeMediaFileManagerModel()
+        model.fileManagementMode = .copy
+        let startedAt = Date()
+        model.mediaCopyProgress = MediaCopyProgress(
+            completed: 1,
+            total: 10,
+            copied: 0,
+            skippedExisting: 0,
+            failed: 0,
+            copiedBytes: 900_000_000 as Int64,
+            totalBytes: 56_100_000_000 as Int64,
+            startedAt: startedAt,
+            updatedAt: startedAt,
+            currentName: "117.mp4"
+        )
+
+        XCTAssertEqual(
+            model.mediaCopyByteFractionText,
+            "\((900_000_000 as Int64).formattedFileSize) of \((56_100_000_000 as Int64).formattedFileSize)"
         )
     }
 
@@ -483,7 +510,6 @@ final class MediaCopySpeedProgressTests: XCTestCase {
         XCTAssertTrue(model.mediaCopyIsStalled)
         XCTAssertTrue(model.mediaCopySpeedSummaryText.contains("Stalled"))
         XCTAssertEqual(model.mediaCopyAverageSpeedText, "1.2 MB/s")
-        XCTAssertEqual(model.mediaCopyByteFractionText, "40% of bytes")
 
         model.mediaCopySpeedReading = MediaCopySpeedReading(
             currentBytesPerSecond: 1_600_000,

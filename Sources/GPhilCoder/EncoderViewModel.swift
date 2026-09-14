@@ -226,8 +226,9 @@ final class EncoderViewModel: ObservableObject {
         return "Current \(mediaCopyCurrentSpeedText) · Average \(mediaCopyAverageSpeedText)"
     }
     var mediaCopyByteFractionText: String {
-        let percent = Int((mediaCopyByteFractionCompleted * 100).rounded())
-        return "\(percent)% of bytes"
+        guard let progress = mediaCopyProgress else { return "" }
+        return
+            "\(progress.copiedBytes.formattedFileSize) of \(progress.totalBytes.formattedFileSize)"
     }
     var mediaCopyCountCompletionText: String {
         guard let progress = mediaCopyProgress else { return "" }
