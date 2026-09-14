@@ -231,7 +231,12 @@ final class EncoderViewModel: ObservableObject {
     }
     var mediaCopyCountCompletionText: String {
         guard let progress = mediaCopyProgress else { return "" }
-        return "\(progress.completed) of \(progress.total)"
+        return "\(progress.displayCompleted) of \(progress.total)"
+    }
+
+    var mediaCopyCopiedCountText: String {
+        guard let progress = mediaCopyProgress else { return "" }
+        return "\(progress.displayCopied) copied"
     }
     var isMediaCopyScanning: Bool {
         get { mediaFileCoordinator.isMediaCopyScanning }

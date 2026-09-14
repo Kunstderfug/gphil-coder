@@ -153,6 +153,7 @@ enum MediaCopyTransactionExecutor {
 
         var stagedCandidates: [StagedCandidate] = []
         var stagedBytes: Int64 = 0
+        var transferred = 0
         for (index, candidate) in candidates.enumerated() {
             if isCancelled() {
                 result.cancelled = true
@@ -170,7 +171,8 @@ enum MediaCopyTransactionExecutor {
                     copiedBytes: stagedBytes,
                     totalBytes: plan.totalSizeBytes,
                     startedAt: startedAt,
-                    currentName: candidate.name
+                    currentName: candidate.name,
+                    transferred: transferred
                 )
             )
 
@@ -178,6 +180,16 @@ enum MediaCopyTransactionExecutor {
                 FileManager.default.fileExists(atPath: candidate.destinationURL.path)
             {
                 result.skippedExisting += 1
+                publishProgress(
+                    makeProgress(
+                        result: result,
+                        copiedBytes: stagedBytes,
+                        totalBytes: plan.totalSizeBytes,
+                        startedAt: startedAt,
+                        currentName: candidate.name,
+                        transferred: transferred
+                    )
+                )
                 continue
             }
 
@@ -193,6 +205,7 @@ enum MediaCopyTransactionExecutor {
                     totalBytes: plan.totalSizeBytes,
                     startedAt: startedAt,
                     result: result,
+                    transferred: transferred,
                     isCancelled: isCancelled,
                     publishProgress: publishProgress
                 )
@@ -214,6 +227,17 @@ enum MediaCopyTransactionExecutor {
                     )
                 )
                 stagedBytes += candidate.fileSizeBytes
+                transferred += 1
+                publishProgress(
+                    makeProgress(
+                        result: result,
+                        copiedBytes: stagedBytes,
+                        totalBytes: plan.totalSizeBytes,
+                        startedAt: startedAt,
+                        currentName: candidate.name,
+                        transferred: transferred
+                    )
+                )
             } catch is CancellationError {
                 result.cancelled = true
                 await recordCleanupOutcome(
@@ -234,6 +258,16 @@ enum MediaCopyTransactionExecutor {
                 }
                 result.failed += 1
                 result.failedNames.append(candidate.relativePath)
+                publishProgress(
+                    makeProgress(
+                        result: result,
+                        copiedBytes: stagedBytes,
+                        totalBytes: plan.totalSizeBytes,
+                        startedAt: startedAt,
+                        currentName: candidate.name,
+                        transferred: transferred
+                    )
+                )
             }
         }
 
@@ -251,7 +285,8 @@ enum MediaCopyTransactionExecutor {
                     copiedBytes: 0,
                     totalBytes: plan.totalSizeBytes,
                     startedAt: startedAt,
-                    currentName: nil
+                    currentName: nil,
+                    transferred: transferred
                 )
             )
             return result
@@ -389,7 +424,8 @@ enum MediaCopyTransactionExecutor {
                     copiedBytes: max(copiedBytes, stagedBytes),
                     totalBytes: plan.totalSizeBytes,
                     startedAt: startedAt,
-                    currentName: candidate.name
+                    currentName: candidate.name,
+                    transferred: transferred
                 )
             )
         }
@@ -462,6 +498,7 @@ enum MediaCopyTransactionExecutor {
         totalBytes: Int64,
         startedAt: Date,
         result: MediaCopyResult,
+        transferred: Int,
         isCancelled: () -> Bool,
         publishProgress: (MediaCopyProgress) -> Void
     ) async throws -> MediaCopyPathEvidence {
@@ -515,7 +552,8 @@ enum MediaCopyTransactionExecutor {
                         copiedBytes: alreadyStagedBytes + bytes,
                         totalBytes: totalBytes,
                         startedAt: startedAt,
-                        currentName: candidate.name
+                        currentName: candidate.name,
+                        transferred: transferred
                     )
                 )
             }
@@ -538,10 +576,11 @@ enum MediaCopyTransactionExecutor {
         copiedBytes: Int64,
         totalBytes: Int64,
         startedAt: Date,
-        currentName: String?
+        currentName: String?,
+        transferred: Int
     ) -> MediaCopyProgress {
         MediaCopyProgress(
-            completed: result.copied + result.skippedExisting + result.failed,
+            completed: transferred + result.skippedExisting + result.failed,
             total: result.total,
             copied: result.copied,
             skippedExisting: result.skippedExisting,
@@ -550,7 +589,8 @@ enum MediaCopyTransactionExecutor {
             totalBytes: totalBytes,
             startedAt: startedAt,
             updatedAt: Date(),
-            currentName: currentName
+            currentName: currentName,
+            transferred: transferred
         )
     }
 

@@ -570,7 +570,7 @@ struct MediaManagementWorkflowView: View {
                 Text(mediaProgressCountText(for: progress))
                     .monospacedDigit()
                 Spacer()
-                Text("\(progress.copied) \(mediaProgressVerb)")
+                Text("\(mediaProgressCopiedCount(for: progress)) \(mediaProgressVerb)")
             }
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -928,7 +928,7 @@ struct MediaManagementWorkflowView: View {
                 "\(progress.completed) of \(progress.total) processed, \(progress.copied) \(model.mediaRenameProgressVerb), \(progress.failed) failed\(speedDetail)."
         }
         return
-            "\(progress.completed) of \(progress.total) processed, \(progress.copied) copied, \(progress.skippedExisting) skipped, \(progress.failed) failed\(speedDetail)."
+            "\(progress.displayCompleted) of \(progress.total) processed, \(progress.displayCopied) copied, \(progress.skippedExisting) skipped, \(progress.failed) failed\(speedDetail)."
     }
 
     private var mediaProgressVerb: String {
@@ -953,6 +953,13 @@ struct MediaManagementWorkflowView: View {
             return model.mediaCopyCountCompletionText
         }
         return "\(progress.completed) of \(progress.total)"
+    }
+
+    private func mediaProgressCopiedCount(for progress: MediaCopyProgress) -> Int {
+        if model.fileManagementMode == .copy {
+            return progress.displayCopied
+        }
+        return progress.copied
     }
 
     private func mediaCopyDetailSpeedSuffix(for progress: MediaCopyProgress) -> String {

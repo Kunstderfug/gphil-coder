@@ -280,7 +280,7 @@ final class MediaFileCoordinator: ObservableObject {
         guard let progress = mediaCopyProgress else { return }
         let speedDetail = mediaCopySpeedStatusDetail(for: progress)
         setStatusMessage(
-            "Copied \(progress.copied), skipped \(progress.skippedExisting), failed \(progress.failed) of \(progress.total)\(speedDetail)."
+            "Copied \(progress.displayCopied), skipped \(progress.skippedExisting), failed \(progress.failed) of \(progress.total)\(speedDetail)."
         )
     }
 
@@ -901,7 +901,7 @@ final class MediaFileCoordinator: ObservableObject {
                 setProgress(progress)
                 let speedDetail = mediaCopySpeedStatusDetail(for: progress)
                 setStatusMessage(
-                    "Copied \(progress.copied), skipped \(progress.skippedExisting), failed \(progress.failed) of \(progress.total)\(speedDetail)."
+                    "Copied \(progress.displayCopied), skipped \(progress.skippedExisting), failed \(progress.failed) of \(progress.total)\(speedDetail)."
                 )
             }
         )
@@ -919,7 +919,7 @@ final class MediaFileCoordinator: ObservableObject {
                 setProgress(progress)
                 let speedDetail = mediaCopySpeedStatusDetail(for: progress)
                 setStatusMessage(
-                    "Copied \(progress.copied), skipped \(progress.skippedExisting), failed \(progress.failed) of \(progress.total)\(speedDetail)."
+                    "Copied \(progress.displayCopied), skipped \(progress.skippedExisting), failed \(progress.failed) of \(progress.total)\(speedDetail)."
                 )
             }
         )
