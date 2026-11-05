@@ -129,6 +129,15 @@ struct FFmpegEncoder {
             )
         }
 
+        if settings.copyOriginalAudio {
+            return try await copyOriginalAudio(
+                input: input,
+                output: output,
+                settings: settings,
+                progressHandler: progressHandler
+            )
+        }
+
         try FileManager.default.createDirectory(
             at: output.deletingLastPathComponent(),
             withIntermediateDirectories: true
@@ -211,6 +220,50 @@ struct FFmpegEncoder {
                 ) else {
                     return
                 }
+                progressHandler?(progress)
+            }
+        }
+    }
+
+    private func copyOriginalAudio(
+        input: URL,
+        output: URL,
+        settings: EncodingSettingsSnapshot,
+        progressHandler: (@Sendable (FFmpegProgressSnapshot) -> Void)?
+    ) async throws -> String {
+        _ = try AudioStreamCopy.outputExtension(ffmpegURL: ffmpegURL, input: input)
+        let inputPath = input.standardizedFileURL.resolvingSymlinksInPath().path
+        let outputPath = output.standardizedFileURL.resolvingSymlinksInPath().path
+        guard inputPath != outputPath else {
+            throw FFmpegToolError.outputWouldOverwriteInput
+        }
+        if FileManager.default.fileExists(atPath: output.path), !settings.overwriteExisting {
+            throw EncodeSkipError.outputExists
+        }
+        try FileManager.default.createDirectory(
+            at: output.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let inputDuration = try? await FFmpegProbe.mediaDuration(
+            ffmpegURL: ffmpegURL,
+            input: input,
+            processRegistry: processRegistry
+        )
+        let tempOutput = temporaryOutputURL(beside: output)
+        let arguments = [
+            "-hide_banner", "-nostdin", settings.overwriteExisting ? "-y" : "-n",
+            "-i", input.path, "-map", "0:a:0", "-vn", "-c:a", "copy", tempOutput.path
+        ]
+        return try await runInstallingTemp(temp: tempOutput, output: output) {
+            try await ProcessRunner.run(
+                executableURL: ffmpegURL,
+                arguments: arguments,
+                processRegistry: processRegistry
+            ) { chunk in
+                guard let progress = FFmpegProgressSnapshot.parse(
+                    from: chunk,
+                    duration: inputDuration
+                ) else { return }
                 progressHandler?(progress)
             }
         }

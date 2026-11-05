@@ -12,6 +12,7 @@ Native macOS batch audio/video encoder built with SwiftUI and FFmpeg.
 - Save and load explicit `.gphilcoderqueue` files with queued sources and encoder settings.
 - Save, load, update, rename, and delete reusable audio/video encoding presets.
 - Encode audio to MP3 with `libmp3lame`.
+- Extract audio from MP4, MOV, and M4V videos: in the Audio tab, enable **Extract audio from video**, add files or folders, choose a destination, then click **Extract audio**. **Original audio (no re-encoding)** is selected by default and preserves the first audio track in a matching container (for example AAC → M4A). Turn it off to convert to the selected audio format. The source video is preserved.
 - Encode audio to Ogg Vorbis. Bitrate mode uses `libvorbis` when the installed FFmpeg build provides it; otherwise use quality mode with FFmpeg's native `vorbis` encoder.
 - Encode audio to Opus with `libopus`.
 - Encode audio to lossless FLAC with selectable compression level.

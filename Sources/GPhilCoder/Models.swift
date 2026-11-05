@@ -317,6 +317,8 @@ struct QueueDocument: Codable {
 
 struct QueueSettings: Codable {
     var encodingWorkflow: String?
+    var extractAudioFromVideo: Bool?
+    var copyOriginalAudio: Bool?
     var outputMode: String?
     var exportFolderPath: String?
     var selectedInputExtensions: [String]?

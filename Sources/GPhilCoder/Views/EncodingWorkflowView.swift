@@ -75,6 +75,10 @@ struct EncodingWorkflowView: View {
                         .controlSize(.small)
                     }
 
+                    if model.encodingWorkflow == .audio {
+                        AudioSourceOptionsView()
+                    }
+
                     inputFilterControls
 
                     VStack(alignment: .leading, spacing: 10) {
@@ -183,7 +187,7 @@ struct EncodingWorkflowView: View {
                 .frame(maxWidth: .infinity)
             }
             .disabled(model.isEncoding)
-            .help("Choose input \(model.encodingWorkflow.title.lowercased()) formats")
+            .help("Choose input \(model.inputWorkflow.title.lowercased()) formats")
         }
     }
 
@@ -226,7 +230,7 @@ struct EncodingWorkflowView: View {
         }
         .overlay {
             if isEncodingDropTargeted && !model.isEncoding {
-                DropTargetOverlay(workflow: model.encodingWorkflow)
+                DropTargetOverlay(workflow: model.inputWorkflow)
                     .padding(22)
                     .allowsHitTesting(false)
             }
@@ -243,7 +247,7 @@ struct EncodingWorkflowView: View {
     private var inputList: some View {
         Group {
             if model.inputs.isEmpty {
-                EmptyQueueView(workflow: model.encodingWorkflow)
+                EmptyQueueView(workflow: model.inputWorkflow)
             } else if model.activeInputs.isEmpty {
                 EmptyFilteredQueueView(hiddenCount: model.inactiveInputCount)
             } else {
@@ -336,14 +340,22 @@ struct EncodingWorkflowView: View {
 
                     GroupBox("Encoding") {
                         VStack(alignment: .leading, spacing: 13) {
-                            outputFormatPicker
+                            if model.isExtractingAudio {
+                                Toggle("Original audio (no re-encoding)", isOn: $model.copyOriginalAudio)
+                                    .disabled(model.isEncoding)
+                            }
+                            if !model.isCopyingOriginalAudio {
+                                outputFormatPicker
+                            }
 
                             Text(model.outputFormatDetail)
                                 .font(.callout)
                                 .foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
 
-                            formatEncodingControls
+                            if !model.isCopyingOriginalAudio {
+                                formatEncodingControls
+                            }
 
                             Stepper(value: model.binding(\.parallelJobs), in: 1...model.processorLimit) {
                                 SettingValue(title: "Parallel jobs", value: "\(model.parallelJobs)")
@@ -386,14 +398,14 @@ struct EncodingWorkflowView: View {
                     GroupBox("Format") {
                         VStack(alignment: .leading, spacing: 10) {
                             HStack {
-                                FormatPill(text: model.encodingWorkflow.title.uppercased())
+                                FormatPill(text: model.inputWorkflow.title.uppercased())
                                 Image(systemName: "arrow.right")
                                     .font(.caption.weight(.semibold))
                                     .foregroundStyle(.secondary)
                                 FormatPill(text: model.outputFormatTitle)
                             }
                             Text(
-                                "The queue keeps every supported \(model.encodingWorkflow.title.lowercased()) file you add. Input filters choose which queued formats are visible and sent to FFmpeg's \(model.selectedEncoderName) encoder."
+                                "The queue keeps every supported \(model.inputWorkflow.title.lowercased()) file you add. Input filters choose which queued formats are visible and sent to FFmpeg's \(model.selectedEncoderName) encoder."
                             )
                             .font(.callout)
                             .foregroundStyle(.secondary)
@@ -450,7 +462,7 @@ struct EncodingWorkflowView: View {
                     Button {
                         model.startEncoding()
                     } label: {
-                        Label("Start encoding", systemImage: "play.fill")
+                        Label(model.isExtractingAudio ? "Extract audio" : "Start encoding", systemImage: "play.fill")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)

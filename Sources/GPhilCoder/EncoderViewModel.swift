@@ -504,6 +504,27 @@ final class EncoderViewModel: ObservableObject {
         }
     }
 
+    @Published var copyOriginalAudio = true {
+        didSet {
+            settingsPersistence.set(copyOriginalAudio, forKey: DefaultsKey.copyOriginalAudio)
+            if oldValue != copyOriginalAudio, isExtractingAudio {
+                jobs.removeAll()
+                jobStateFilter = nil
+            }
+        }
+    }
+
+    @Published var extractAudioFromVideo = false {
+        didSet {
+            settingsPersistence.set(extractAudioFromVideo, forKey: DefaultsKey.extractAudioFromVideo)
+            if oldValue != extractAudioFromVideo {
+                jobs.removeAll()
+                jobStateFilter = nil
+                statusMessage = activeFilterStatusMessage
+            }
+        }
+    }
+
     @Published var encodingWorkflow: EncodingWorkflow = .audio {
         didSet {
             settingsPersistence.set(
@@ -911,7 +932,7 @@ final class EncoderViewModel: ObservableObject {
     }
 
     var lossyToLosslessWarningMessage: String? {
-        guard encodingWorkflow == .audio else { return nil }
+        guard encodingWorkflow == .audio, !isCopyingOriginalAudio else { return nil }
         guard outputFormat.isLossless else { return nil }
         let lossyExtensions: Set<String> = ["aac", "m4a", "mp3", "ogg", "opus"]
         let lossyInputCount = activeInputs.filter {
@@ -925,7 +946,7 @@ final class EncoderViewModel: ObservableObject {
     }
 
     var nativeOggReencodeWarningMessage: String? {
-        guard encodingWorkflow == .audio else { return nil }
+        guard encodingWorkflow == .audio, !isCopyingOriginalAudio else { return nil }
         guard outputFormat == .ogg,
               sameFormatInputCount > 0,
               !supportsOggBitrate
@@ -945,6 +966,8 @@ final class EncoderViewModel: ObservableObject {
     }
 
     var selectedEncoderName: String {
+        if isCopyingOriginalAudio { return "stream copy" }
+
         if encodingWorkflow == .video {
             return "hevc_videotoolbox"
         }
@@ -1019,7 +1042,7 @@ final class EncoderViewModel: ObservableObject {
     }
 
     var selectedInputReadableList: String {
-        switch encodingWorkflow {
+        switch inputWorkflow {
         case .audio:
             return selectedAudioInputReadableList
         case .video:
@@ -1052,7 +1075,7 @@ final class EncoderViewModel: ObservableObject {
     }
 
     var hasSelectedInputFilters: Bool {
-        switch encodingWorkflow {
+        switch inputWorkflow {
         case .audio:
             !selectedInputExtensions.isEmpty
         case .video:
@@ -1610,7 +1633,8 @@ final class EncoderViewModel: ObservableObject {
     }
 
     var outputFormatTitle: String {
-        switch encodingWorkflow {
+        if isCopyingOriginalAudio { return "Original audio" }
+        return switch encodingWorkflow {
         case .audio:
             outputFormat.title
         case .video:
@@ -1628,7 +1652,10 @@ final class EncoderViewModel: ObservableObject {
     }
 
     var outputFormatDetail: String {
-        switch encodingWorkflow {
+        if isCopyingOriginalAudio {
+            return "Preserve the first audio track without re-encoding. Each file uses a container matching its original audio codec, such as M4A for AAC or ALAC."
+        }
+        return switch encodingWorkflow {
         case .audio:
             outputFormat.detail
         case .video:
@@ -2028,7 +2055,7 @@ final class EncoderViewModel: ObservableObject {
 
     func addFiles() {
         let panel = NSOpenPanel()
-        panel.title = "Add \(encodingWorkflow.title) Files"
+        panel.title = "Add \(inputWorkflow.title) Files"
         panel.prompt = "Add Files"
         panel.allowsMultipleSelection = true
         panel.canChooseFiles = true
@@ -2223,7 +2250,7 @@ final class EncoderViewModel: ObservableObject {
 
     func selectAllInputFormats() {
         guard !isEncoding else { return }
-        switch encodingWorkflow {
+        switch inputWorkflow {
         case .audio:
             selectedInputExtensions = AudioFormat.inputExtensions
         case .video:
@@ -2236,7 +2263,7 @@ final class EncoderViewModel: ObservableObject {
 
     func deselectAllInputFormats() {
         guard !isEncoding else { return }
-        switch encodingWorkflow {
+        switch inputWorkflow {
         case .audio:
             selectedInputExtensions.removeAll()
         case .video:
@@ -2967,7 +2994,7 @@ final class EncoderViewModel: ObservableObject {
     func startEncoding() {
         guard canEncode, let selectedFFmpegURL = encodingFFmpegURL else { return }
 
-        if encodingWorkflow == .audio, outputFormat == .ogg, oggMode == .bitrate, !supportsOggBitrate {
+        if encodingWorkflow == .audio, !isCopyingOriginalAudio, outputFormat == .ogg, oggMode == .bitrate, !supportsOggBitrate {
             statusMessage = FFmpegToolError.unsupportedOggBitrate.localizedDescription
             return
         }
@@ -2987,7 +3014,7 @@ final class EncoderViewModel: ObservableObject {
         let plannedJobs = itemsToEncode.map {
             EncodeJob(item: $0, outputURL: outputURL(for: $0))
         }
-        let settings = EncodingSettingsSnapshot(
+        var settings = EncodingSettingsSnapshot(
             ffmpegURL: selectedFFmpegURL,
             useLibVorbis: ffmpegCapabilities.hasLibVorbis,
             encodingWorkflow: encodingWorkflow,
@@ -3013,6 +3040,8 @@ final class EncoderViewModel: ObservableObject {
             overwriteExisting: overwriteExisting,
             parallelJobs: max(1, min(parallelJobs, processorLimit))
         )
+
+        settings.copyOriginalAudio = isCopyingOriginalAudio
 
         if confirmBeforeEncoding {
             guard confirmEncodingPreflight(plannedJobs: plannedJobs, settings: settings) else {
@@ -3197,6 +3226,8 @@ final class EncoderViewModel: ObservableObject {
     private func currentQueueSettings() -> QueueSettings {
         QueueSettings(
             encodingWorkflow: encodingWorkflow.rawValue,
+            extractAudioFromVideo: extractAudioFromVideo,
+            copyOriginalAudio: copyOriginalAudio,
             outputMode: outputMode.rawValue,
             exportFolderPath: exportFolder?.standardizedFileURL.path(percentEncoded: false),
             selectedInputExtensions: selectedInputExtensions.sorted(),
@@ -3449,6 +3480,9 @@ final class EncoderViewModel: ObservableObject {
         } else {
             exportFolder = nil
         }
+
+        copyOriginalAudio = settings.copyOriginalAudio ?? true
+        extractAudioFromVideo = settings.extractAudioFromVideo ?? false
 
         if let rawValue = settings.encodingWorkflow,
             let value = EncodingWorkflow(rawValue: rawValue)
@@ -3708,6 +3742,9 @@ final class EncoderViewModel: ObservableObject {
             encodingWorkflow = persistedWorkflow
         }
 
+        copyOriginalAudio = settingsPersistence.bool(forKey: DefaultsKey.copyOriginalAudio) ?? true
+        extractAudioFromVideo = settingsPersistence.bool(forKey: DefaultsKey.extractAudioFromVideo) ?? false
+
         exportFolder = settingsPersistence.directoryURL(forKey: DefaultsKey.exportFolderPath)
         if outputMode == .exportFolder, exportFolder == nil {
             outputMode = .sourceFolders
@@ -3964,7 +4001,7 @@ final class EncoderViewModel: ObservableObject {
     }
 
     private var currentSupportedInputExtensions: Set<String> {
-        switch encodingWorkflow {
+        switch inputWorkflow {
         case .audio:
             AudioFormat.inputExtensions
         case .video:
@@ -3973,7 +4010,7 @@ final class EncoderViewModel: ObservableObject {
     }
 
     private var currentSelectedInputExtensions: Set<String> {
-        switch encodingWorkflow {
+        switch inputWorkflow {
         case .audio:
             selectedInputExtensions
         case .video:
@@ -4636,7 +4673,7 @@ final class EncoderViewModel: ObservableObject {
     }
 
     private func isSupportedInput(_ url: URL) -> Bool {
-        switch encodingWorkflow {
+        switch inputWorkflow {
         case .audio:
             isSupportedAudio(url)
         case .video:
@@ -4685,6 +4722,16 @@ final class EncoderViewModel: ObservableObject {
 
         switch encodingWorkflow {
         case .audio:
+            if isCopyingOriginalAudio, let ffmpegURL = encodingFFmpegURL {
+                let accessed = item.url.startAccessingSecurityScopedResource()
+                defer { if accessed { item.url.stopAccessingSecurityScopedResource() } }
+                // Unreadable/silent inputs still become jobs so one bad source
+                // does not prevent the rest of the batch from extracting.
+                let ext = (try? AudioStreamCopy.outputExtension(ffmpegURL: ffmpegURL, input: item.url)) ?? "m4a"
+                return outputDirectory.appendingPathComponent(
+                    item.url.deletingPathExtension().lastPathComponent + "." + ext
+                )
+            }
             return outputDirectory.appendingPathComponent(item.outputFileName(for: outputFormat))
         case .video:
             return outputDirectory.appendingPathComponent(

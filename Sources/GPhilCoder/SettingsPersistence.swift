@@ -7,6 +7,8 @@ struct SettingsPersistence {
         static let outputMode = "outputMode"
         static let exportFolderPath = "exportFolderPath"
         static let encodingWorkflow = "encodingWorkflow"
+        static let copyOriginalAudio = "copyOriginalAudio"
+        static let extractAudioFromVideo = "extractAudioFromVideo"
         static let selectedInputExtensions = "selectedInputExtensions"
         static let selectedVideoInputExtensions = "selectedVideoInputExtensions"
         static let preserveSubfolders = "preserveSubfolders"

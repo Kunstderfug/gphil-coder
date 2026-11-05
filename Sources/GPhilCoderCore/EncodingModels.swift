@@ -528,6 +528,7 @@ public enum WavPackEncodingOptions {
 }
 
 public struct EncodingSettingsSnapshot {
+    public var copyOriginalAudio = false
     public let ffmpegURL: URL
     public let useLibVorbis: Bool
     public let encodingWorkflow: EncodingWorkflow
@@ -610,6 +611,9 @@ public struct EncodingSettingsSnapshot {
     }
 
     public var summary: String {
+        if copyOriginalAudio {
+            return "Original audio (stream copy)"
+        }
         if encodingWorkflow == .video {
             return "\(hevcPreset.title) HEVC \(videoBitrateKbps) kbps \(videoOutputContainer.title), \(videoScaleMode.title), audio \(videoAudioMode.title)"
         }

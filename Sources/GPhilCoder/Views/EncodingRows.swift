@@ -12,7 +12,7 @@ struct InputFilterSheet: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Input Filters")
                         .font(.title3.weight(.semibold))
-                    Text("Choose which \(model.encodingWorkflow.title.lowercased()) extensions are accepted when adding files or folders.")
+                    Text("Choose which \(model.inputWorkflow.title.lowercased()) extensions are accepted when adding files or folders.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
@@ -67,7 +67,7 @@ struct InputFilterSheet: View {
     @ViewBuilder
     private var inputToggles: some View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 12)], spacing: 12) {
-            switch model.encodingWorkflow {
+            switch model.inputWorkflow {
             case .audio:
                 ForEach(InputAudioFormat.allCases) { format in
                     Toggle(

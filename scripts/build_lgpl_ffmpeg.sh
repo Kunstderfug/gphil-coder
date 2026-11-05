@@ -187,6 +187,13 @@ echo "Building ffmpeg-$FFMPEG_VERSION"
     --enable-demuxer=ogg \
     --enable-demuxer=wav \
     --enable-demuxer=wv \
+    --enable-muxer=ipod \
+    --enable-muxer=wav \
+    --enable-muxer=aiff \
+    --enable-muxer=caf \
+    --enable-muxer=ac3 \
+    --enable-muxer=eac3 \
+    --enable-muxer=dts \
     --enable-muxer=flac \
     --enable-muxer=mp3 \
     --enable-muxer=ogg \

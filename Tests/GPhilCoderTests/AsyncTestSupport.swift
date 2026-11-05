@@ -2,6 +2,8 @@ import Foundation
 
 func clearViewModelDefaultsForTests() {
     let keys = [
+        "extractAudioFromVideo",
+        "copyOriginalAudio",
         "syncFolderPairs",
         "syncAutoSyncEnabled",
         "syncDestinationLayout",
